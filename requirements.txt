@@ -1,0 +1,33 @@
+# Core API
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# Database
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+alembic==1.14.1
+greenlet==3.3.1
+
+# HTTP / WebSocket
+httpx==0.28.1
+websockets==14.2
+sse-starlette==2.2.1
+
+# ML
+lightgbm==4.5.0
+scikit-learn==1.6.1
+pandas==2.2.3
+numpy==2.2.2
+joblib==1.4.2
+
+# Scheduling
+apscheduler==3.10.4
+
+# AI (Claude - used sparingly)
+anthropic==0.43.0
+
+# Utilities
+python-dateutil==2.9.0
