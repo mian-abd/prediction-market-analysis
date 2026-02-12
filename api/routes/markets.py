@@ -1,11 +1,12 @@
 """Market browsing and detail endpoints."""
 
-from fastapi import APIRouter, Depends, Query
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_session
-from db.models import Market, Platform, PriceSnapshot, CrossPlatformMatch
+from db.models import Market, Platform, PriceSnapshot, OrderbookSnapshot, CrossPlatformMatch
 
 router = APIRouter(tags=["markets"])
 
@@ -171,4 +172,179 @@ async def get_market_detail(
             for p in reversed(prices)
         ],
         "cross_platform_matches": matched_markets,
+    }
+
+
+@router.get("/markets/{market_id}/price-history")
+async def get_price_history(
+    market_id: int,
+    interval: str = Query(default="5m", regex="^(1m|5m|15m|1h|4h|1d)$"),
+    limit: int = Query(default=500, le=1000),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get OHLC price history for charting.
+
+    Returns candlestick data grouped by time interval.
+    Intervals: 1m, 5m, 15m, 1h, 4h, 1d
+    """
+    # Verify market exists
+    market = await session.get(Market, market_id)
+    if not market:
+        raise HTTPException(status_code=404, detail="Market not found")
+
+    # Map interval to minutes
+    interval_minutes = {
+        "1m": 1,
+        "5m": 5,
+        "15m": 15,
+        "1h": 60,
+        "4h": 240,
+        "1d": 1440,
+    }
+
+    minutes = interval_minutes.get(interval, 5)
+
+    # Calculate lookback period (limit * interval)
+    lookback_minutes = limit * minutes
+    cutoff_time = datetime.utcnow() - timedelta(minutes=lookback_minutes)
+
+    # Fetch raw price snapshots
+    result = await session.execute(
+        select(PriceSnapshot)
+        .where(
+            PriceSnapshot.market_id == market_id,
+            PriceSnapshot.timestamp >= cutoff_time
+        )
+        .order_by(PriceSnapshot.timestamp.asc())
+    )
+    snapshots = result.scalars().all()
+
+    if not snapshots:
+        return {"data": []}
+
+    # Group snapshots into OHLC candles
+    candles = []
+    current_candle_start = None
+    current_candle_data = []
+
+    for snapshot in snapshots:
+        # Determine which candle this snapshot belongs to
+        timestamp_minutes = int(snapshot.timestamp.timestamp() / 60)
+        candle_start_minutes = (timestamp_minutes // minutes) * minutes
+        candle_start = datetime.utcfromtimestamp(candle_start_minutes * 60)
+
+        # New candle?
+        if current_candle_start != candle_start:
+            # Save previous candle if exists
+            if current_candle_data:
+                candles.append(create_candle(current_candle_start, current_candle_data))
+
+            # Start new candle
+            current_candle_start = candle_start
+            current_candle_data = [snapshot]
+        else:
+            current_candle_data.append(snapshot)
+
+    # Save last candle
+    if current_candle_data:
+        candles.append(create_candle(current_candle_start, current_candle_data))
+
+    return {"data": candles[-limit:]}  # Return last N candles
+
+
+def create_candle(start_time: datetime, snapshots: list[PriceSnapshot]) -> dict:
+    """Create OHLC candle from price snapshots."""
+    if not snapshots:
+        return None
+
+    # Use YES price for OHLC (main price)
+    prices = [s.price_yes for s in snapshots if s.price_yes is not None]
+
+    if not prices:
+        # Fallback to close price (1 - NO price)
+        prices = [1.0 - s.price_no for s in snapshots if s.price_no is not None]
+
+    if not prices:
+        return None
+
+    # Calculate OHLC
+    open_price = prices[0]
+    high_price = max(prices)
+    low_price = min(prices)
+    close_price = prices[-1]
+
+    # Sum volume across all snapshots in this candle
+    total_volume = sum(s.volume or 0 for s in snapshots)
+
+    return {
+        "timestamp": int(start_time.timestamp()),  # Unix timestamp in seconds
+        "open": open_price,
+        "high": high_price,
+        "low": low_price,
+        "close": close_price,
+        "volume": total_volume,
+    }
+
+
+@router.get("/markets/{market_id}/orderbook")
+async def get_orderbook(
+    market_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get latest orderbook snapshot for a market.
+
+    Returns bids/asks with cumulative depth for visualization.
+    """
+    # Get the latest orderbook snapshot for this market
+    result = await session.execute(
+        select(OrderbookSnapshot)
+        .where(OrderbookSnapshot.market_id == market_id)
+        .order_by(OrderbookSnapshot.timestamp.desc())
+        .limit(1)
+    )
+    snapshot = result.scalar_one_or_none()
+
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="No orderbook data available")
+
+    # Parse bids and asks from JSON
+    bids_raw = snapshot.bids_json or []
+    asks_raw = snapshot.asks_json or []
+
+    # Calculate cumulative depth
+    bids_cumulative = []
+    cumulative_bid_size = 0
+    for bid in sorted(bids_raw, key=lambda x: x.get("price", 0), reverse=True):
+        price = bid.get("price", 0)
+        size = bid.get("size", 0)
+        cumulative_bid_size += size
+        bids_cumulative.append({
+            "price": price,
+            "size": size,
+            "cumulative": cumulative_bid_size,
+        })
+
+    asks_cumulative = []
+    cumulative_ask_size = 0
+    for ask in sorted(asks_raw, key=lambda x: x.get("price", 0)):
+        price = ask.get("price", 0)
+        size = ask.get("size", 0)
+        cumulative_ask_size += size
+        asks_cumulative.append({
+            "price": price,
+            "size": size,
+            "cumulative": cumulative_ask_size,
+        })
+
+    return {
+        "market_id": market_id,
+        "timestamp": snapshot.timestamp.isoformat(),
+        "best_bid": snapshot.best_bid,
+        "best_ask": snapshot.best_ask,
+        "spread": snapshot.bid_ask_spread,
+        "obi": snapshot.obi_level1,  # Order Book Imbalance
+        "bids": bids_cumulative[:10],  # Top 10 levels
+        "asks": asks_cumulative[:10],  # Top 10 levels
+        "bid_depth_total": snapshot.bid_depth_total,
+        "ask_depth_total": snapshot.ask_depth_total,
     }

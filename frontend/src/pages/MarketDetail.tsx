@@ -2,15 +2,6 @@ import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from 'recharts'
-import {
   ArrowLeft,
   Loader2,
   AlertCircle,
@@ -23,6 +14,10 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import apiClient from '../api/client'
+import PriceChart from '../components/charts/PriceChart'
+import OrderbookDepth from '../components/charts/OrderbookDepth'
+import VolumeProfile from '../components/charts/VolumeProfile'
+import SentimentGauge from '../components/charts/SentimentGauge'
 
 interface MarketData {
   id: number
@@ -35,12 +30,6 @@ interface MarketData {
   category: string | null
   platform: string
   end_date: string | null
-  price_history: Array<{
-    timestamp: string
-    price_yes: number
-    price_no: number
-    volume: number | null
-  }>
   cross_platform_matches: Array<{
     id: number
     platform: string
@@ -120,12 +109,6 @@ export default function MarketDetail() {
     )
   }
 
-  const chartData = (market.price_history ?? []).map((point) => ({
-    ...point,
-    price_yes_pct: point.price_yes * 100,
-    date: new Date(point.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-  }))
-
   const cal = prediction?.models?.calibration
 
   return (
@@ -197,44 +180,41 @@ export default function MarketDetail() {
       </div>
 
       {/* Price Chart */}
-      {chartData.length > 0 && (
-        <div className="card p-6">
-          <p className="text-[14px] font-semibold mb-5" style={{ color: 'var(--text)' }}>Price History</p>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                <defs>
-                  <linearGradient id="colorYes" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#4CAF70" stopOpacity={0.15} />
-                    <stop offset="95%" stopColor="#4CAF70" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                <XAxis dataKey="date" stroke="rgba(255,255,255,0.06)" tick={{ fill: '#48484A', fontSize: 11 }} />
-                <YAxis
-                  domain={[0, 100]}
-                  stroke="rgba(255,255,255,0.06)"
-                  tick={{ fill: '#48484A', fontSize: 11 }}
-                  tickFormatter={(v: number) => `${v}%`}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#1A1A1C',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: '12px',
-                    color: '#FFF',
-                    fontSize: '12px',
-                  }}
-                  formatter={(value: number | undefined) => [`${(value ?? 0).toFixed(1)}%`]}
-                />
-                <Area type="monotone" dataKey="price_yes_pct" stroke="#4CAF70" fill="url(#colorYes)" strokeWidth={2} name="Yes" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
+      <div className="card p-6">
+        <p className="text-[14px] font-semibold mb-5" style={{ color: 'var(--text)' }}>Price History</p>
+        <PriceChart
+          marketId={market.id}
+          interval="5m"
+          type="candlestick"
+          height={400}
+          showVolume={true}
+          showCrosshair={true}
+          autoRefresh={true}
+        />
+      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Orderbook Depth */}
+      <div className="card p-6">
+        <p className="text-[14px] font-semibold mb-5" style={{ color: 'var(--text)' }}>Orderbook Depth</p>
+        <OrderbookDepth
+          marketId={market.id}
+          maxDepth={10}
+          highlightSpread={true}
+          autoRefresh={true}
+        />
+      </div>
+
+      {/* Volume Profile */}
+      <div className="card p-6">
+        <p className="text-[14px] font-semibold mb-5" style={{ color: 'var(--text)' }}>Volume Profile</p>
+        <VolumeProfile
+          marketId={market.id}
+          bucketSize={0.01}
+          lookbackDays={7}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* ML Prediction */}
         <div className="card p-6">
           <div className="flex items-center gap-2.5 mb-5">
@@ -326,6 +306,20 @@ export default function MarketDetail() {
               {typeof analysis.analysis === 'string' ? analysis.analysis : JSON.stringify(analysis.analysis, null, 2)}
             </p>
           )}
+        </div>
+
+        {/* Market Sentiment */}
+        <div className="card p-6">
+          <div className="flex items-center gap-2.5 mb-5">
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center"
+              style={{ background: 'rgba(76,175,112,0.1)' }}
+            >
+              <TrendingUp className="h-4 w-4" style={{ color: 'var(--green)' }} />
+            </div>
+            <p className="text-[14px] font-semibold">Sentiment</p>
+          </div>
+          <SentimentGauge marketId={market.id} size="small" showBreakdown={true} />
         </div>
       </div>
     </div>

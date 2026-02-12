@@ -67,13 +67,14 @@ def create_app() -> FastAPI:
     )
 
     # Register routes
-    from api.routes import markets, arbitrage, system, ml_predictions, ai_analysis, portfolio
+    from api.routes import markets, arbitrage, system, ml_predictions, ai_analysis, portfolio, analytics
     app.include_router(markets.router, prefix="/api/v1")
     app.include_router(arbitrage.router, prefix="/api/v1")
     app.include_router(system.router, prefix="/api/v1")
     app.include_router(ml_predictions.router, prefix="/api/v1")
     app.include_router(ai_analysis.router, prefix="/api/v1")
     app.include_router(portfolio.router, prefix="/api/v1")
+    app.include_router(analytics.router, prefix="/api/v1")
 
     return app
 

@@ -221,3 +221,168 @@ async def portfolio_summary(
         "total_exposure": total_exposure,
         "by_strategy": by_strategy,
     }
+
+
+@router.get("/portfolio/equity-curve")
+async def get_equity_curve(
+    time_range: str = Query(default="30d", regex="^(7d|30d|90d|all)$"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get cumulative P&L over time for equity curve visualization.
+
+    Returns time series data with cumulative P&L by strategy.
+    """
+    from datetime import timedelta
+    from collections import defaultdict
+
+    # Determine cutoff date
+    cutoff_map = {
+        "7d": timedelta(days=7),
+        "30d": timedelta(days=30),
+        "90d": timedelta(days=90),
+        "all": None,
+    }
+    cutoff_delta = cutoff_map[time_range]
+
+    query = select(PortfolioPosition).where(
+        PortfolioPosition.exit_time != None  # noqa: E711
+    ).order_by(PortfolioPosition.exit_time)
+
+    if cutoff_delta:
+        cutoff_time = datetime.utcnow() - cutoff_delta
+        query = query.where(PortfolioPosition.exit_time >= cutoff_time)
+
+    result = await session.execute(query)
+    positions = result.scalars().all()
+
+    if not positions:
+        return {"data": [], "strategies": [], "total_pnl": 0.0}
+
+    # Build time series with cumulative P&L
+    # Group by strategy
+    strategy_data = defaultdict(list)
+    strategy_cumulative = defaultdict(float)
+    all_cumulative = 0.0
+
+    for pos in positions:
+        strategy = pos.strategy or "manual"
+        pnl = pos.realized_pnl or 0.0
+
+        # Update cumulative P&L
+        strategy_cumulative[strategy] += pnl
+        all_cumulative += pnl
+
+        # Record data point
+        timestamp = pos.exit_time.isoformat()
+        strategy_data[strategy].append({
+            "timestamp": timestamp,
+            "cumulative_pnl": strategy_cumulative[strategy],
+        })
+
+        # Also record for "all" strategy
+        if "all" not in strategy_data or strategy_data["all"][-1]["timestamp"] != timestamp:
+            strategy_data["all"].append({
+                "timestamp": timestamp,
+                "cumulative_pnl": all_cumulative,
+            })
+
+    # Build response
+    strategies = []
+    for strategy_name, points in strategy_data.items():
+        strategies.append({
+            "name": strategy_name,
+            "data": points,
+            "final_pnl": points[-1]["cumulative_pnl"] if points else 0.0,
+        })
+
+    return {
+        "data": strategies,
+        "strategies": list(strategy_data.keys()),
+        "total_pnl": all_cumulative,
+    }
+
+
+@router.get("/portfolio/win-rate")
+async def get_win_rate_by_strategy(
+    min_trades: int = Query(default=1, ge=1),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get win rate breakdown by strategy.
+
+    Returns win rate, trade count, avg profit, max loss per strategy.
+    """
+    # Get all closed positions
+    result = await session.execute(
+        select(PortfolioPosition).where(
+            PortfolioPosition.exit_time != None  # noqa: E711
+        )
+    )
+    positions = result.scalars().all()
+
+    if not positions:
+        return {"strategies": [], "overall_win_rate": 0.0}
+
+    # Group by strategy
+    from collections import defaultdict
+
+    strategy_stats = defaultdict(lambda: {
+        "wins": 0,
+        "losses": 0,
+        "total_trades": 0,
+        "total_pnl": 0.0,
+        "winning_pnl": [],
+        "losing_pnl": [],
+    })
+
+    for pos in positions:
+        strategy = pos.strategy or "manual"
+        pnl = pos.realized_pnl or 0.0
+
+        stats = strategy_stats[strategy]
+        stats["total_trades"] += 1
+        stats["total_pnl"] += pnl
+
+        if pnl > 0:
+            stats["wins"] += 1
+            stats["winning_pnl"].append(pnl)
+        else:
+            stats["losses"] += 1
+            stats["losing_pnl"].append(pnl)
+
+    # Calculate metrics
+    strategies = []
+    total_wins = 0
+    total_trades = 0
+
+    for strategy_name, stats in strategy_stats.items():
+        if stats["total_trades"] < min_trades:
+            continue  # Skip strategies with too few trades
+
+        win_rate = (stats["wins"] / stats["total_trades"] * 100) if stats["total_trades"] > 0 else 0.0
+        avg_win = sum(stats["winning_pnl"]) / len(stats["winning_pnl"]) if stats["winning_pnl"] else 0.0
+        avg_loss = sum(stats["losing_pnl"]) / len(stats["losing_pnl"]) if stats["losing_pnl"] else 0.0
+        max_loss = min(stats["losing_pnl"]) if stats["losing_pnl"] else 0.0
+
+        strategies.append({
+            "strategy": strategy_name,
+            "win_rate": win_rate,
+            "total_trades": stats["total_trades"],
+            "wins": stats["wins"],
+            "losses": stats["losses"],
+            "total_pnl": stats["total_pnl"],
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "max_loss": max_loss,
+        })
+
+        total_wins += stats["wins"]
+        total_trades += stats["total_trades"]
+
+    # Overall win rate
+    overall_win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0.0
+
+    return {
+        "strategies": strategies,
+        "overall_win_rate": overall_win_rate,
+        "total_trades": total_trades,
+    }

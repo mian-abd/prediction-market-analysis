@@ -6,6 +6,8 @@ import {
   Brain,
   Target,
   Activity,
+  TrendingUp,
+  Briefcase,
 } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import ArbitrageScanner from './pages/ArbitrageScanner'
@@ -13,13 +15,17 @@ import MarketBrowser from './pages/MarketBrowser'
 import MarketDetail from './pages/MarketDetail'
 import MLModels from './pages/MLModels'
 import CalibrationChart from './pages/CalibrationChart'
+import Analytics from './pages/Analytics'
+import Portfolio from './pages/Portfolio'
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/markets', icon: Store, label: 'Markets' },
   { to: '/arbitrage', icon: ArrowLeftRight, label: 'Arbitrage' },
+  { to: '/portfolio', icon: Briefcase, label: 'Portfolio' },
   { to: '/models', icon: Brain, label: 'ML Models' },
   { to: '/calibration', icon: Target, label: 'Calibration' },
+  { to: '/analytics', icon: TrendingUp, label: 'Analytics' },
 ]
 
 function App() {
@@ -93,8 +99,10 @@ function App() {
             <Route path="/arbitrage" element={<ArbitrageScanner />} />
             <Route path="/markets" element={<MarketBrowser />} />
             <Route path="/markets/:id" element={<MarketDetail />} />
+            <Route path="/portfolio" element={<Portfolio />} />
             <Route path="/models" element={<MLModels />} />
             <Route path="/calibration" element={<CalibrationChart />} />
+            <Route path="/analytics" element={<Analytics />} />
           </Routes>
         </div>
       </main>
