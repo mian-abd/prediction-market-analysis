@@ -30,6 +30,8 @@ interface MarketData {
   category: string | null
   platform: string
   end_date: string | null
+  last_fetched_at: string | null
+  updated_at: string | null
   cross_platform_matches: Array<{
     id: number
     platform: string
@@ -37,6 +39,24 @@ interface MarketData {
     price_yes: number
     similarity: number
   }>
+}
+
+function getRelativeTime(isoString: string): string {
+  const diff = Date.now() - new Date(isoString).getTime()
+  const seconds = Math.floor(diff / 1000)
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ago`
+}
+
+function getFreshnessColor(isoString: string): string {
+  const diff = Date.now() - new Date(isoString).getTime()
+  const seconds = diff / 1000
+  if (seconds < 30) return '#4CAF70'
+  if (seconds < 120) return '#C4A24D'
+  return '#CF6679'
 }
 
 interface Prediction {
@@ -177,6 +197,19 @@ export default function MarketDetail() {
             )
           })}
         </div>
+
+        {/* Freshness Indicator */}
+        {market.last_fetched_at && (
+          <div className="flex items-center gap-2 mt-4 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{ background: getFreshnessColor(market.last_fetched_at) }}
+            />
+            <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+              Last updated {getRelativeTime(market.last_fetched_at)}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Price Chart */}

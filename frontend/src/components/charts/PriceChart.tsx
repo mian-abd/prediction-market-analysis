@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { createChart, ColorType, CrosshairMode } from 'lightweight-charts'
+import {
+  createChart,
+  ColorType,
+  CrosshairMode,
+  CandlestickSeries,
+  LineSeries,
+  AreaSeries,
+  HistogramSeries
+} from 'lightweight-charts'
 import type { IChartApi, ISeriesApi, CandlestickData, Time, LineData, HistogramData } from 'lightweight-charts'
 
 export type ChartType = 'candlestick' | 'line' | 'area'
@@ -43,10 +51,21 @@ export default function PriceChart({
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [priceData, setPriceData] = useState<PriceDataPoint[]>([])
+  const [containerMounted, setContainerMounted] = useState(false)
+
+  // Callback ref to detect when container is actually mounted in DOM
+  const containerCallbackRef = (node: HTMLDivElement | null) => {
+    chartContainerRef.current = node
+    if (node && !containerMounted) {
+      console.log('[PriceChart] Container mounted in DOM')
+      setContainerMounted(true)
+    }
+  }
 
   // Fetch price data from API
   useEffect(() => {
     if (providedData) {
+      console.log('[PriceChart] Using provided data:', providedData.length, 'points')
       setPriceData(providedData)
       setIsLoading(false)
       return
@@ -58,18 +77,19 @@ export default function PriceChart({
         setError(null)
 
         // Fetch price snapshots for this market
-        const response = await fetch(
-          `/api/v1/markets/${marketId}/price-history?interval=${interval}&limit=500`
-        )
+        const url = `/api/v1/markets/${marketId}/price-history?interval=${interval}&limit=500`
+        console.log('[PriceChart] Fetching from:', url)
+        const response = await fetch(url)
 
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`)
         }
 
         const result = await response.json()
+        console.log('[PriceChart] Received data:', result.data?.length || 0, 'points', result)
         setPriceData(result.data || [])
       } catch (err) {
-        console.error('Failed to fetch price data:', err)
+        console.error('[PriceChart] Failed to fetch price data:', err)
         setError(err instanceof Error ? err.message : 'Failed to load chart data')
       } finally {
         setIsLoading(false)
@@ -87,106 +107,124 @@ export default function PriceChart({
 
   // Initialize chart
   useEffect(() => {
-    if (!chartContainerRef.current) return
-
-    // Create chart instance
-    const chart = createChart(chartContainerRef.current, {
-      width: chartContainerRef.current.clientWidth,
-      height: showVolume ? height : height - 100,
-      layout: {
-        background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#9CA3AF', // Tailwind gray-400
-      },
-      grid: {
-        vertLines: { color: '#1F2937' }, // Tailwind gray-800
-        horzLines: { color: '#1F2937' },
-      },
-      crosshair: {
-        mode: showCrosshair ? CrosshairMode.Normal : CrosshairMode.Hidden,
-        vertLine: {
-          width: 1,
-          color: '#4B5563',
-          style: 0,
-          labelBackgroundColor: '#C4A24D', // Accent color
-        },
-        horzLine: {
-          width: 1,
-          color: '#4B5563',
-          style: 0,
-          labelBackgroundColor: '#C4A24D',
-        },
-      },
-      rightPriceScale: {
-        borderColor: '#374151',
-        scaleMargins: {
-          top: 0.1,
-          bottom: showVolume ? 0.3 : 0.1,
-        },
-      },
-      timeScale: {
-        borderColor: '#374151',
-        timeVisible: true,
-        secondsVisible: interval === '1m',
-      },
-      handleScroll: {
-        mouseWheel: true,
-        pressedMouseMove: true,
-        horzTouchDrag: true,
-        vertTouchDrag: true,
-      },
-      handleScale: {
-        axisPressedMouseMove: true,
-        mouseWheel: true,
-        pinch: true,
-      },
-    })
-
-    chartRef.current = chart
-
-    // Create main price series based on type
-    if (type === 'candlestick') {
-      mainSeriesRef.current = chart.addCandlestickSeries({
-        upColor: '#10B981', // Tailwind green-500
-        downColor: '#EF4444', // Tailwind red-500
-        borderUpColor: '#10B981',
-        borderDownColor: '#EF4444',
-        wickUpColor: '#10B981',
-        wickDownColor: '#EF4444',
-      })
-    } else if (type === 'line') {
-      mainSeriesRef.current = chart.addLineSeries({
-        color: '#C4A24D', // Accent color
-        lineWidth: 2,
-        crosshairMarkerVisible: true,
-        crosshairMarkerRadius: 4,
-        crosshairMarkerBorderColor: '#C4A24D',
-        crosshairMarkerBackgroundColor: '#000000',
-      })
-    } else if (type === 'area') {
-      mainSeriesRef.current = chart.addAreaSeries({
-        topColor: 'rgba(196, 162, 77, 0.4)', // Accent with alpha
-        bottomColor: 'rgba(196, 162, 77, 0.0)',
-        lineColor: '#C4A24D',
-        lineWidth: 2,
-        crosshairMarkerVisible: true,
-        crosshairMarkerRadius: 4,
-      })
+    if (!containerMounted || !chartContainerRef.current) {
+      console.log('[PriceChart] Waiting for container to mount...')
+      return
     }
 
-    // Create volume series if enabled
-    if (showVolume) {
-      volumeSeriesRef.current = chart.addHistogramSeries({
-        color: '#4B5563', // Tailwind gray-600
-        priceFormat: {
-          type: 'volume',
+    const containerWidth = chartContainerRef.current.clientWidth
+    console.log('[PriceChart] Initializing chart - container width:', containerWidth, 'height:', height)
+
+    // Don't initialize if container has no width (not laid out yet)
+    if (containerWidth === 0) {
+      console.warn('[PriceChart] Container width is 0, cannot initialize')
+      return
+    }
+
+    console.log('[PriceChart] Creating chart instance...')
+
+    try {
+      // Create chart instance
+      const chart = createChart(chartContainerRef.current, {
+        width: containerWidth,
+        height: showVolume ? height : height - 100,
+        layout: {
+          background: { type: ColorType.Solid, color: 'transparent' },
+          textColor: '#9CA3AF', // Tailwind gray-400
         },
-        priceScaleId: '', // Use separate price scale
-        scaleMargins: {
-          top: 0.8,
-          bottom: 0,
+        grid: {
+          vertLines: { color: '#1F2937' }, // Tailwind gray-800
+          horzLines: { color: '#1F2937' },
+        },
+        crosshair: {
+          mode: showCrosshair ? CrosshairMode.Normal : CrosshairMode.Hidden,
+          vertLine: {
+            width: 1,
+            color: '#4B5563',
+            style: 0,
+            labelBackgroundColor: '#C4A24D', // Accent color
+          },
+          horzLine: {
+            width: 1,
+            color: '#4B5563',
+            style: 0,
+            labelBackgroundColor: '#C4A24D',
+          },
+        },
+        rightPriceScale: {
+          borderColor: '#374151',
+          scaleMargins: {
+            top: 0.1,
+            bottom: showVolume ? 0.3 : 0.1,
+          },
+        },
+        timeScale: {
+          borderColor: '#374151',
+          timeVisible: true,
+          secondsVisible: interval === '1m',
+        },
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: true,
+        },
+        handleScale: {
+          axisPressedMouseMove: true,
+          mouseWheel: true,
+          pinch: true,
         },
       })
-    }
+
+      console.log('[PriceChart] Chart created:', chart)
+      console.log('[PriceChart] Chart methods:', Object.keys(chart))
+      chartRef.current = chart
+
+      // Create main price series based on type (v5 API)
+      if (type === 'candlestick') {
+        console.log('[PriceChart] Adding candlestick series...')
+        mainSeriesRef.current = chart.addSeries(CandlestickSeries, {
+          upColor: '#10B981', // Tailwind green-500
+          downColor: '#EF4444', // Tailwind red-500
+          borderUpColor: '#10B981',
+          borderDownColor: '#EF4444',
+          wickUpColor: '#10B981',
+          wickDownColor: '#EF4444',
+        })
+      } else if (type === 'line') {
+        mainSeriesRef.current = chart.addSeries(LineSeries, {
+          color: '#C4A24D', // Accent color
+          lineWidth: 2,
+          crosshairMarkerVisible: true,
+          crosshairMarkerRadius: 4,
+          crosshairMarkerBorderColor: '#C4A24D',
+          crosshairMarkerBackgroundColor: '#000000',
+        })
+      } else if (type === 'area') {
+        mainSeriesRef.current = chart.addSeries(AreaSeries, {
+          topColor: 'rgba(196, 162, 77, 0.4)', // Accent with alpha
+          bottomColor: 'rgba(196, 162, 77, 0.0)',
+          lineColor: '#C4A24D',
+          lineWidth: 2,
+          crosshairMarkerVisible: true,
+          crosshairMarkerRadius: 4,
+        })
+      }
+
+      // Create volume series if enabled (v5 API)
+      if (showVolume) {
+        volumeSeriesRef.current = chart.addSeries(HistogramSeries, {
+          color: '#4B5563', // Tailwind gray-600
+          priceFormat: {
+            type: 'volume',
+          },
+          priceScaleId: '', // Use separate price scale
+          scaleMargins: {
+            top: 0.8,
+            bottom: 0,
+          },
+        })
+      }
 
     // Handle resize
     const handleResize = () => {
@@ -197,7 +235,13 @@ export default function PriceChart({
       }
     }
 
-    window.addEventListener('resize', handleResize)
+      window.addEventListener('resize', handleResize)
+
+      console.log('[PriceChart] Chart initialization complete')
+    } catch (err) {
+      console.error('[PriceChart] Error during chart initialization:', err)
+      setError(err instanceof Error ? err.message : 'Failed to initialize chart')
+    }
 
     // Cleanup
     return () => {
@@ -207,13 +251,19 @@ export default function PriceChart({
         chartRef.current = null
       }
     }
-  }, [type, height, showVolume, showCrosshair, interval])
+  }, [type, height, showVolume, showCrosshair, interval, containerMounted])
 
   // Update chart data
   useEffect(() => {
-    if (!mainSeriesRef.current || !priceData.length) return
+    console.log('[PriceChart] Update effect - mainSeries:', !!mainSeriesRef.current, 'priceData:', priceData.length)
+
+    if (!mainSeriesRef.current || !priceData.length) {
+      console.log('[PriceChart] Skipping update - no series or no data')
+      return
+    }
 
     try {
+      console.log('[PriceChart] Updating chart with', priceData.length, 'data points')
       if (type === 'candlestick') {
         const candlestickData: CandlestickData<Time>[] = priceData.map((d) => ({
           time: d.timestamp as Time,
@@ -222,6 +272,7 @@ export default function PriceChart({
           low: d.low,
           close: d.close,
         }))
+        console.log('[PriceChart] Setting candlestick data, first point:', candlestickData[0])
         mainSeriesRef.current.setData(candlestickData)
       } else {
         // For line and area, use close price
@@ -229,6 +280,7 @@ export default function PriceChart({
           time: d.timestamp as Time,
           value: d.close,
         }))
+        console.log('[PriceChart] Setting line data, first point:', lineData[0])
         mainSeriesRef.current.setData(lineData)
       }
 
@@ -244,17 +296,21 @@ export default function PriceChart({
             color: isUp ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)', // Green/Red with alpha
           }
         })
+        console.log('[PriceChart] Setting volume data')
         volumeSeriesRef.current.setData(volumeData)
       }
 
       // Fit content to visible range
       if (chartRef.current) {
         chartRef.current.timeScale().fitContent()
+        console.log('[PriceChart] Fitted content to chart')
       }
     } catch (err) {
-      console.error('Failed to update chart data:', err)
+      console.error('[PriceChart] Failed to update chart data:', err)
     }
   }, [priceData, type, showVolume])
+
+  console.log('[PriceChart] Render - isLoading:', isLoading, 'error:', error, 'priceData.length:', priceData.length)
 
   if (isLoading) {
     return (
@@ -311,6 +367,8 @@ export default function PriceChart({
     )
   }
 
+  console.log('[PriceChart] Rendering chart container')
+
   return (
     <div
       style={{
@@ -320,7 +378,7 @@ export default function PriceChart({
         border: '1px solid var(--border)',
       }}
     >
-      <div ref={chartContainerRef} style={{ height: `${height}px` }} />
+      <div ref={containerCallbackRef} style={{ height: `${height}px`, width: '100%', minHeight: `${height}px` }} />
     </div>
   )
 }

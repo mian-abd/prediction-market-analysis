@@ -215,8 +215,8 @@ export default function EquityCurve({
       </div>
 
       {/* Equity curve chart */}
-      <div className="h-80">
-        <ResponsiveContainer width="100%" height="100%">
+      <div style={{ width: '100%', height: '320px', minHeight: '320px' }}>
+        <ResponsiveContainer width="100%" height={320}>
           <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <defs>
               {strategyNames.map((strategy) => (

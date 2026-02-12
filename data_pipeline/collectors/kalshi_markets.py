@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 
 from config.settings import settings
+from data_pipeline.category_normalizer import normalize_category
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,10 @@ def parse_kalshi_market(raw: dict) -> dict:
     volume_total = float(raw.get("volume", 0) or 0)
 
     # Category from subtitle or category field
-    category = (raw.get("category") or raw.get("sub_title") or "other").lower()
+    category = normalize_category(
+        raw.get("category") or raw.get("sub_title"),
+        raw.get("title", ""),
+    )
 
     return {
         "platform": "kalshi",

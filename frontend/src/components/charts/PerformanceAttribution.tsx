@@ -237,8 +237,8 @@ export default function PerformanceAttribution() {
       </div>
 
       {/* Waterfall chart */}
-      <div className="h-80">
-        <ResponsiveContainer width="100%" height="100%">
+      <div style={{ width: '100%', height: '320px', minHeight: '320px' }}>
+        <ResponsiveContainer width="100%" height={320}>
           <BarChart
             data={chartData}
             margin={{ top: 20, right: 20, left: 20, bottom: 80 }}

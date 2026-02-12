@@ -203,8 +203,8 @@ export default function OrderbookDepth({
       </div>
 
       {/* Depth chart */}
-      <div className="h-64">
-        <ResponsiveContainer width="100%" height="100%">
+      <div style={{ width: '100%', height: '256px', minHeight: '256px' }}>
+        <ResponsiveContainer width="100%" height={256}>
           <AreaChart
             data={chartData}
             margin={{ top: 10, right: 10, left: 0, bottom: 0 }}

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     gdelt_api_url: str = "https://api.gdeltproject.org/api/v2/doc/doc"
 
     # Pipeline intervals (seconds)
-    price_poll_interval_sec: int = 60
+    price_poll_interval_sec: int = 20
     orderbook_poll_interval_sec: int = 300
     market_refresh_interval_sec: int = 3600
 

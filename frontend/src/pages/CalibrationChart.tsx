@@ -117,8 +117,8 @@ export default function CalibrationChart() {
         <p className="text-[12px] mb-6" style={{ color: 'var(--text-3)' }}>
           Diagonal = perfect calibration. Above = overconfidence.
         </p>
-        <div className="h-[380px]">
-          <ResponsiveContainer width="100%" height="100%">
+        <div style={{ width: '100%', height: '380px', minHeight: '380px' }}>
+          <ResponsiveContainer width="100%" height={380}>
             <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
               <defs>
                 <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">

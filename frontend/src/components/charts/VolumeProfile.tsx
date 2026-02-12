@@ -190,8 +190,8 @@ export default function VolumeProfile({
       </div>
 
       {/* Volume profile chart (horizontal bars) */}
-      <div className="h-96">
-        <ResponsiveContainer width="100%" height="100%">
+      <div style={{ width: '100%', height: '384px', minHeight: '384px' }}>
+        <ResponsiveContainer width="100%" height={384}>
           <BarChart
             data={data}
             layout="vertical"

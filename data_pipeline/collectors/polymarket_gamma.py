@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 
 from config.settings import settings
+from data_pipeline.category_normalizer import normalize_category
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,10 @@ def parse_gamma_market(raw: dict) -> dict:
         "token_id_no": token_id_no,
         "question": raw.get("question", ""),
         "description": raw.get("description", ""),
-        "category": (raw.get("groupItemTitle") or raw.get("category") or "other").lower(),
+        "category": normalize_category(
+            raw.get("groupItemTitle") or raw.get("category"),
+            raw.get("question", ""),
+        ),
         "slug": raw.get("slug", ""),
         "price_yes": price_yes,
         "price_no": price_no,

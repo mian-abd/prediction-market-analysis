@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_session
 from db.models import Market, Platform, PriceSnapshot, OrderbookSnapshot, CrossPlatformMatch
+from data_pipeline.category_normalizer import normalize_category
 
 router = APIRouter(tags=["markets"])
 
@@ -17,7 +18,10 @@ async def list_markets(
     category: str | None = None,
     search: str | None = None,
     is_active: bool = True,
+    is_resolved: bool | None = None,
     sort_by: str = "volume_24h",
+    price_min: float | None = Query(default=None, ge=0, le=1),
+    price_max: float | None = Query(default=None, ge=0, le=1),
     limit: int = Query(default=50, le=500),
     offset: int = 0,
     session: AsyncSession = Depends(get_session),
@@ -28,13 +32,17 @@ async def list_markets(
     if is_active:
         query = query.where(Market.is_active == True)  # noqa
 
+    if is_resolved is not None:
+        query = query.where(Market.is_resolved == is_resolved)
+
+    p_obj = None
     if platform:
         platform_result = await session.execute(
             select(Platform).where(Platform.name == platform)
         )
-        p = platform_result.scalar_one_or_none()
-        if p:
-            query = query.where(Market.platform_id == p.id)
+        p_obj = platform_result.scalar_one_or_none()
+        if p_obj:
+            query = query.where(Market.platform_id == p_obj.id)
 
     if category:
         query = query.where(Market.category == category)
@@ -47,15 +55,48 @@ async def list_markets(
             )
         )
 
+    if price_min is not None:
+        query = query.where(Market.price_yes >= price_min)
+    if price_max is not None:
+        query = query.where(Market.price_yes <= price_max)
+
     # Sorting
-    sort_col = getattr(Market, sort_by, Market.volume_24h)
-    query = query.order_by(sort_col.desc()).offset(offset).limit(limit)
+    valid_sorts = {
+        "volume_24h": Market.volume_24h,
+        "volume_total": Market.volume_total,
+        "price_yes": Market.price_yes,
+        "question": Market.question,
+        "end_date": Market.end_date,
+        "liquidity": Market.liquidity,
+        "updated_at": Market.updated_at,
+    }
+    sort_col = valid_sorts.get(sort_by, Market.volume_24h)
+    if sort_by == "question":
+        query = query.order_by(sort_col.asc()).offset(offset).limit(limit)
+    else:
+        query = query.order_by(sort_col.desc().nullslast()).offset(offset).limit(limit)
 
     result = await session.execute(query)
     markets = result.scalars().all()
 
-    # Get total count
-    count_query = select(func.count(Market.id)).where(Market.is_active == True)  # noqa
+    # Build count query with same filters
+    count_query = select(func.count(Market.id))
+    if is_active:
+        count_query = count_query.where(Market.is_active == True)  # noqa
+    if is_resolved is not None:
+        count_query = count_query.where(Market.is_resolved == is_resolved)
+    if p_obj:
+        count_query = count_query.where(Market.platform_id == p_obj.id)
+    if category:
+        count_query = count_query.where(Market.category == category)
+    if search:
+        count_query = count_query.where(
+            or_(Market.question.ilike(f"%{search}%"), Market.description.ilike(f"%{search}%"))
+        )
+    if price_min is not None:
+        count_query = count_query.where(Market.price_yes >= price_min)
+    if price_max is not None:
+        count_query = count_query.where(Market.price_yes <= price_max)
     total = (await session.execute(count_query)).scalar()
 
     # Get platform names
@@ -70,7 +111,7 @@ async def list_markets(
                 "external_id": m.external_id,
                 "question": m.question,
                 "description": m.description,
-                "category": m.category,
+                "category": normalize_category(m.category, m.question),
                 "price_yes": m.price_yes,
                 "price_no": m.price_no,
                 "volume_24h": m.volume_24h,
@@ -79,6 +120,7 @@ async def list_markets(
                 "end_date": m.end_date.isoformat() if m.end_date else None,
                 "is_neg_risk": m.is_neg_risk,
                 "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+                "last_fetched_at": m.last_fetched_at.isoformat() if m.last_fetched_at else None,
             }
             for m in markets
         ],
@@ -90,14 +132,22 @@ async def list_markets(
 
 @router.get("/markets/categories")
 async def list_categories(session: AsyncSession = Depends(get_session)):
-    """List all market categories with counts."""
+    """List all market categories with counts (normalized)."""
     result = await session.execute(
         select(Market.category, func.count(Market.id))
         .where(Market.is_active == True)  # noqa
         .group_by(Market.category)
-        .order_by(func.count(Market.id).desc())
     )
-    return [{"category": row[0] or "other", "count": row[1]} for row in result.all()]
+    # Aggregate by normalized category
+    counts: dict[str, int] = {}
+    for raw_cat, count in result.all():
+        normalized = normalize_category(raw_cat)
+        counts[normalized] = counts.get(normalized, 0) + count
+
+    return [
+        {"category": cat, "count": cnt}
+        for cat, cnt in sorted(counts.items(), key=lambda x: -x[1])
+    ]
 
 
 @router.get("/markets/{market_id}")
@@ -152,7 +202,7 @@ async def get_market_detail(
         "external_id": market.external_id,
         "question": market.question,
         "description": market.description,
-        "category": market.category,
+        "category": normalize_category(market.category, market.question),
         "price_yes": market.price_yes,
         "price_no": market.price_no,
         "volume_24h": market.volume_24h,
@@ -162,6 +212,8 @@ async def get_market_detail(
         "is_neg_risk": market.is_neg_risk,
         "token_id_yes": market.token_id_yes,
         "token_id_no": market.token_id_no,
+        "last_fetched_at": market.last_fetched_at.isoformat() if market.last_fetched_at else None,
+        "updated_at": market.updated_at.isoformat() if market.updated_at else None,
         "price_history": [
             {
                 "timestamp": p.timestamp.isoformat(),
@@ -220,7 +272,21 @@ async def get_price_history(
     snapshots = result.scalars().all()
 
     if not snapshots:
-        return {"data": []}
+        # Fall back to current market price as a single data point
+        if market.price_yes is not None:
+            now_ts = int(datetime.utcnow().timestamp())
+            return {
+                "data": [{
+                    "timestamp": now_ts,
+                    "open": market.price_yes,
+                    "high": market.price_yes,
+                    "low": market.price_yes,
+                    "close": market.price_yes,
+                    "volume": 0,
+                }],
+                "limited_data": True,
+            }
+        return {"data": [], "limited_data": True}
 
     # Group snapshots into OHLC candles
     candles = []
@@ -249,7 +315,7 @@ async def get_price_history(
     if current_candle_data:
         candles.append(create_candle(current_candle_start, current_candle_data))
 
-    return {"data": candles[-limit:]}  # Return last N candles
+    return {"data": candles[-limit:], "limited_data": len(candles) < 5}
 
 
 def create_candle(start_time: datetime, snapshots: list[PriceSnapshot]) -> dict:

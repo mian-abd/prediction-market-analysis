@@ -226,8 +226,8 @@ export default function PositionHeatmap() {
       </div>
 
       {/* Treemap */}
-      <div className="h-96" style={{ background: 'var(--card)', borderRadius: '12px', padding: '4px' }}>
-        <ResponsiveContainer width="100%" height="100%">
+      <div style={{ height: '384px', minHeight: '384px', width: '100%', background: 'var(--card)', borderRadius: '12px', padding: '4px' }}>
+        <ResponsiveContainer width="100%" height={384}>
           <Treemap
             data={data}
             dataKey="size"

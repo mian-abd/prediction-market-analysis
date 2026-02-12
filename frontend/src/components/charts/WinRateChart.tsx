@@ -139,8 +139,8 @@ export default function WinRateChart({ minTrades = 1 }: WinRateChartProps) {
       </div>
 
       {/* Pie chart */}
-      <div className="h-64">
-        <ResponsiveContainer width="100%" height="100%">
+      <div style={{ width: '100%', height: '256px', minHeight: '256px' }}>
+        <ResponsiveContainer width="100%" height={256}>
           <PieChart>
             <Pie
               data={pieData}

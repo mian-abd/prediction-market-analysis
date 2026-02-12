@@ -144,3 +144,12 @@ select.input {
   50% { opacity: 0.3; }
 }
 .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+/* ─── Utility: Hide scrollbar ─── */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

@@ -36,7 +36,7 @@ export default function SentimentGauge({
   const [error, setError] = useState<string | null>(null)
 
   const fetchSentiment = async () => {
-    setLoading(false)
+    setLoading(true)
     setError(null)
 
     try {
@@ -62,10 +62,12 @@ export default function SentimentGauge({
       // Calculate price momentum (24h price change)
       const currentPrice = market.price_yes || 0.5
       let priceMomentum = 0
+      let priceChangePercent = 0
       if (priceHistory.length >= 2) {
         const oldestPrice = priceHistory[0].close
         const priceChange = currentPrice - oldestPrice
-        priceMomentum = Math.max(-1, Math.min(1, priceChange * 10)) // Scale to [-1, 1]
+        priceMomentum = Math.max(-1, Math.min(1, priceChange * 10)) // Scale to [-1, 1] for sentiment
+        priceChangePercent = oldestPrice > 0 ? (currentPrice - oldestPrice) / oldestPrice : 0
       }
 
       // Calculate volume trend (recent vs older)
@@ -95,7 +97,7 @@ export default function SentimentGauge({
         volume_trend: volumeTrend,
         orderbook_imbalance: obi,
         current_price: currentPrice,
-        price_change_24h: priceMomentum * 10, // Approximate percentage
+        price_change_24h: priceChangePercent, // Actual ratio (0.05 = 5%)
       })
     } catch (err: any) {
       setError('Failed to calculate sentiment')
@@ -229,7 +231,7 @@ export default function SentimentGauge({
                 <Minus className="h-3 w-3" style={{ color: 'var(--text-3)' }} />
               )}
               <span className="text-[11px] font-mono" style={{ color: 'var(--text)' }}>
-                {(data.price_change_24h * 100).toFixed(1)}%
+                {data.price_change_24h > 0 ? '+' : ''}{(data.price_change_24h * 100).toFixed(1)}%
               </span>
             </div>
           </div>
