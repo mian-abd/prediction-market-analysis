@@ -20,55 +20,61 @@ import {
   TrendingDown,
   DollarSign,
   Clock,
+  ExternalLink,
 } from 'lucide-react'
 import apiClient from '../api/client'
 
-interface Market {
-  id: string
+interface MarketData {
+  id: number
   question: string
-  description: string
-  price_yes: number
-  price_no: number
-  volume_24h: number
-  total_volume: number
-  category: string
+  description: string | null
+  price_yes: number | null
+  price_no: number | null
+  volume_24h: number | null
+  volume_total: number | null
+  category: string | null
   platform: string
-  status: string
-  created_at: string
-  close_date: string
+  end_date: string | null
   price_history: Array<{
     timestamp: string
     price_yes: number
     price_no: number
+    volume: number | null
+  }>
+  cross_platform_matches: Array<{
+    id: number
+    platform: string
+    question: string
+    price_yes: number
+    similarity: number
   }>
 }
 
 interface Prediction {
-  market_id: string
-  predicted_probability: number
-  confidence: number
-  model_name: string
-  features_used: string[]
-  edge: number
+  market_id: number
+  models: {
+    calibration: {
+      market_price: number
+      calibrated_price: number
+      delta: number
+      delta_pct: number
+      direction: string
+      edge_estimate: number
+    }
+  }
 }
 
-interface Analysis {
-  market_id: string
-  summary: string
-  key_factors: string[]
-  recommendation: string
-  confidence_assessment: string
+interface AnalysisResult {
+  market_id: number
+  question: string
+  analysis: string
 }
 
 export default function MarketDetail() {
   const { id } = useParams<{ id: string }>()
-  const [analysis, setAnalysis] = useState<Analysis | null>(null)
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null)
 
-  const {
-    data: market,
-    isLoading,
-    error,
-  } = useQuery<Market>({
+  const { data: market, isLoading, error } = useQuery<MarketData>({
     queryKey: ['market', id],
     queryFn: async () => {
       const response = await apiClient.get(`/markets/${id}`)
@@ -77,43 +83,38 @@ export default function MarketDetail() {
     refetchInterval: 15_000,
   })
 
-  const { data: prediction, isLoading: predictionLoading } =
-    useQuery<Prediction>({
-      queryKey: ['prediction', id],
-      queryFn: async () => {
-        const response = await apiClient.get(`/predictions/${id}`)
-        return response.data
-      },
-      enabled: !!id,
-    })
+  const { data: prediction } = useQuery<Prediction>({
+    queryKey: ['prediction', id],
+    queryFn: async () => {
+      const response = await apiClient.get(`/predictions/${id}`)
+      return response.data
+    },
+    enabled: !!id,
+  })
 
   const analyzeMutation = useMutation({
     mutationFn: async () => {
       const response = await apiClient.post(`/analyze/${id}`)
-      return response.data as Analysis
+      return response.data as AnalysisResult
     },
-    onSuccess: (data) => {
-      setAnalysis(data)
-    },
+    onSuccess: (data) => setAnalysis(data),
   })
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-96">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      <div className="flex items-center justify-center h-80">
+        <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--text-3)' }} />
       </div>
     )
   }
 
   if (error || !market) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 text-gray-400">
-        <AlertCircle className="h-12 w-12 mb-4 text-red-400" />
-        <p className="text-lg font-medium text-white mb-2">
-          Market not found
-        </p>
-        <Link to="/markets" className="text-blue-400 hover:underline text-sm">
-          Back to Markets
+      <div className="flex flex-col items-center justify-center h-80 gap-3">
+        <AlertCircle className="h-8 w-8" style={{ color: 'var(--red)' }} />
+        <p className="text-[14px] font-medium">Market not found</p>
+        <Link to="/markets" className="btn-ghost text-[13px]">
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to Markets
         </Link>
       </div>
     )
@@ -122,335 +123,208 @@ export default function MarketDetail() {
   const chartData = (market.price_history ?? []).map((point) => ({
     ...point,
     price_yes_pct: point.price_yes * 100,
-    price_no_pct: point.price_no * 100,
-    date: new Date(point.timestamp).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-    }),
+    date: new Date(point.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
   }))
 
+  const cal = prediction?.models?.calibration
+
   return (
-    <div className="space-y-6">
-      {/* Back link */}
+    <div className="space-y-6 fade-up">
+      {/* Back */}
       <Link
         to="/markets"
-        className="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+        className="inline-flex items-center gap-1.5 text-[12px] font-medium"
+        style={{ color: 'var(--text-3)' }}
       >
-        <ArrowLeft className="h-4 w-4" />
-        Back to Markets
+        <ArrowLeft className="h-3.5 w-3.5" /> Markets
       </Link>
 
-      {/* Market Header */}
-      <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
+      {/* Header */}
+      <div className="card p-6">
         <div className="flex flex-col lg:flex-row lg:items-start gap-6">
           <div className="flex-1">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="px-2 py-0.5 bg-gray-700 rounded text-xs text-gray-300">
-                {market.category}
-              </span>
-              <span className="px-2 py-0.5 bg-gray-700 rounded text-xs text-gray-400 capitalize">
-                {market.platform}
-              </span>
-              <span
-                className={`px-2 py-0.5 rounded text-xs font-medium ${
-                  market.status === 'active'
-                    ? 'bg-emerald-900/50 text-emerald-400'
-                    : 'bg-gray-700 text-gray-400'
-                }`}
-              >
-                {market.status}
-              </span>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="pill">{market.category ?? 'other'}</span>
+              <span className="pill pill-accent capitalize">{market.platform}</span>
             </div>
-            <h1 className="text-xl font-bold text-white mb-2">
+            <h1 className="text-[20px] font-bold leading-snug" style={{ color: 'var(--text)' }}>
               {market.question}
             </h1>
             {market.description && (
-              <p className="text-sm text-gray-400 leading-relaxed">
+              <p className="text-[13px] mt-2 leading-relaxed" style={{ color: 'var(--text-2)' }}>
                 {market.description}
               </p>
             )}
           </div>
 
-          {/* Price Cards */}
-          <div className="flex gap-3 lg:flex-shrink-0">
-            <div className="bg-emerald-900/20 border border-emerald-800/50 rounded-lg p-4 text-center min-w-[100px]">
-              <p className="text-xs text-emerald-400 mb-1">YES</p>
-              <p className="text-2xl font-bold text-emerald-400 font-mono">
-                {(market.price_yes * 100).toFixed(1)}%
+          {/* Prices */}
+          <div className="flex gap-3 flex-shrink-0">
+            <div className="text-center px-5 py-4 rounded-2xl" style={{ background: 'rgba(76,175,112,0.08)' }}>
+              <p className="text-[10px] font-semibold uppercase mb-1" style={{ color: 'var(--green)' }}>Yes</p>
+              <p className="text-[26px] font-bold font-mono" style={{ color: 'var(--green)' }}>
+                {((market.price_yes ?? 0) * 100).toFixed(1)}%
               </p>
             </div>
-            <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-4 text-center min-w-[100px]">
-              <p className="text-xs text-red-400 mb-1">NO</p>
-              <p className="text-2xl font-bold text-red-400 font-mono">
-                {(market.price_no * 100).toFixed(1)}%
+            <div className="text-center px-5 py-4 rounded-2xl" style={{ background: 'rgba(207,102,121,0.08)' }}>
+              <p className="text-[10px] font-semibold uppercase mb-1" style={{ color: 'var(--red)' }}>No</p>
+              <p className="text-[26px] font-bold font-mono" style={{ color: 'var(--red)' }}>
+                {((market.price_no ?? 0) * 100).toFixed(1)}%
               </p>
             </div>
           </div>
         </div>
 
-        {/* Stats Row */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 pt-6 border-t border-gray-700">
-          <div className="flex items-center gap-2">
-            <DollarSign className="h-4 w-4 text-gray-500" />
-            <div>
-              <p className="text-xs text-gray-500">24h Volume</p>
-              <p className="text-sm font-medium text-white">
-                ${market.volume_24h?.toLocaleString() ?? '0'}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <DollarSign className="h-4 w-4 text-gray-500" />
-            <div>
-              <p className="text-xs text-gray-500">Total Volume</p>
-              <p className="text-sm font-medium text-white">
-                ${market.total_volume?.toLocaleString() ?? '0'}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Clock className="h-4 w-4 text-gray-500" />
-            <div>
-              <p className="text-xs text-gray-500">Created</p>
-              <p className="text-sm font-medium text-white">
-                {market.created_at
-                  ? new Date(market.created_at).toLocaleDateString()
-                  : 'N/A'}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Clock className="h-4 w-4 text-gray-500" />
-            <div>
-              <p className="text-xs text-gray-500">Closes</p>
-              <p className="text-sm font-medium text-white">
-                {market.close_date
-                  ? new Date(market.close_date).toLocaleDateString()
-                  : 'N/A'}
-              </p>
-            </div>
-          </div>
+        {/* Stats */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 pt-6" style={{ borderTop: '1px solid var(--border)' }}>
+          {[
+            { icon: DollarSign, label: '24h Volume', value: `$${(market.volume_24h ?? 0).toLocaleString()}` },
+            { icon: DollarSign, label: 'Total Volume', value: `$${(market.volume_total ?? 0).toLocaleString()}` },
+            { icon: Clock, label: 'End Date', value: market.end_date ? new Date(market.end_date).toLocaleDateString() : 'N/A' },
+            { icon: ExternalLink, label: 'Matches', value: `${market.cross_platform_matches?.length ?? 0}` },
+          ].map((stat, i) => {
+            const Icon = stat.icon
+            return (
+              <div key={i} className="flex items-center gap-2.5">
+                <Icon className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--text-3)' }} />
+                <div>
+                  <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>{stat.label}</p>
+                  <p className="text-[13px] font-medium" style={{ color: 'var(--text)' }}>{stat.value}</p>
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
 
       {/* Price Chart */}
       {chartData.length > 0 && (
-        <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-white mb-4">
-            Price History
-          </h2>
-          <div className="h-72">
+        <div className="card p-6">
+          <p className="text-[14px] font-semibold mb-5" style={{ color: 'var(--text)' }}>Price History</p>
+          <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart
-                data={chartData}
-                margin={{ top: 5, right: 10, left: 0, bottom: 5 }}
-              >
+              <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                 <defs>
-                  <linearGradient
-                    id="colorYes"
-                    x1="0"
-                    y1="0"
-                    x2="0"
-                    y2="1"
-                  >
-                    <stop
-                      offset="5%"
-                      stopColor="#10b981"
-                      stopOpacity={0.3}
-                    />
-                    <stop
-                      offset="95%"
-                      stopColor="#10b981"
-                      stopOpacity={0}
-                    />
+                  <linearGradient id="colorYes" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#4CAF70" stopOpacity={0.15} />
+                    <stop offset="95%" stopColor="#4CAF70" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis
-                  dataKey="date"
-                  stroke="#6b7280"
-                  tick={{ fill: '#9ca3af', fontSize: 12 }}
-                />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                <XAxis dataKey="date" stroke="rgba(255,255,255,0.06)" tick={{ fill: '#48484A', fontSize: 11 }} />
                 <YAxis
                   domain={[0, 100]}
-                  stroke="#6b7280"
-                  tick={{ fill: '#9ca3af', fontSize: 12 }}
+                  stroke="rgba(255,255,255,0.06)"
+                  tick={{ fill: '#48484A', fontSize: 11 }}
                   tickFormatter={(v: number) => `${v}%`}
                 />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: '#1f2937',
-                    border: '1px solid #374151',
-                    borderRadius: '8px',
-                    color: '#f9fafb',
+                    backgroundColor: '#1A1A1C',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '12px',
+                    color: '#FFF',
+                    fontSize: '12px',
                   }}
                   formatter={(value: number | undefined) => [`${(value ?? 0).toFixed(1)}%`]}
                 />
-                <Area
-                  type="monotone"
-                  dataKey="price_yes_pct"
-                  stroke="#10b981"
-                  fill="url(#colorYes)"
-                  strokeWidth={2}
-                  name="Yes Price"
-                />
+                <Area type="monotone" dataKey="price_yes_pct" stroke="#4CAF70" fill="url(#colorYes)" strokeWidth={2} name="Yes" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* ML Prediction Panel */}
-        <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <Brain className="h-5 w-5 text-purple-400" />
-            <h2 className="text-lg font-semibold text-white">ML Prediction</h2>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* ML Prediction */}
+        <div className="card p-6">
+          <div className="flex items-center gap-2.5 mb-5">
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center"
+              style={{ background: 'var(--accent-dim)' }}
+            >
+              <Brain className="h-4 w-4" style={{ color: 'var(--accent)' }} />
+            </div>
+            <p className="text-[14px] font-semibold">ML Prediction</p>
           </div>
 
-          {predictionLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-purple-400" />
-            </div>
-          ) : prediction ? (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-400">
-                  Predicted Probability
-                </span>
-                <span className="text-lg font-bold text-white font-mono">
-                  {(prediction.predicted_probability * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-400">Model Confidence</span>
-                <span className="text-sm font-medium text-white">
-                  {(prediction.confidence * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-400">Edge vs Market</span>
-                <span
-                  className={`flex items-center gap-1 text-sm font-medium ${
-                    prediction.edge > 0 ? 'text-emerald-400' : 'text-red-400'
-                  }`}
-                >
-                  {prediction.edge > 0 ? (
-                    <TrendingUp className="h-3.5 w-3.5" />
-                  ) : (
-                    <TrendingDown className="h-3.5 w-3.5" />
-                  )}
-                  {(prediction.edge * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-400">Model</span>
-                <span className="text-xs text-gray-300 bg-gray-700 px-2 py-0.5 rounded">
-                  {prediction.model_name}
-                </span>
-              </div>
-              {prediction.features_used && (
-                <div>
-                  <p className="text-sm text-gray-400 mb-2">Features Used</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {prediction.features_used.map((f) => (
-                      <span
-                        key={f}
-                        className="px-2 py-0.5 bg-gray-700 rounded text-xs text-gray-300"
-                      >
-                        {f}
-                      </span>
-                    ))}
-                  </div>
+          {cal ? (
+            <div className="space-y-3">
+              {[
+                { label: 'Calibrated Price', value: `${(cal.calibrated_price * 100).toFixed(1)}%`, color: 'var(--blue)' },
+                { label: 'Market Price', value: `${(cal.market_price * 100).toFixed(1)}%`, color: 'var(--text-2)' },
+                { label: 'Delta', value: `${cal.delta_pct > 0 ? '+' : ''}${cal.delta_pct.toFixed(1)}%`, color: cal.delta_pct > 0 ? 'var(--red)' : 'var(--green)' },
+                { label: 'Edge', value: `${(cal.edge_estimate * 100).toFixed(2)}%`, color: 'var(--accent)' },
+              ].map((row) => (
+                <div key={row.label} className="flex items-center justify-between py-1">
+                  <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>{row.label}</span>
+                  <span className="text-[13px] font-mono font-medium" style={{ color: row.color }}>{row.value}</span>
                 </div>
-              )}
+              ))}
+              <div className="flex items-center justify-between pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>Direction</span>
+                <span className="flex items-center gap-1.5">
+                  {cal.direction === 'overpriced' ? (
+                    <TrendingDown className="h-3.5 w-3.5" style={{ color: 'var(--red)' }} />
+                  ) : (
+                    <TrendingUp className="h-3.5 w-3.5" style={{ color: 'var(--green)' }} />
+                  )}
+                  <span
+                    className="text-[12px] font-medium capitalize"
+                    style={{ color: cal.direction === 'overpriced' ? 'var(--red)' : 'var(--green)' }}
+                  >
+                    {cal.direction}
+                  </span>
+                </span>
+              </div>
             </div>
           ) : (
-            <p className="text-sm text-gray-500 py-4">
-              No prediction available for this market.
+            <p className="text-[12px] py-8 text-center" style={{ color: 'var(--text-3)' }}>
+              No prediction available
             </p>
           )}
         </div>
 
-        {/* Claude Analysis Panel */}
-        <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <Sparkles className="h-5 w-5 text-amber-400" />
-            <h2 className="text-lg font-semibold text-white">
-              Claude Analysis
-            </h2>
+        {/* Claude Analysis */}
+        <div className="card p-6">
+          <div className="flex items-center gap-2.5 mb-5">
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center"
+              style={{ background: 'rgba(94,180,239,0.1)' }}
+            >
+              <Sparkles className="h-4 w-4" style={{ color: 'var(--blue)' }} />
+            </div>
+            <p className="text-[14px] font-semibold">Claude Analysis</p>
           </div>
 
           {!analysis && (
-            <div className="text-center py-6">
-              <p className="text-sm text-gray-400 mb-4">
-                Get an AI-powered analysis of this market including key factors,
-                risks, and recommendations.
+            <div className="text-center py-4">
+              <p className="text-[12px] mb-5" style={{ color: 'var(--text-2)' }}>
+                AI-powered deep analysis of this market including key factors, risks, and recommendations.
               </p>
               <button
                 onClick={() => analyzeMutation.mutate()}
                 disabled={analyzeMutation.isPending}
-                className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg text-sm font-medium text-white transition-colors"
+                className="btn"
               >
                 {analyzeMutation.isPending ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Analyzing...
-                  </>
+                  <><Loader2 className="h-4 w-4 animate-spin" /> Analyzing...</>
                 ) : (
-                  <>
-                    <Sparkles className="h-4 w-4" />
-                    Analyze with Claude
-                  </>
+                  <><Sparkles className="h-4 w-4" /> Analyze with Claude</>
                 )}
               </button>
+              <p className="text-[10px] mt-3" style={{ color: 'var(--text-3)' }}>
+                ~$0.15 (cached forever)
+              </p>
               {analyzeMutation.isError && (
-                <p className="text-sm text-red-400 mt-3">
-                  Analysis failed. Please try again.
-                </p>
+                <p className="text-[12px] mt-2" style={{ color: 'var(--red)' }}>Analysis failed. Try again.</p>
               )}
             </div>
           )}
 
           {analysis && (
-            <div className="space-y-4">
-              <div>
-                <p className="text-sm text-gray-400 mb-1">Summary</p>
-                <p className="text-sm text-white leading-relaxed">
-                  {analysis.summary}
-                </p>
-              </div>
-              {analysis.key_factors && analysis.key_factors.length > 0 && (
-                <div>
-                  <p className="text-sm text-gray-400 mb-2">Key Factors</p>
-                  <ul className="space-y-1.5">
-                    {analysis.key_factors.map((factor, i) => (
-                      <li
-                        key={i}
-                        className="flex items-start gap-2 text-sm text-gray-300"
-                      >
-                        <span className="text-blue-400 mt-0.5">--</span>
-                        {factor}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <div>
-                <p className="text-sm text-gray-400 mb-1">Recommendation</p>
-                <p className="text-sm text-white font-medium">
-                  {analysis.recommendation}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-400 mb-1">
-                  Confidence Assessment
-                </p>
-                <p className="text-sm text-gray-300">
-                  {analysis.confidence_assessment}
-                </p>
-              </div>
-            </div>
+            <p className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text)' }}>
+              {typeof analysis.analysis === 'string' ? analysis.analysis : JSON.stringify(analysis.analysis, null, 2)}
+            </p>
           )}
         </div>
       </div>

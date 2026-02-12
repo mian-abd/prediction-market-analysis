@@ -1,38 +1,33 @@
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import {
   Loader2,
   AlertCircle,
   Brain,
-  CheckCircle2,
-  XCircle,
-  Clock,
+  TrendingUp,
+  TrendingDown,
+  ChevronRight,
 } from 'lucide-react'
 import apiClient from '../api/client'
 
-interface MLModel {
-  id: string
-  name: string
-  model_type: string
-  accuracy: number
-  precision: number
-  recall: number
-  f1_score: number
-  brier_score: number
-  training_samples: number
-  last_trained: string
-  status: string
-  features: string[]
+interface MispricedMarket {
+  market_id: number
+  question: string
+  category: string | null
+  price_yes: number
+  calibrated_price: number
+  delta_pct: number
+  direction: string
+  edge_estimate: number
+  volume_24h: number | null
 }
 
 export default function MLModels() {
-  const {
-    data: models,
-    isLoading,
-    error,
-  } = useQuery<MLModel[]>({
-    queryKey: ['ml-models'],
+  const navigate = useNavigate()
+  const { data, isLoading, error } = useQuery<{ markets: MispricedMarket[] }>({
+    queryKey: ['top-mispriced'],
     queryFn: async () => {
-      const response = await apiClient.get('/models')
+      const response = await apiClient.get('/predictions/top/mispriced', { params: { limit: 30 } })
       return response.data
     },
     refetchInterval: 60_000,
@@ -40,157 +35,149 @@ export default function MLModels() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-96">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      <div className="flex items-center justify-center h-80">
+        <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--text-3)' }} />
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 text-gray-400">
-        <AlertCircle className="h-12 w-12 mb-4 text-red-400" />
-        <p className="text-lg font-medium text-white mb-2">
-          Failed to load models
-        </p>
-        <p className="text-sm">Check API connection and try again.</p>
+      <div className="flex flex-col items-center justify-center h-80 gap-3">
+        <AlertCircle className="h-8 w-8" style={{ color: 'var(--red)' }} />
+        <p className="text-[14px] font-medium">Failed to load ML predictions</p>
+        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>Check API connection.</p>
       </div>
     )
   }
 
-  const modelList = models ?? []
+  const markets = data?.markets ?? []
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-8 fade-up">
+      {/* Title */}
       <div>
-        <h1 className="text-2xl font-bold text-white">ML Models</h1>
-        <p className="text-sm text-gray-400 mt-1">
-          Machine learning model performance and metrics
+        <h1 className="text-[26px] font-bold" style={{ color: 'var(--text)' }}>ML Models</h1>
+        <p className="text-[13px] mt-1" style={{ color: 'var(--text-2)' }}>
+          Calibration model predictions and mispriced market detection
         </p>
       </div>
 
-      {/* Model Cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {modelList.map((model) => (
+      {/* Model Card */}
+      <div className="card p-6">
+        <div className="flex items-center gap-3 mb-5">
           <div
-            key={model.id}
-            className="bg-gray-800 border border-gray-700 rounded-xl p-6 hover:border-gray-600 transition-colors"
+            className="w-10 h-10 rounded-xl flex items-center justify-center"
+            style={{ background: 'var(--accent-dim)' }}
           >
-            {/* Header */}
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-purple-900/30 rounded-lg">
-                  <Brain className="h-5 w-5 text-purple-400" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-white">{model.name}</h3>
-                  <p className="text-xs text-gray-500 capitalize">
-                    {model.model_type}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {model.status === 'active' ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                ) : model.status === 'training' ? (
-                  <Clock className="h-4 w-4 text-amber-400" />
-                ) : (
-                  <XCircle className="h-4 w-4 text-red-400" />
-                )}
-                <span
-                  className={`text-xs font-medium capitalize ${
-                    model.status === 'active'
-                      ? 'text-emerald-400'
-                      : model.status === 'training'
-                        ? 'text-amber-400'
-                        : 'text-red-400'
-                  }`}
-                >
-                  {model.status}
-                </span>
-              </div>
-            </div>
-
-            {/* Metrics Grid */}
-            <div className="grid grid-cols-3 gap-3 mb-4">
-              <div className="bg-gray-900 rounded-lg p-3 text-center">
-                <p className="text-xs text-gray-500 mb-1">Accuracy</p>
-                <p className="text-lg font-bold text-white font-mono">
-                  {(model.accuracy * 100).toFixed(1)}%
-                </p>
-              </div>
-              <div className="bg-gray-900 rounded-lg p-3 text-center">
-                <p className="text-xs text-gray-500 mb-1">Precision</p>
-                <p className="text-lg font-bold text-white font-mono">
-                  {(model.precision * 100).toFixed(1)}%
-                </p>
-              </div>
-              <div className="bg-gray-900 rounded-lg p-3 text-center">
-                <p className="text-xs text-gray-500 mb-1">Recall</p>
-                <p className="text-lg font-bold text-white font-mono">
-                  {(model.recall * 100).toFixed(1)}%
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <div className="flex items-center justify-between px-3 py-2 bg-gray-900 rounded-lg">
-                <span className="text-xs text-gray-400">F1 Score</span>
-                <span className="text-sm font-mono text-white font-medium">
-                  {model.f1_score.toFixed(3)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between px-3 py-2 bg-gray-900 rounded-lg">
-                <span className="text-xs text-gray-400">Brier Score</span>
-                <span className="text-sm font-mono text-white font-medium">
-                  {model.brier_score.toFixed(4)}
-                </span>
-              </div>
-            </div>
-
-            {/* Meta info */}
-            <div className="flex items-center justify-between text-xs text-gray-500 pt-3 border-t border-gray-700">
-              <span>
-                {model.training_samples.toLocaleString()} training samples
-              </span>
-              <span>
-                Last trained:{' '}
-                {model.last_trained
-                  ? new Date(model.last_trained).toLocaleDateString()
-                  : 'N/A'}
-              </span>
-            </div>
-
-            {/* Features */}
-            {model.features && model.features.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-gray-700">
-                <p className="text-xs text-gray-500 mb-2">Features</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {model.features.map((f) => (
-                    <span
-                      key={f}
-                      className="px-2 py-0.5 bg-gray-700 rounded text-xs text-gray-300"
-                    >
-                      {f}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
+            <Brain className="h-[17px] w-[17px]" style={{ color: 'var(--accent)' }} />
           </div>
-        ))}
+          <div className="flex-1">
+            <p className="text-[14px] font-semibold" style={{ color: 'var(--text)' }}>
+              Calibration Model
+            </p>
+            <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
+              Isotonic Regression &middot; Detects overconfidence at extremes
+            </p>
+          </div>
+          <span className="pill pill-green">Active</span>
+        </div>
+        <div className="grid grid-cols-4 gap-3">
+          {[
+            { label: 'Type', value: 'Isotonic' },
+            { label: 'Avg Bias', value: '+6pp', color: 'var(--accent)' },
+            { label: 'Markets', value: String(markets.length) },
+            { label: 'Cost', value: '$0.00', color: 'var(--green)' },
+          ].map((s) => (
+            <div key={s.label} className="text-center py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)' }}>
+              <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>{s.label}</p>
+              <p className="text-[14px] font-bold" style={{ color: s.color ?? 'var(--text)' }}>{s.value}</p>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {modelList.length === 0 && (
-        <div className="bg-gray-800 border border-gray-700 rounded-xl py-16 text-center">
-          <Brain className="h-12 w-12 mx-auto mb-4 text-gray-600" />
-          <p className="text-gray-400">No ML models configured.</p>
-          <p className="text-xs text-gray-500 mt-1">
-            Models will appear here once training is complete.
-          </p>
-        </div>
-      )}
+      {/* Mispriced Markets */}
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-3)' }}>
+          Top Mispriced Markets
+        </p>
+
+        {markets.length > 0 ? (
+          <div className="space-y-1.5">
+            {markets.map((m) => {
+              const over = m.direction === 'overpriced'
+              return (
+                <div
+                  key={m.market_id}
+                  onClick={() => navigate(`/markets/${m.market_id}`)}
+                  className="card card-hover flex items-center gap-4 px-5 py-4 cursor-pointer group"
+                >
+                  {/* Direction indicator */}
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{
+                      background: over ? 'rgba(207,102,121,0.1)' : 'rgba(76,175,112,0.1)',
+                    }}
+                  >
+                    {over ? (
+                      <TrendingDown className="h-4 w-4" style={{ color: 'var(--red)' }} />
+                    ) : (
+                      <TrendingUp className="h-4 w-4" style={{ color: 'var(--green)' }} />
+                    )}
+                  </div>
+
+                  {/* Question */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-medium line-clamp-1" style={{ color: 'var(--text)' }}>
+                      {m.question}
+                    </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      {m.category && <span className="pill">{m.category}</span>}
+                      <span className={`pill ${over ? 'pill-red' : 'pill-green'}`}>
+                        {over ? 'Overpriced' : 'Underpriced'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Stats */}
+                  <div className="flex items-center gap-5 flex-shrink-0">
+                    <div className="text-right">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Market</p>
+                      <p className="text-[12px] font-mono" style={{ color: 'var(--text-2)' }}>
+                        {(m.price_yes * 100).toFixed(1)}%
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Calibrated</p>
+                      <p className="text-[12px] font-mono font-medium" style={{ color: 'var(--blue)' }}>
+                        {(m.calibrated_price * 100).toFixed(1)}%
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Edge</p>
+                      <p className="text-[12px] font-mono font-medium" style={{ color: 'var(--accent)' }}>
+                        {(m.edge_estimate * 100).toFixed(1)}%
+                      </p>
+                    </div>
+                  </div>
+
+                  <ChevronRight
+                    className="h-4 w-4 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                    style={{ color: 'var(--text-3)' }}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="card flex flex-col items-center py-16">
+            <Brain className="h-6 w-6 mb-3" style={{ color: 'var(--text-3)' }} />
+            <p className="text-[13px]" style={{ color: 'var(--text-2)' }}>No mispriced markets detected</p>
+            <p className="text-[12px] mt-1" style={{ color: 'var(--text-3)' }}>Calibration model is analyzing data</p>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

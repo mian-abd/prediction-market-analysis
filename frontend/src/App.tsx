@@ -1,11 +1,11 @@
-import { Routes, Route, NavLink } from 'react-router-dom'
+import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
   ArrowLeftRight,
   Store,
   Brain,
   Target,
-  TrendingUp,
+  Activity,
 } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import ArbitrageScanner from './pages/ArbitrageScanner'
@@ -23,56 +23,71 @@ const navItems = [
 ]
 
 function App() {
+  const location = useLocation()
+
   return (
-    <div className="flex h-screen bg-gray-900 text-gray-100">
+    <div className="flex h-screen" style={{ background: 'var(--bg)' }}>
       {/* Sidebar */}
-      <aside className="w-64 flex-shrink-0 bg-gray-950 border-r border-gray-800 flex flex-col">
+      <aside
+        className="w-[240px] flex-shrink-0 flex flex-col"
+        style={{ borderRight: '1px solid var(--border)' }}
+      >
         {/* Logo */}
-        <div className="h-16 flex items-center gap-3 px-5 border-b border-gray-800">
-          <TrendingUp className="h-7 w-7 text-blue-500" />
-          <div>
-            <h1 className="text-sm font-bold tracking-wide text-white">
-              PredictFlow
-            </h1>
-            <p className="text-[10px] text-gray-500 uppercase tracking-widest">
-              Market Analysis
-            </p>
+        <div className="px-6 pt-7 pb-8">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center"
+              style={{ background: 'var(--accent-dim)' }}
+            >
+              <Activity className="h-[17px] w-[17px]" style={{ color: 'var(--accent)' }} />
+            </div>
+            <div>
+              <p className="text-[15px] font-semibold" style={{ color: 'var(--text)' }}>
+                PredictFlow
+              </p>
+            </div>
           </div>
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 py-4 px-3 space-y-1">
-          {navItems.map(({ to, icon: Icon, label }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/'}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-blue-600/20 text-blue-400'
-                    : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
-                }`
-              }
-            >
-              <Icon className="h-5 w-5 flex-shrink-0" />
-              {label}
-            </NavLink>
-          ))}
+        {/* Nav */}
+        <nav className="flex-1 px-3 space-y-0.5">
+          {navItems.map(({ to, icon: Icon, label }) => {
+            const isActive =
+              to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
+            return (
+              <NavLink
+                key={to}
+                to={to}
+                className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-[13px] font-medium transition-colors duration-150"
+                style={{
+                  color: isActive ? 'var(--text)' : 'var(--text-3)',
+                  background: isActive ? 'var(--card)' : 'transparent',
+                }}
+              >
+                <Icon className="h-[17px] w-[17px]" />
+                {label}
+              </NavLink>
+            )
+          })}
         </nav>
 
-        {/* Footer */}
-        <div className="p-4 border-t border-gray-800">
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse-dot" />
-            Live data feed
+        {/* Status */}
+        <div className="px-6 py-5" style={{ borderTop: '1px solid var(--border)' }}>
+          <div className="flex items-center gap-2">
+            <span
+              className="h-1.5 w-1.5 rounded-full pulse-dot"
+              style={{ background: 'var(--green)' }}
+            />
+            <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+              Live
+            </span>
           </div>
         </div>
       </aside>
 
-      {/* Main Content */}
+      {/* Main */}
       <main className="flex-1 overflow-auto">
-        <div className="p-6 max-w-7xl mx-auto">
+        <div className="px-10 py-10 max-w-[1100px] mx-auto">
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/arbitrage" element={<ArbitrageScanner />} />

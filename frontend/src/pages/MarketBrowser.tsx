@@ -3,24 +3,20 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   Search,
-  Filter,
-  ArrowUpDown,
-  ChevronUp,
-  ChevronDown,
   Loader2,
   AlertCircle,
+  ChevronRight,
 } from 'lucide-react'
 import apiClient from '../api/client'
 
 interface Market {
-  id: string
+  id: number
   question: string
-  price_yes: number
-  price_no: number
-  volume_24h: number
-  category: string
+  price_yes: number | null
+  price_no: number | null
+  volume_24h: number | null
+  category: string | null
   platform: string
-  status: string
 }
 
 type SortField = 'volume_24h' | 'price_yes' | 'question'
@@ -33,99 +29,72 @@ export default function MarketBrowser() {
   const [sortField, setSortField] = useState<SortField>('volume_24h')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
-  const { data: markets, isLoading, error } = useQuery<Market[]>({
+  const { data, isLoading, error } = useQuery<{ markets: Market[]; total: number }>({
     queryKey: ['markets'],
     queryFn: async () => {
-      const response = await apiClient.get('/markets')
+      const response = await apiClient.get('/markets', { params: { limit: 200 } })
       return response.data
     },
     refetchInterval: 30_000,
   })
 
+  const markets = data?.markets ?? []
+
   const categories = useMemo(() => {
-    if (!markets) return []
-    const cats = new Set(markets.map((m) => m.category))
+    const cats = new Set(markets.map((m) => m.category ?? 'other'))
     return Array.from(cats).sort()
   }, [markets])
 
   const filtered = useMemo(() => {
-    if (!markets) return []
-
     let result = [...markets]
-
-    // Search filter
     if (search) {
       const lower = search.toLowerCase()
-      result = result.filter((m) =>
-        m.question.toLowerCase().includes(lower),
-      )
+      result = result.filter((m) => m.question.toLowerCase().includes(lower))
     }
-
-    // Category filter
     if (categoryFilter !== 'all') {
-      result = result.filter((m) => m.category === categoryFilter)
+      result = result.filter((m) => (m.category ?? 'other') === categoryFilter)
     }
-
-    // Sort
     result.sort((a, b) => {
       let cmp: number
       if (sortField === 'question') {
         cmp = a.question.localeCompare(b.question)
       } else {
-        cmp = (a[sortField] ?? 0) - (b[sortField] ?? 0)
+        cmp = ((a[sortField] as number) ?? 0) - ((b[sortField] as number) ?? 0)
       }
       return sortDir === 'desc' ? -cmp : cmp
     })
-
     return result
   }, [markets, search, categoryFilter, sortField, sortDir])
 
   function toggleSort(field: SortField) {
-    if (sortField === field) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
-    } else {
-      setSortField(field)
-      setSortDir('desc')
-    }
-  }
-
-  function SortIcon({ field }: { field: SortField }) {
-    if (sortField !== field) {
-      return <ArrowUpDown className="h-3.5 w-3.5 text-gray-500" />
-    }
-    return sortDir === 'asc' ? (
-      <ChevronUp className="h-3.5 w-3.5 text-blue-400" />
-    ) : (
-      <ChevronDown className="h-3.5 w-3.5 text-blue-400" />
-    )
+    if (sortField === field) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortField(field); setSortDir('desc') }
   }
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-96">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      <div className="flex items-center justify-center h-80">
+        <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--text-3)' }} />
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 text-gray-400">
-        <AlertCircle className="h-12 w-12 mb-4 text-red-400" />
-        <p className="text-lg font-medium text-white mb-2">
-          Failed to load markets
-        </p>
-        <p className="text-sm">Check API connection and try again.</p>
+      <div className="flex flex-col items-center justify-center h-80 gap-3">
+        <AlertCircle className="h-8 w-8" style={{ color: 'var(--red)' }} />
+        <p className="text-[14px] font-medium">Failed to load markets</p>
+        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>Check API connection.</p>
       </div>
     )
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-6 fade-up">
+      {/* Title */}
       <div>
-        <h1 className="text-2xl font-bold text-white">Markets</h1>
-        <p className="text-sm text-gray-400 mt-1">
+        <h1 className="text-[26px] font-bold" style={{ color: 'var(--text)' }}>Markets</h1>
+        <p className="text-[13px] mt-1" style={{ color: 'var(--text-2)' }}>
           Browse and analyze prediction markets across platforms
         </p>
       </div>
@@ -133,128 +102,109 @@ export default function MarketBrowser() {
       {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: 'var(--text-3)' }} />
           <input
             type="text"
             placeholder="Search markets..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+            className="input pl-11"
           />
         </div>
-        <div className="relative">
-          <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="pl-10 pr-8 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white appearance-none focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 cursor-pointer"
-          >
-            <option value="all">All Categories</option>
-            {categories.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
+        <select
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+          className="input"
+          style={{ width: 'auto', minWidth: '160px' }}
+        >
+          <option value="all">All Categories</option>
+          {categories.map((cat) => (
+            <option key={cat} value={cat}>{cat}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Sort + Count */}
+      <div className="flex items-center justify-between">
+        <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+          {filtered.length} markets{data?.total ? ` of ${data.total.toLocaleString()}` : ''}
+        </p>
+        <div className="flex gap-1.5">
+          {([['question', 'Name'], ['price_yes', 'Price'], ['volume_24h', 'Volume']] as [SortField, string][]).map(
+            ([field, label]) => (
+              <button
+                key={field}
+                onClick={() => toggleSort(field)}
+                className="px-3 py-1 rounded-lg text-[11px] font-medium transition-colors"
+                style={{
+                  background: sortField === field ? 'var(--card)' : 'transparent',
+                  color: sortField === field ? 'var(--text)' : 'var(--text-3)',
+                  border: sortField === field ? '1px solid var(--border)' : '1px solid transparent',
+                }}
+              >
+                {label} {sortField === field && (sortDir === 'desc' ? '↓' : '↑')}
+              </button>
+            ),
+          )}
         </div>
       </div>
 
-      {/* Results count */}
-      <p className="text-xs text-gray-500">
-        {filtered.length} market{filtered.length !== 1 ? 's' : ''} found
-      </p>
+      {/* Markets List */}
+      <div className="space-y-1.5">
+        {filtered.slice(0, 80).map((market) => {
+          const p = market.price_yes ?? 0
+          return (
+            <div
+              key={market.id}
+              onClick={() => navigate(`/markets/${market.id}`)}
+              className="card card-hover flex items-center gap-4 px-5 py-4 cursor-pointer group"
+            >
+              {/* Price */}
+              <div
+                className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 text-[13px] font-bold font-mono"
+                style={{
+                  background: p >= 0.5 ? 'rgba(76,175,112,0.1)' : 'rgba(207,102,121,0.1)',
+                  color: p >= 0.5 ? 'var(--green)' : 'var(--red)',
+                }}
+              >
+                {(p * 100).toFixed(0)}%
+              </div>
 
-      {/* Table */}
-      <div className="bg-gray-800 border border-gray-700 rounded-xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-700 text-left">
-                <th
-                  className="px-4 py-3 text-gray-400 font-medium cursor-pointer hover:text-white"
-                  onClick={() => toggleSort('question')}
-                >
-                  <div className="flex items-center gap-1.5">
-                    Question
-                    <SortIcon field="question" />
-                  </div>
-                </th>
-                <th
-                  className="px-4 py-3 text-gray-400 font-medium cursor-pointer hover:text-white text-right"
-                  onClick={() => toggleSort('price_yes')}
-                >
-                  <div className="flex items-center justify-end gap-1.5">
-                    Yes Price
-                    <SortIcon field="price_yes" />
-                  </div>
-                </th>
-                <th
-                  className="px-4 py-3 text-gray-400 font-medium cursor-pointer hover:text-white text-right"
-                  onClick={() => toggleSort('volume_24h')}
-                >
-                  <div className="flex items-center justify-end gap-1.5">
-                    24h Volume
-                    <SortIcon field="volume_24h" />
-                  </div>
-                </th>
-                <th className="px-4 py-3 text-gray-400 font-medium">
-                  Category
-                </th>
-                <th className="px-4 py-3 text-gray-400 font-medium">
-                  Platform
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-700/50">
-              {filtered.map((market) => (
-                <tr
-                  key={market.id}
-                  className="hover:bg-gray-700/30 cursor-pointer transition-colors"
-                  onClick={() => navigate(`/markets/${market.id}`)}
-                >
-                  <td className="px-4 py-3">
-                    <p className="text-white font-medium line-clamp-2">
-                      {market.question}
-                    </p>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <span
-                      className={`font-mono font-semibold ${
-                        market.price_yes >= 0.7
-                          ? 'text-emerald-400'
-                          : market.price_yes <= 0.3
-                            ? 'text-red-400'
-                            : 'text-amber-400'
-                      }`}
-                    >
-                      {(market.price_yes * 100).toFixed(1)}%
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono text-gray-300">
-                    ${market.volume_24h.toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="inline-block px-2 py-0.5 bg-gray-700 rounded text-xs text-gray-300">
-                      {market.category}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="text-gray-400 capitalize text-xs">
-                      {market.platform}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              {/* Question */}
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] font-medium line-clamp-1" style={{ color: 'var(--text)' }}>
+                  {market.question}
+                </p>
+                <div className="flex items-center gap-2 mt-1.5">
+                  <span className="pill">{market.category ?? 'other'}</span>
+                  <span className="pill pill-accent capitalize">{market.platform}</span>
+                </div>
+              </div>
 
-        {filtered.length === 0 && (
-          <div className="py-12 text-center text-gray-500">
-            No markets match your search criteria.
-          </div>
-        )}
+              {/* Volume */}
+              <div className="text-right flex-shrink-0">
+                <p className="text-[11px] mb-0.5" style={{ color: 'var(--text-3)' }}>24h Vol</p>
+                <p className="text-[13px] font-mono" style={{ color: 'var(--text-2)' }}>
+                  ${(market.volume_24h ?? 0).toLocaleString()}
+                </p>
+              </div>
+
+              <ChevronRight
+                className="h-4 w-4 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                style={{ color: 'var(--text-3)' }}
+              />
+            </div>
+          )
+        })}
       </div>
+
+      {filtered.length === 0 && (
+        <div className="flex flex-col items-center py-16 gap-2">
+          <Search className="h-6 w-6 mb-2" style={{ color: 'var(--text-3)' }} />
+          <p className="text-[13px]" style={{ color: 'var(--text-2)' }}>No markets found</p>
+          <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>Try a different search or filter</p>
+        </div>
+      )}
     </div>
   )
 }

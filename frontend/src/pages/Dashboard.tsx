@@ -5,10 +5,9 @@ import {
   ArrowLeftRight,
   Brain,
   Target,
-  TrendingUp,
-  TrendingDown,
   Loader2,
   AlertCircle,
+  ChevronRight,
 } from 'lucide-react'
 import apiClient from '../api/client'
 
@@ -19,57 +18,6 @@ interface DashboardStats {
   price_snapshots: number
   cross_platform_matches: number
   last_data_fetch: string | null
-}
-
-function StatCard({
-  label,
-  value,
-  icon: Icon,
-  trend,
-  href,
-  color,
-}: {
-  label: string
-  value: string | number
-  icon: React.ComponentType<{ className?: string }>
-  trend?: { value: number; up: boolean }
-  href?: string
-  color: string
-}) {
-  const content = (
-    <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 hover:border-gray-600 transition-colors">
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-sm text-gray-400 mb-1">{label}</p>
-          <p className="text-2xl font-bold text-white">{value}</p>
-          {trend && (
-            <div className="flex items-center gap-1 mt-2">
-              {trend.up ? (
-                <TrendingUp className="h-3.5 w-3.5 text-emerald-400" />
-              ) : (
-                <TrendingDown className="h-3.5 w-3.5 text-red-400" />
-              )}
-              <span
-                className={`text-xs font-medium ${
-                  trend.up ? 'text-emerald-400' : 'text-red-400'
-                }`}
-              >
-                {trend.value}%
-              </span>
-            </div>
-          )}
-        </div>
-        <div className={`p-3 rounded-lg ${color}`}>
-          <Icon className="h-5 w-5 text-white" />
-        </div>
-      </div>
-    </div>
-  )
-
-  if (href) {
-    return <Link to={href}>{content}</Link>
-  }
-  return content
 }
 
 export default function Dashboard() {
@@ -84,124 +32,124 @@ export default function Dashboard() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-96">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      <div className="flex items-center justify-center h-80">
+        <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--text-3)' }} />
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 text-gray-400">
-        <AlertCircle className="h-12 w-12 mb-4 text-red-400" />
-        <p className="text-lg font-medium text-white mb-2">
+      <div className="flex flex-col items-center justify-center h-80 gap-3">
+        <AlertCircle className="h-8 w-8" style={{ color: 'var(--red)' }} />
+        <p className="text-[14px] font-medium" style={{ color: 'var(--text)' }}>
           Failed to load dashboard
         </p>
-        <p className="text-sm">
-          Make sure the backend API is running at http://localhost:8000
+        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
+          Check that the backend is running at localhost:8000
         </p>
       </div>
     )
   }
 
-  const stats = data!
+  const s = data!
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-8 fade-up">
+      {/* Title */}
       <div>
-        <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-        <p className="text-sm text-gray-400 mt-1">
+        <h1 className="text-[26px] font-bold" style={{ color: 'var(--text)' }}>
+          Dashboard
+        </h1>
+        <p className="text-[13px] mt-1" style={{ color: 'var(--text-2)' }}>
           Real-time prediction market overview
         </p>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          label="Active Markets"
-          value={stats.total_active_markets.toLocaleString()}
-          icon={Store}
-          color="bg-blue-600"
-          href="/markets"
-        />
-        <StatCard
-          label="Arbitrage Opportunities"
-          value={stats.active_arbitrage_opportunities}
-          icon={ArrowLeftRight}
-          color="bg-emerald-600"
-          href="/arbitrage"
-        />
-        <StatCard
-          label="Price Snapshots"
-          value={stats.price_snapshots.toLocaleString()}
-          icon={Brain}
-          color="bg-purple-600"
-          href="/calibration"
-        />
-        <StatCard
-          label="Cross-Platform Matches"
-          value={stats.cross_platform_matches}
-          icon={Target}
-          color="bg-amber-600"
-        />
-      </div>
-
-      {/* Platform Breakdown */}
-      <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
-        <h2 className="text-lg font-semibold text-white mb-4">
-          Markets by Platform
-        </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          {stats.markets_by_platform &&
-            Object.entries(stats.markets_by_platform).map(
-              ([platform, count]) => (
-                <div
-                  key={platform}
-                  className="bg-gray-900 rounded-lg p-4 text-center border border-gray-700"
-                >
-                  <p className="text-xl font-bold text-white">{count}</p>
-                  <p className="text-xs text-gray-400 mt-1 capitalize">
-                    {platform}
-                  </p>
-                </div>
-              ),
-            )}
+      {/* Summary Card */}
+      <div className="card p-6">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
+          {[
+            { label: 'Active Markets', value: s.total_active_markets },
+            { label: 'Arbitrage Opps', value: s.active_arbitrage_opportunities },
+            { label: 'Price Snapshots', value: s.price_snapshots },
+            { label: 'Cross-Platform', value: s.cross_platform_matches },
+          ].map((item) => (
+            <div key={item.label}>
+              <p className="text-[11px] font-medium uppercase tracking-wide mb-2" style={{ color: 'var(--text-3)' }}>
+                {item.label}
+              </p>
+              <p className="text-[24px] font-bold" style={{ color: 'var(--text)' }}>
+                {(item.value ?? 0).toLocaleString()}
+              </p>
+            </div>
+          ))}
         </div>
       </div>
 
+      {/* Platforms */}
+      {s.markets_by_platform && Object.keys(s.markets_by_platform).length > 0 && (
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-3)' }}>
+            By Platform
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {Object.entries(s.markets_by_platform).map(([platform, count]) => (
+              <div key={platform} className="card p-4">
+                <p className="text-[20px] font-bold" style={{ color: 'var(--text)' }}>
+                  {count.toLocaleString()}
+                </p>
+                <p className="text-[11px] capitalize mt-1" style={{ color: 'var(--text-3)' }}>
+                  {platform}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Quick Links */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Link
-          to="/markets"
-          className="bg-gray-800 border border-gray-700 rounded-xl p-5 hover:border-blue-500/50 transition-colors group"
-        >
-          <Store className="h-8 w-8 text-blue-400 mb-3 group-hover:text-blue-300" />
-          <h3 className="font-semibold text-white">Browse Markets</h3>
-          <p className="text-sm text-gray-400 mt-1">
-            Explore prediction markets across multiple platforms
-          </p>
-        </Link>
-        <Link
-          to="/arbitrage"
-          className="bg-gray-800 border border-gray-700 rounded-xl p-5 hover:border-emerald-500/50 transition-colors group"
-        >
-          <ArrowLeftRight className="h-8 w-8 text-emerald-400 mb-3 group-hover:text-emerald-300" />
-          <h3 className="font-semibold text-white">Arbitrage Scanner</h3>
-          <p className="text-sm text-gray-400 mt-1">
-            Find cross-platform arbitrage opportunities in real time
-          </p>
-        </Link>
-        <Link
-          to="/calibration"
-          className="bg-gray-800 border border-gray-700 rounded-xl p-5 hover:border-purple-500/50 transition-colors group"
-        >
-          <Target className="h-8 w-8 text-purple-400 mb-3 group-hover:text-purple-300" />
-          <h3 className="font-semibold text-white">Calibration Curve</h3>
-          <p className="text-sm text-gray-400 mt-1">
-            Analyze market price accuracy and calibration bias
-          </p>
-        </Link>
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-3)' }}>
+          Quick Actions
+        </p>
+        <div className="space-y-2">
+          {[
+            { to: '/markets', icon: Store, label: 'Browse Markets', desc: 'Explore prediction markets across platforms' },
+            { to: '/arbitrage', icon: ArrowLeftRight, label: 'Arbitrage Scanner', desc: 'Find cross-platform arbitrage opportunities' },
+            { to: '/models', icon: Brain, label: 'ML Models', desc: 'Calibration model and mispriced markets' },
+            { to: '/calibration', icon: Target, label: 'Calibration Curve', desc: 'Market price accuracy and bias analysis' },
+          ].map((link) => {
+            const Icon = link.icon
+            return (
+              <Link
+                key={link.to}
+                to={link.to}
+                className="card card-hover flex items-center gap-4 p-4 group"
+                style={{ textDecoration: 'none' }}
+              >
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: 'var(--accent-dim)' }}
+                >
+                  <Icon className="h-[17px] w-[17px]" style={{ color: 'var(--accent)' }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[14px] font-medium" style={{ color: 'var(--text)' }}>
+                    {link.label}
+                  </p>
+                  <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-3)' }}>
+                    {link.desc}
+                  </p>
+                </div>
+                <ChevronRight
+                  className="h-4 w-4 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{ color: 'var(--text-3)' }}
+                />
+              </Link>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

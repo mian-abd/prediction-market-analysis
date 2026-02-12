@@ -1,17 +1,24 @@
-"""Data pipeline scheduler - orchestrates periodic data collection."""
+"""Data pipeline scheduler - orchestrates periodic data collection,
+arbitrage scanning, cross-platform matching, and orderbook snapshots."""
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from db.database import async_session
-from data_pipeline.storage import ensure_platforms, upsert_markets, insert_price_snapshots
+from data_pipeline.storage import (
+    ensure_platforms, upsert_markets, insert_price_snapshots,
+    get_active_markets, insert_orderbook_snapshot,
+)
 from data_pipeline.collectors import polymarket_gamma, kalshi_markets
 from data_pipeline.collectors.polymarket_gamma import parse_gamma_market
 from data_pipeline.collectors.kalshi_markets import parse_kalshi_market
+from data_pipeline.collectors import polymarket_clob
 
 logger = logging.getLogger(__name__)
 
+
+# ── Market & Price Collection ────────────────────────────────────────
 
 async def collect_markets():
     """Fetch and store all active markets from both platforms."""
@@ -42,10 +49,7 @@ async def collect_markets():
 
 async def collect_prices():
     """Snapshot current prices for all active markets."""
-    logger.info("Starting price collection...")
     async with async_session() as session:
-        from data_pipeline.storage import get_active_markets
-
         markets = await get_active_markets(session, limit=500)
         count = 0
         for market in markets:
@@ -65,45 +69,160 @@ async def collect_prices():
     logger.info(f"Collected {count} price snapshots")
 
 
+# ── Orderbook Collection ─────────────────────────────────────────────
+
+async def collect_orderbooks():
+    """Collect CLOB orderbook snapshots for top Polymarket markets by volume."""
+    logger.info("Starting orderbook collection...")
+    async with async_session() as session:
+        markets = await get_active_markets(session, platform_name="polymarket", limit=50)
+        count = 0
+
+        for market in markets:
+            token_id = market.token_id_yes
+            if not token_id:
+                continue
+            try:
+                raw_ob = await polymarket_clob.fetch_orderbook(token_id)
+                if raw_ob:
+                    parsed = polymarket_clob.parse_orderbook(raw_ob)
+                    await insert_orderbook_snapshot(session, market.id, "yes", parsed)
+                    count += 1
+            except Exception as e:
+                logger.warning(f"Orderbook fetch failed for market {market.id}: {e}")
+
+            # Rate limit: avoid hammering the API
+            await asyncio.sleep(0.2)
+
+    logger.info(f"Collected {count} orderbook snapshots")
+
+
+# ── Cross-Platform Matching ──────────────────────────────────────────
+
+async def run_market_matching():
+    """Find cross-platform matches between Polymarket and Kalshi via TF-IDF."""
+    logger.info("Starting cross-platform market matching...")
+    async with async_session() as session:
+        try:
+            from data_pipeline.transformers.market_matcher import find_cross_platform_matches
+            matches = await find_cross_platform_matches(session)
+            logger.info(f"Found {len(matches)} cross-platform matches")
+        except Exception as e:
+            logger.error(f"Market matching failed: {e}")
+
+
+# ── Arbitrage Scanning ───────────────────────────────────────────────
+
+async def scan_arbitrage():
+    """Expire stale opportunities, then run all arbitrage strategies."""
+    logger.info("Starting arbitrage scan...")
+    async with async_session() as session:
+        try:
+            # Expire opportunities older than 30 minutes
+            from sqlalchemy import update
+            from db.models import ArbitrageOpportunity
+
+            cutoff = datetime.utcnow() - timedelta(minutes=30)
+            await session.execute(
+                update(ArbitrageOpportunity)
+                .where(
+                    ArbitrageOpportunity.expired_at == None,  # noqa: E711
+                    ArbitrageOpportunity.detected_at < cutoff,
+                )
+                .values(expired_at=datetime.utcnow())
+            )
+            await session.commit()
+
+            # Run full scan (single-market + cross-platform)
+            from arbitrage.engine import run_full_scan
+            opportunities = await run_full_scan(session)
+            logger.info(f"Arbitrage scan complete: {len(opportunities)} active opportunities")
+        except Exception as e:
+            logger.error(f"Arbitrage scan failed: {e}")
+
+
+# ── Orchestration ────────────────────────────────────────────────────
+
 async def run_pipeline_once():
-    """Run all collection tasks once."""
+    """Run all collection tasks once (useful for testing/seeding)."""
     await collect_markets()
     await collect_prices()
-    logger.info("Pipeline run complete")
+    await run_market_matching()
+    await scan_arbitrage()
+    logger.info("Pipeline single-run complete")
 
 
 async def run_pipeline_loop():
-    """Run the pipeline in a continuous loop with configurable intervals."""
+    """Continuous pipeline loop with configurable intervals.
+
+    Timing (default 60s price interval):
+      - Prices:     every cycle     (60s)
+      - Arbitrage:  every 5 cycles  (5 min)
+      - Orderbooks: every 5 cycles  (5 min)
+      - Markets:    every 60 cycles (1 hr) + re-match after refresh
+    """
     from config.settings import settings
 
     logger.info("Starting pipeline loop...")
 
-    # Initial full collection
+    # ── Initial full collection ──
     await collect_markets()
     await collect_prices()
 
-    market_refresh_counter = 0
+    # Initial matching + arb scan after data is loaded
+    try:
+        await run_market_matching()
+    except Exception as e:
+        logger.error(f"Initial matching failed: {e}")
+
+    try:
+        await scan_arbitrage()
+    except Exception as e:
+        logger.error(f"Initial arb scan failed: {e}")
+
+    # ── Loop configuration ──
     price_interval = settings.price_poll_interval_sec
     market_interval = settings.market_refresh_interval_sec
-    cycles_per_market_refresh = market_interval // price_interval
+    cycles_per_market_refresh = max(1, market_interval // price_interval)
+    cycles_per_arb_scan = 5       # Every 5 price cycles
+    cycles_per_orderbook = max(1, settings.orderbook_poll_interval_sec // price_interval)
+
+    cycle = 0
 
     while True:
         await asyncio.sleep(price_interval)
+        cycle += 1
 
-        # Always collect prices
+        # ── Always collect prices ──
         try:
             await collect_prices()
         except Exception as e:
             logger.error(f"Price collection error: {e}")
 
-        # Periodically refresh full market list
-        market_refresh_counter += 1
-        if market_refresh_counter >= cycles_per_market_refresh:
-            market_refresh_counter = 0
+        # ── Arbitrage scan every ~5 min ──
+        if cycle % cycles_per_arb_scan == 0:
+            try:
+                await scan_arbitrage()
+            except Exception as e:
+                logger.error(f"Arbitrage scan error: {e}")
+
+        # ── Orderbook collection every ~5 min ──
+        if cycle % cycles_per_orderbook == 0:
+            try:
+                await collect_orderbooks()
+            except Exception as e:
+                logger.error(f"Orderbook collection error: {e}")
+
+        # ── Full market refresh + re-match every ~1 hr ──
+        if cycle % cycles_per_market_refresh == 0:
             try:
                 await collect_markets()
             except Exception as e:
                 logger.error(f"Market refresh error: {e}")
+            try:
+                await run_market_matching()
+            except Exception as e:
+                logger.error(f"Market matching error: {e}")
 
 
 if __name__ == "__main__":

@@ -1,59 +1,146 @@
 @import "tailwindcss";
 
+/* ─── Design Tokens ─── */
 :root {
-  --color-surface: #111827;
-  --color-surface-raised: #1f2937;
-  --color-surface-overlay: #374151;
-  --color-border: #4b5563;
-  --color-accent: #3b82f6;
-  --color-accent-hover: #2563eb;
-  --color-success: #10b981;
-  --color-warning: #f59e0b;
-  --color-danger: #ef4444;
+  --bg: #000000;
+  --card: #1A1A1C;
+  --card-hover: #222224;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.14);
+  --text: #FFFFFF;
+  --text-2: #8E8E93;
+  --text-3: #48484A;
+  --accent: #C4A24D;
+  --accent-dim: rgba(196, 162, 77, 0.12);
+  --green: #4CAF70;
+  --red: #CF6679;
+  --blue: #5EB4EF;
 }
 
+/* ─── Scrollbar ─── */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #4b5563 #1f2937;
+  scrollbar-color: rgba(255,255,255,0.06) transparent;
 }
+*::-webkit-scrollbar { width: 4px; height: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 10px; }
 
-*::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-*::-webkit-scrollbar-track {
-  background: #1f2937;
-}
-
-*::-webkit-scrollbar-thumb {
-  background-color: #4b5563;
-  border-radius: 3px;
-}
-
-body {
+/* ─── Base ─── */
+html, body {
   margin: 0;
-  background-color: #111827;
-  color: #f9fafb;
-  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
-    Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    system-ui, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
 }
 
-/* Custom pulse animation for live indicators */
+/* ─── Card ─── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.card-hover:hover {
+  background: var(--card-hover);
+  border-color: var(--border-hover);
+}
+
+/* ─── Button ─── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 24px;
+  background: var(--accent);
+  color: #000;
+  font-weight: 600;
+  font-size: 14px;
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.btn:hover { opacity: 0.85; }
+.btn:active { opacity: 0.7; }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: transparent;
+  color: var(--text-2);
+  font-weight: 500;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.btn-ghost:hover {
+  background: var(--card);
+  border-color: var(--border-hover);
+  color: var(--text);
+}
+
+/* ─── Input ─── */
+.input {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+.input::placeholder { color: var(--text-3); }
+.input:focus { border-color: var(--accent); }
+
+/* ─── Badge ─── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-2);
+}
+.pill-accent { background: var(--accent-dim); color: var(--accent); }
+.pill-green { background: rgba(76,175,112,0.12); color: var(--green); }
+.pill-red { background: rgba(207,102,121,0.12); color: var(--red); }
+
+/* ─── Select ─── */
+select.input {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2348484A' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  padding-right: 36px;
+  cursor: pointer;
+}
+
+/* ─── Animation ─── */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fade-up 0.35s ease-out forwards; }
+
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50% { opacity: 0.3; }
 }
-
-.animate-pulse-dot {
-  animation: pulse-dot 2s ease-in-out infinite;
-}
-
-/* Smooth transitions for interactive elements */
-.transition-colors {
-  transition-property: color, background-color, border-color;
-  transition-duration: 150ms;
-  transition-timing-function: ease-in-out;
-}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
