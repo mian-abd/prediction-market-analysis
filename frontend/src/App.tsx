@@ -8,6 +8,7 @@ import {
   Activity,
   TrendingUp,
   Briefcase,
+  Users,
 } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import ArbitrageScanner from './pages/ArbitrageScanner'
@@ -17,12 +18,15 @@ import MLModels from './pages/MLModels'
 import CalibrationChart from './pages/CalibrationChart'
 import Analytics from './pages/Analytics'
 import Portfolio from './pages/Portfolio'
+import TraderLeaderboard from './pages/TraderLeaderboard'
+import TraderDetail from './pages/TraderDetail'
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/markets', icon: Store, label: 'Markets' },
   { to: '/arbitrage', icon: ArrowLeftRight, label: 'Arbitrage' },
   { to: '/portfolio', icon: Briefcase, label: 'Portfolio' },
+  { to: '/copy-trading', icon: Users, label: 'Copy Trading' },
   { to: '/models', icon: Brain, label: 'ML Models' },
   { to: '/calibration', icon: Target, label: 'Calibration' },
   { to: '/analytics', icon: TrendingUp, label: 'Analytics' },
@@ -100,6 +104,8 @@ function App() {
             <Route path="/markets" element={<MarketBrowser />} />
             <Route path="/markets/:id" element={<MarketDetail />} />
             <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/copy-trading" element={<TraderLeaderboard />} />
+            <Route path="/copy-trading/:traderId" element={<TraderDetail />} />
             <Route path="/models" element={<MLModels />} />
             <Route path="/calibration" element={<CalibrationChart />} />
             <Route path="/analytics" element={<Analytics />} />

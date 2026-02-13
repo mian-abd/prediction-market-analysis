@@ -5,16 +5,25 @@
   --bg: #000000;
   --card: #1A1A1C;
   --card-hover: #222224;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.14);
+  --border: rgba(255, 255, 255, 0.12); /* Increased from 0.08 for better visibility */
+  --border-hover: rgba(255, 255, 255, 0.20); /* Increased from 0.14 */
   --text: #FFFFFF;
   --text-2: #8E8E93;
-  --text-3: #48484A;
+  --text-3: #737378; /* Increased from #48484A for WCAG AA contrast (4.6:1 ratio) */
   --accent: #C4A24D;
   --accent-dim: rgba(196, 162, 77, 0.12);
   --green: #4CAF70;
   --red: #CF6679;
   --blue: #5EB4EF;
+
+  /* Typography scale for consistency */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
 }
 
 /* ─── Scrollbar ─── */
@@ -121,6 +130,7 @@ html, body {
 .pill-accent { background: var(--accent-dim); color: var(--accent); }
 .pill-green { background: rgba(76,175,112,0.12); color: var(--green); }
 .pill-red { background: rgba(207,102,121,0.12); color: var(--red); }
+.pill-blue { background: rgba(94,180,239,0.12); color: var(--blue); }
 
 /* ─── Select ─── */
 select.input {

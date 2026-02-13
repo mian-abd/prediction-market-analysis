@@ -8,6 +8,8 @@ import {
   TrendingUp,
   TrendingDown,
   ChevronRight,
+  Layers,
+  BarChart3,
 } from 'lucide-react'
 import apiClient from '../api/client'
 
@@ -21,6 +23,40 @@ interface MispricedMarket {
   direction: string
   edge_estimate: number
   volume_24h: number | null
+}
+
+interface AccuracyData {
+  trained: boolean
+  metrics: {
+    n_total_resolved: number
+    n_usable: number
+    n_train: number
+    n_test: number
+    class_balance_yes_pct: number
+    baseline_brier: number
+    logistic_brier: number
+    calibration_brier: number
+    xgboost_brier: number
+    lightgbm_brier: number
+    ensemble_brier: number
+    ensemble_auc: number
+    xgb_feature_importance: Record<string, number>
+    lgb_feature_importance: Record<string, number>
+  }
+  weights: Record<string, number>
+  models: Record<string, {
+    name: string
+    type: string
+    brier_score: number | null
+    weight: number
+    feature_importance?: Record<string, number>
+  }>
+  baseline_brier: number
+  training_samples: number
+  test_samples: number
+  total_resolved: number
+  usable_samples: number
+  error?: string
 }
 
 export default function MLModels() {
@@ -37,7 +73,15 @@ export default function MLModels() {
     refetchInterval: 60_000,
   })
 
-  // All hooks must be called before any early returns
+  const { data: accuracy } = useQuery<AccuracyData>({
+    queryKey: ['model-accuracy'],
+    queryFn: async () => {
+      const response = await apiClient.get('/predictions/accuracy')
+      return response.data
+    },
+    refetchInterval: 300_000,
+  })
+
   const markets = data?.markets ?? []
 
   const filteredMarkets = useMemo(() => {
@@ -51,7 +95,6 @@ export default function MLModels() {
     return result
   }, [markets, directionFilter, minEdge])
 
-  // Early returns must come after all hooks
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-80">
@@ -76,13 +119,17 @@ export default function MLModels() {
     ? markets.reduce((s, m) => s + m.edge_estimate, 0) / markets.length * 100
     : 0
 
+  const brierImprovement = accuracy?.trained && accuracy.metrics
+    ? ((1 - accuracy.metrics.ensemble_brier / accuracy.metrics.baseline_brier) * 100)
+    : null
+
   return (
     <div className="space-y-6 fade-up">
       {/* Title */}
       <div>
         <h1 className="text-[26px] font-bold" style={{ color: 'var(--text)' }}>ML Models</h1>
         <p className="text-[13px] mt-1" style={{ color: 'var(--text-2)' }}>
-          Calibration model predictions and mispriced market detection
+          Ensemble predictions and mispriced market detection
         </p>
       </div>
 
@@ -101,39 +148,194 @@ export default function MLModels() {
         ))}
       </div>
 
-      {/* Model Card */}
-      <div className="card p-6">
-        <div className="flex items-center gap-3 mb-5">
-          <div
-            className="w-10 h-10 rounded-xl flex items-center justify-center"
-            style={{ background: 'var(--accent-dim)' }}
-          >
-            <Brain className="h-[17px] w-[17px]" style={{ color: 'var(--accent)' }} />
-          </div>
-          <div className="flex-1">
-            <p className="text-[14px] font-semibold" style={{ color: 'var(--text)' }}>
-              Calibration Model
-            </p>
-            <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
-              Isotonic Regression &middot; Detects overconfidence at extremes
-            </p>
-          </div>
-          <span className="pill pill-green">Active</span>
-        </div>
-        <div className="grid grid-cols-4 gap-3">
-          {[
-            { label: 'Type', value: 'Isotonic' },
-            { label: 'Avg Bias', value: '+6pp', color: 'var(--accent)' },
-            { label: 'Markets', value: String(markets.length) },
-            { label: 'Cost', value: '$0.00', color: 'var(--green)' },
-          ].map((s) => (
-            <div key={s.label} className="text-center py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)' }}>
-              <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>{s.label}</p>
-              <p className="text-[14px] font-bold" style={{ color: s.color ?? 'var(--text)' }}>{s.value}</p>
+      {/* Model Cards */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Calibration Model Card */}
+        <div className="card p-6">
+          <div className="flex items-center gap-3 mb-5">
+            <div
+              className="w-10 h-10 rounded-xl flex items-center justify-center"
+              style={{ background: 'var(--accent-dim)' }}
+            >
+              <Brain className="h-[17px] w-[17px]" style={{ color: 'var(--accent)' }} />
             </div>
-          ))}
+            <div className="flex-1">
+              <p className="text-[14px] font-semibold" style={{ color: 'var(--text)' }}>
+                Calibration Model
+              </p>
+              <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
+                Isotonic Regression
+              </p>
+            </div>
+            <span className="pill pill-green">Active</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: 'Type', value: 'Isotonic' },
+              { label: 'Brier Score', value: accuracy?.models?.calibration?.brier_score?.toFixed(4) ?? '+6pp bias', color: 'var(--accent)' },
+              { label: 'Weight', value: accuracy?.weights?.calibration ? `${(accuracy.weights.calibration * 100).toFixed(0)}%` : '100%', color: 'var(--blue)' },
+            ].map((s) => (
+              <div key={s.label} className="text-center py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>{s.label}</p>
+                <p className="text-[14px] font-bold" style={{ color: s.color ?? 'var(--text)' }}>{s.value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Ensemble Model Card */}
+        <div className="card p-6">
+          <div className="flex items-center gap-3 mb-5">
+            <div
+              className="w-10 h-10 rounded-xl flex items-center justify-center"
+              style={{ background: 'rgba(59,130,246,0.1)' }}
+            >
+              <Layers className="h-[17px] w-[17px]" style={{ color: 'var(--blue)' }} />
+            </div>
+            <div className="flex-1">
+              <p className="text-[14px] font-semibold" style={{ color: 'var(--text)' }}>
+                Ensemble Model
+              </p>
+              <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
+                XGBoost + LightGBM + Calibration
+              </p>
+            </div>
+            <span className={`pill ${accuracy?.trained ? 'pill-green' : 'pill-red'}`}>
+              {accuracy?.trained ? 'Active' : 'Not Trained'}
+            </span>
+          </div>
+          {accuracy?.trained ? (
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: 'Ensemble Brier', value: accuracy.metrics.ensemble_brier.toFixed(4), color: 'var(--accent)' },
+                { label: 'AUC-ROC', value: accuracy.metrics.ensemble_auc.toFixed(3), color: 'var(--green)' },
+                { label: 'Training Set', value: `${accuracy.metrics.n_usable}`, color: 'var(--text)' },
+              ].map((s) => (
+                <div key={s.label} className="text-center py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                  <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>{s.label}</p>
+                  <p className="text-[14px] font-bold" style={{ color: s.color }}>{s.value}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
+              Run training script to enable ensemble predictions
+            </p>
+          )}
         </div>
       </div>
+
+      {/* Accuracy Metrics (if trained) */}
+      {accuracy?.trained && accuracy.metrics && (
+        <div className="card p-6">
+          <div className="flex items-center gap-3 mb-5">
+            <BarChart3 className="h-5 w-5" style={{ color: 'var(--accent)' }} />
+            <div>
+              <p className="text-[14px] font-semibold" style={{ color: 'var(--text)' }}>
+                Model Accuracy
+              </p>
+              <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
+                Brier score comparison (lower is better) &middot; {accuracy.metrics.n_train} train / {accuracy.metrics.n_test} test samples
+              </p>
+            </div>
+            {brierImprovement !== null && (
+              <span className="pill pill-accent ml-auto">
+                {brierImprovement > 0 ? '+' : ''}{brierImprovement.toFixed(0)}% vs baseline
+              </span>
+            )}
+          </div>
+
+          {/* Brier Score Bars */}
+          <div className="space-y-3">
+            {[
+              { name: 'Market Baseline', score: accuracy.metrics.baseline_brier, color: 'var(--text-3)' },
+              { name: 'Logistic Regression', score: accuracy.metrics.logistic_brier, color: 'var(--text-2)' },
+              { name: 'Calibration (Isotonic)', score: accuracy.metrics.calibration_brier, color: 'var(--blue)' },
+              { name: 'XGBoost', score: accuracy.metrics.xgboost_brier, color: '#F59E0B' },
+              { name: 'LightGBM', score: accuracy.metrics.lightgbm_brier, color: '#8B5CF6' },
+              { name: 'Ensemble', score: accuracy.metrics.ensemble_brier, color: 'var(--accent)' },
+            ].map((model) => {
+              const maxBrier = accuracy.metrics.baseline_brier || 0.25
+              const pct = Math.min(100, (model.score / maxBrier) * 100)
+              return (
+                <div key={model.name} className="flex items-center gap-3">
+                  <p className="text-[11px] w-36 text-right flex-shrink-0" style={{ color: 'var(--text-2)' }}>
+                    {model.name}
+                  </p>
+                  <div className="flex-1 h-5 rounded-lg overflow-hidden" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                    <div
+                      className="h-full rounded-lg transition-all duration-500"
+                      style={{ width: `${pct}%`, background: model.color, opacity: 0.8 }}
+                    />
+                  </div>
+                  <p className="text-[11px] font-mono w-14 text-right flex-shrink-0" style={{ color: model.color }}>
+                    {model.score.toFixed(4)}
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Weight Breakdown */}
+          {accuracy.weights && (
+            <div className="mt-5 pt-5" style={{ borderTop: '1px solid var(--border)' }}>
+              <p className="text-[11px] uppercase mb-3" style={{ color: 'var(--text-3)' }}>Ensemble Weights</p>
+              <div className="flex gap-3 h-3 rounded-full overflow-hidden">
+                {Object.entries(accuracy.weights).map(([name, weight]) => (
+                  <div
+                    key={name}
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${(weight as number) * 100}%`,
+                      background: name === 'calibration' ? 'var(--blue)' : name === 'xgboost' ? '#F59E0B' : '#8B5CF6',
+                      minWidth: '8px',
+                    }}
+                    title={`${name}: ${((weight as number) * 100).toFixed(1)}%`}
+                  />
+                ))}
+              </div>
+              <div className="flex gap-4 mt-2">
+                {Object.entries(accuracy.weights).map(([name, weight]) => (
+                  <span key={name} className="text-[10px]" style={{ color: 'var(--text-3)' }}>
+                    {name}: {((weight as number) * 100).toFixed(1)}%
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Feature Importance */}
+          {accuracy.metrics.xgb_feature_importance && (
+            <div className="mt-5 pt-5" style={{ borderTop: '1px solid var(--border)' }}>
+              <p className="text-[11px] uppercase mb-3" style={{ color: 'var(--text-3)' }}>Top Features (XGBoost)</p>
+              <div className="space-y-2">
+                {Object.entries(accuracy.metrics.xgb_feature_importance)
+                  .filter(([, v]) => (v as number) > 0)
+                  .slice(0, 5)
+                  .map(([name, importance]) => {
+                    const pct = (importance as number) * 100
+                    return (
+                      <div key={name} className="flex items-center gap-3">
+                        <p className="text-[11px] w-40 text-right font-mono flex-shrink-0" style={{ color: 'var(--text-2)' }}>
+                          {name}
+                        </p>
+                        <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width: `${pct}%`, background: '#F59E0B', opacity: 0.7 }}
+                          />
+                        </div>
+                        <p className="text-[10px] font-mono w-10 text-right" style={{ color: 'var(--text-3)' }}>
+                          {pct.toFixed(0)}%
+                        </p>
+                      </div>
+                    )
+                  })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex items-center gap-4 flex-wrap">

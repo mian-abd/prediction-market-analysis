@@ -5,7 +5,10 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
+from sqlalchemy import update, func
+
 from db.database import async_session
+from db.models import Market
 from data_pipeline.storage import (
     ensure_platforms, upsert_markets, insert_price_snapshots,
     get_active_markets, insert_orderbook_snapshot,
@@ -16,6 +19,41 @@ from data_pipeline.collectors.kalshi_markets import parse_kalshi_market
 from data_pipeline.collectors import polymarket_clob
 
 logger = logging.getLogger(__name__)
+
+
+# ── Market Lifecycle ─────────────────────────────────────────────────
+
+async def deactivate_expired_markets():
+    """Mark markets as inactive if past their end_date or price is stuck at 0/1."""
+    async with async_session() as session:
+        # Deactivate past-end-date markets
+        result = await session.execute(
+            update(Market)
+            .where(
+                Market.is_active == True,  # noqa
+                Market.end_date != None,  # noqa
+                Market.end_date < func.now(),
+            )
+            .values(is_active=False)
+        )
+        expired_count = result.rowcount
+
+        # Deactivate markets with price stuck at 0 or 1 (effectively resolved)
+        result2 = await session.execute(
+            update(Market)
+            .where(
+                Market.is_active == True,  # noqa
+                Market.price_yes != None,  # noqa
+                (Market.price_yes <= 0.01) | (Market.price_yes >= 0.99),
+            )
+            .values(is_active=False)
+        )
+        dead_count = result2.rowcount
+
+        await session.commit()
+
+        if expired_count or dead_count:
+            logger.info(f"Deactivated markets: {expired_count} expired, {dead_count} dead price")
 
 
 # ── Market & Price Collection ────────────────────────────────────────
@@ -213,12 +251,16 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Orderbook collection error: {e}")
 
-        # ── Full market refresh + re-match every ~1 hr ──
+        # ── Full market refresh + deactivate expired + re-match every ~1 hr ──
         if cycle % cycles_per_market_refresh == 0:
             try:
                 await collect_markets()
             except Exception as e:
                 logger.error(f"Market refresh error: {e}")
+            try:
+                await deactivate_expired_markets()
+            except Exception as e:
+                logger.error(f"Expired market deactivation error: {e}")
             try:
                 await run_market_matching()
             except Exception as e:

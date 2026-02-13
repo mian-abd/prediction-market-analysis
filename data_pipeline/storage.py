@@ -68,6 +68,13 @@ async def upsert_markets(
                 existing.token_id_no = m["token_id_no"]
             if m.get("condition_id"):
                 existing.condition_id = m["condition_id"]
+            # Resolution fields
+            if m.get("resolution_value") is not None:
+                existing.resolution_value = m["resolution_value"]
+            if m.get("resolution_outcome"):
+                existing.resolution_outcome = m["resolution_outcome"]
+            if m.get("resolved_at"):
+                existing.resolved_at = m["resolved_at"]
         else:
             # Insert new market
             market = Market(
@@ -89,6 +96,9 @@ async def upsert_markets(
                 is_resolved=m.get("is_resolved", False),
                 end_date=m.get("end_date"),
                 is_neg_risk=m.get("is_neg_risk", False),
+                resolution_value=m.get("resolution_value"),
+                resolution_outcome=m.get("resolution_outcome"),
+                resolved_at=m.get("resolved_at"),
                 last_fetched_at=datetime.utcnow(),
             )
             session.add(market)

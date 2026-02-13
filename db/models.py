@@ -43,7 +43,8 @@ class Market(Base):
     # Resolution
     is_active = Column(Boolean, default=True)
     is_resolved = Column(Boolean, default=False)
-    resolution_outcome = Column(String(10))
+    resolution_outcome = Column(String(10))  # "YES"/"NO" text outcome
+    resolution_value = Column(Float)  # Numeric: 1.0=YES, 0.0=NO (for ML training)
     end_date = Column(DateTime)
     resolved_at = Column(DateTime)
 
@@ -143,6 +144,28 @@ class CrossPlatformMatch(Base):
     )
 
 
+class NewsEvent(Base):
+    """GDELT news articles for market context."""
+    __tablename__ = "news_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category = Column(String(100), nullable=False)  # politics, crypto, sports, etc.
+    title = Column(Text, nullable=False)
+    url = Column(Text)
+    domain = Column(String(255))
+    language = Column(String(10), default="en")
+    publish_date = Column(String(20))  # GDELT format: YYYYMMDDHHMMSS
+    tone = Column(Float, default=0.0)  # -10 to +10 sentiment
+    social_image = Column(Text)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+    # Index for fast category lookups
+    __table_args__ = (
+        Index("idx_news_category", "category"),
+        Index("idx_news_publish_date", "publish_date"),
+    )
+
+
 class MarketRelationship(Base):
     __tablename__ = "market_relationships"
 
@@ -235,6 +258,7 @@ class PortfolioPosition(Base):
     __tablename__ = "portfolio_positions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(50), nullable=False, default="user_1")  # For copy trading support
     market_id = Column(Integer, ForeignKey("markets.id"), nullable=False)
     platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=False)
     side = Column(String(3), nullable=False)
@@ -249,6 +273,8 @@ class PortfolioPosition(Base):
 
     __table_args__ = (
         Index("ix_position_market", "market_id"),
+        Index("ix_position_user_time", "user_id", "entry_time"),  # For user portfolio queries
+        Index("ix_position_user_market", "user_id", "market_id"),  # For user+market filtering
     )
 
 
@@ -263,4 +289,103 @@ class SystemMetric(Base):
 
     __table_args__ = (
         Index("ix_metric_name_time", "metric_name", "timestamp"),
+    )
+
+
+# ============================================================================
+# COPY TRADING TABLES
+# ============================================================================
+
+
+class TraderProfile(Base):
+    """Trader profiles with performance metrics for copy trading."""
+    __tablename__ = "trader_profiles"
+
+    user_id = Column(String(50), primary_key=True)
+    display_name = Column(String(100), nullable=False)
+    bio = Column(Text)
+
+    # Performance metrics
+    total_pnl = Column(Float, default=0.0)
+    roi_pct = Column(Float, default=0.0)
+    win_rate = Column(Float, default=0.0)
+    total_trades = Column(Integer, default=0)
+    winning_trades = Column(Integer, default=0)
+    avg_trade_duration_hrs = Column(Float, default=0.0)
+    risk_score = Column(Integer, default=5)  # 1-10 scale
+    max_drawdown = Column(Float, default=0.0)
+    follower_count = Column(Integer, default=0)
+
+    # Settings
+    is_public = Column(Boolean, default=True)
+    accepts_copiers = Column(Boolean, default=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_trader_public", "is_public"),
+        Index("ix_trader_pnl", "total_pnl"),
+        Index("ix_trader_win_rate", "win_rate"),
+    )
+
+
+class FollowedTrader(Base):
+    """Junction table tracking follower-trader relationships."""
+    __tablename__ = "followed_traders"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    follower_id = Column(String(50), nullable=False)  # User doing the following
+    trader_id = Column(String(50), ForeignKey("trader_profiles.user_id"), nullable=False)
+
+    # Copy settings
+    allocation_amount = Column(Float, default=1000.0)  # $ allocated to copying this trader
+    copy_percentage = Column(Float, default=1.0)  # 0.5 = 50% of trader's position size
+    max_position_size = Column(Float)  # Max $ per copied position
+    auto_copy = Column(Boolean, default=True)
+    copy_settings = Column(JSON)  # Additional settings (market filters, etc.)
+
+    followed_at = Column(DateTime, default=datetime.utcnow)
+    unfollowed_at = Column(DateTime)  # NULL if still following
+    is_active = Column(Boolean, default=True)
+
+    __table_args__ = (
+        UniqueConstraint("follower_id", "trader_id", name="uq_follower_trader"),
+        Index("ix_followed_trader_active", "trader_id", "is_active"),
+        Index("ix_followed_follower_active", "follower_id", "is_active"),
+    )
+
+
+class CopyTrade(Base):
+    """Records of copied trades linking follower positions to original trader positions."""
+    __tablename__ = "copy_trades"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    follower_position_id = Column(Integer, ForeignKey("portfolio_positions.id"), nullable=False)
+    trader_position_id = Column(Integer, ForeignKey("portfolio_positions.id"), nullable=False)
+    follower_id = Column(String(50), nullable=False)
+    trader_id = Column(String(50), ForeignKey("trader_profiles.user_id"), nullable=False)
+
+    copy_ratio = Column(Float, default=1.0)  # Position size ratio applied
+    copied_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_copy_follower_position", "follower_position_id"),
+        Index("ix_copy_trader_position", "trader_position_id"),
+        Index("ix_copy_follower_trader", "follower_id", "trader_id"),
+    )
+
+
+class TraderActivity(Base):
+    """Activity feed for trader actions (opens, closes, updates)."""
+    __tablename__ = "trader_activities"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trader_id = Column(String(50), ForeignKey("trader_profiles.user_id"), nullable=False)
+    activity_type = Column(String(50), nullable=False)  # 'open_position', 'close_position', 'update_profile'
+    activity_data = Column(JSON)  # Market details, P&L, etc.
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_activity_trader_time", "trader_id", "created_at"),
     )

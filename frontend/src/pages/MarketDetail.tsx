@@ -18,6 +18,15 @@ import PriceChart from '../components/charts/PriceChart'
 import OrderbookDepth from '../components/charts/OrderbookDepth'
 import VolumeProfile from '../components/charts/VolumeProfile'
 import SentimentGauge from '../components/charts/SentimentGauge'
+import NewsSection from '../components/NewsSection'
+
+interface NewsArticle {
+  title: string
+  url: string
+  domain: string
+  publish_date: string
+  tone: number
+}
 
 interface MarketData {
   id: number
@@ -39,16 +48,30 @@ interface MarketData {
     price_yes: number
     similarity: number
   }>
+  news?: NewsArticle[]
 }
 
 function getRelativeTime(isoString: string): string {
   const diff = Date.now() - new Date(isoString).getTime()
+  if (diff < 0) return 'just now'
   const seconds = Math.floor(diff / 1000)
   if (seconds < 60) return `${seconds}s ago`
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `${minutes}m ago`
   const hours = Math.floor(minutes / 60)
-  return `${hours}h ago`
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
+// Clean up Kalshi combo market titles for display
+function cleanMarketQuestion(question: string): string {
+  const legCount = (question.match(/\b(yes|no)\s/gi) || []).length
+  if (legCount > 1) {
+    const legs = question.split(',').map(s => s.trim())
+    return legs.map(l => l.replace(/^(yes|no)\s+/i, '')).join(' · ')
+  }
+  return question
 }
 
 function getFreshnessColor(isoString: string): string {
@@ -57,6 +80,22 @@ function getFreshnessColor(isoString: string): string {
   if (seconds < 30) return '#4CAF70'
   if (seconds < 120) return '#C4A24D'
   return '#CF6679'
+}
+
+interface EnsembleData {
+  ensemble_probability: number
+  market_price: number
+  delta: number
+  delta_pct: number
+  direction: string
+  edge_estimate: number
+  model_predictions: {
+    calibration: { probability: number; weight: number }
+    xgboost: { probability: number; weight: number }
+    lightgbm: { probability: number; weight: number }
+  }
+  features_used: number
+  ensemble_active: boolean
 }
 
 interface Prediction {
@@ -70,6 +109,7 @@ interface Prediction {
       direction: string
       edge_estimate: number
     }
+    ensemble: EnsembleData | null
   }
 }
 
@@ -130,6 +170,7 @@ export default function MarketDetail() {
   }
 
   const cal = prediction?.models?.calibration
+  const ens = prediction?.models?.ensemble
 
   return (
     <div className="space-y-6 fade-up">
@@ -151,7 +192,7 @@ export default function MarketDetail() {
               <span className="pill pill-accent capitalize">{market.platform}</span>
             </div>
             <h1 className="text-[20px] font-bold leading-snug" style={{ color: 'var(--text)' }}>
-              {market.question}
+              {cleanMarketQuestion(market.question)}
             </h1>
             {market.description && (
               <p className="text-[13px] mt-2 leading-relaxed" style={{ color: 'var(--text-2)' }}>
@@ -182,7 +223,18 @@ export default function MarketDetail() {
           {[
             { icon: DollarSign, label: '24h Volume', value: `$${(market.volume_24h ?? 0).toLocaleString()}` },
             { icon: DollarSign, label: 'Total Volume', value: `$${(market.volume_total ?? 0).toLocaleString()}` },
-            { icon: Clock, label: 'End Date', value: market.end_date ? new Date(market.end_date).toLocaleDateString() : 'N/A' },
+            { icon: Clock, label: 'Closes', value: market.end_date
+              ? (() => {
+                  const diff = new Date(market.end_date).getTime() - Date.now()
+                  if (diff < 0) return 'Closed'
+                  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+                  if (days > 30) return `in ${Math.floor(days / 30)}mo`
+                  if (days > 0) return `in ${days}d`
+                  const hours = Math.floor(diff / (1000 * 60 * 60))
+                  if (hours > 0) return `in ${hours}h`
+                  return 'in <1h'
+                })()
+              : 'No end date' },
             { icon: ExternalLink, label: 'Matches', value: `${market.cross_platform_matches?.length ?? 0}` },
           ].map((stat, i) => {
             const Icon = stat.icon
@@ -247,6 +299,35 @@ export default function MarketDetail() {
         />
       </div>
 
+      {/* News Section - Full Width */}
+      {market.news && market.news.length > 0 && (
+        <div className="card p-6">
+          <div className="flex items-center gap-2.5 mb-5">
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center"
+              style={{ background: 'rgba(94,180,239,0.1)' }}
+            >
+              <svg
+                className="h-4 w-4"
+                style={{ color: 'var(--blue)' }}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z"
+                />
+              </svg>
+            </div>
+            <p className="text-[14px] font-semibold">Recent News</p>
+          </div>
+          <NewsSection articles={market.news || []} />
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* ML Prediction */}
         <div className="card p-6">
@@ -260,7 +341,64 @@ export default function MarketDetail() {
             <p className="text-[14px] font-semibold">ML Prediction</p>
           </div>
 
-          {cal ? (
+          {ens ? (
+            <div className="space-y-3">
+              {/* Ensemble primary prediction */}
+              <div className="text-center py-2 rounded-xl" style={{ background: 'rgba(196,162,77,0.06)' }}>
+                <p className="text-[10px] uppercase font-semibold mb-1" style={{ color: 'var(--text-3)' }}>
+                  {ens.ensemble_active ? 'Ensemble' : 'Calibration'} Prediction
+                </p>
+                <p className="text-[24px] font-bold font-mono" style={{ color: 'var(--accent)' }}>
+                  {(ens.ensemble_probability * 100).toFixed(1)}%
+                </p>
+              </div>
+              {[
+                { label: 'Market Price', value: `${(ens.market_price * 100).toFixed(1)}%`, color: 'var(--text-2)' },
+                { label: 'Delta', value: `${ens.delta_pct > 0 ? '+' : ''}${ens.delta_pct.toFixed(1)}%`, color: ens.delta_pct > 0 ? 'var(--red)' : 'var(--green)' },
+                { label: 'Edge', value: `${(ens.edge_estimate * 100).toFixed(2)}%`, color: 'var(--accent)' },
+              ].map((row) => (
+                <div key={row.label} className="flex items-center justify-between py-1">
+                  <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>{row.label}</span>
+                  <span className="text-[13px] font-mono font-medium" style={{ color: row.color }}>{row.value}</span>
+                </div>
+              ))}
+              <div className="flex items-center justify-between pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                <span className="text-[12px]" style={{ color: 'var(--text-3)' }}>Direction</span>
+                <span className="flex items-center gap-1.5">
+                  {ens.direction === 'overpriced' ? (
+                    <TrendingDown className="h-3.5 w-3.5" style={{ color: 'var(--red)' }} />
+                  ) : (
+                    <TrendingUp className="h-3.5 w-3.5" style={{ color: 'var(--green)' }} />
+                  )}
+                  <span
+                    className="text-[12px] font-medium capitalize"
+                    style={{ color: ens.direction === 'overpriced' ? 'var(--red)' : 'var(--green)' }}
+                  >
+                    {ens.direction}
+                  </span>
+                </span>
+              </div>
+              {/* Model breakdown */}
+              {ens.ensemble_active && ens.model_predictions && (
+                <div className="pt-3 space-y-2" style={{ borderTop: '1px solid var(--border)' }}>
+                  <p className="text-[10px] uppercase font-semibold" style={{ color: 'var(--text-3)' }}>Model Weights</p>
+                  {Object.entries(ens.model_predictions).map(([name, model]) => (
+                    <div key={name} className="flex items-center justify-between">
+                      <span className="text-[11px] capitalize" style={{ color: 'var(--text-3)' }}>{name}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-mono" style={{ color: 'var(--text-2)' }}>
+                          {(model.probability * 100).toFixed(1)}%
+                        </span>
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>
+                          {(model.weight * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : cal ? (
             <div className="space-y-3">
               {[
                 { label: 'Calibrated Price', value: `${(cal.calibrated_price * 100).toFixed(1)}%`, color: 'var(--blue)' },

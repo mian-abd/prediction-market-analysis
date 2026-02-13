@@ -1,5 +1,6 @@
 """ML model prediction endpoints."""
 
+import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,10 +8,12 @@ from db.database import get_session
 from db.models import Market
 from ml.models.calibration_model import CalibrationModel
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["ml"])
 
-# Singleton calibration model
+# Singleton models
 _calibration_model: CalibrationModel | None = None
+_ensemble_model = None
 
 
 def get_calibration_model() -> CalibrationModel:
@@ -21,12 +24,22 @@ def get_calibration_model() -> CalibrationModel:
     return _calibration_model
 
 
+def get_ensemble_model():
+    """Lazy-load ensemble model (calibration + XGBoost + LightGBM)."""
+    global _ensemble_model
+    if _ensemble_model is None:
+        from ml.models.ensemble import EnsembleModel
+        _ensemble_model = EnsembleModel()
+        _ensemble_model.load_all()
+    return _ensemble_model
+
+
 @router.get("/predictions/{market_id}")
 async def get_prediction(
     market_id: int,
     session: AsyncSession = Depends(get_session),
 ):
-    """Get ML predictions for a market."""
+    """Get ML predictions for a market (calibration + ensemble if available)."""
     market = await session.get(Market, market_id)
     if not market:
         return {"error": "Market not found"}
@@ -36,6 +49,14 @@ async def get_prediction(
 
     model = get_calibration_model()
     mispricing = model.get_mispricing(market.price_yes)
+
+    # Try ensemble prediction
+    ensemble_data = None
+    try:
+        ensemble = get_ensemble_model()
+        ensemble_data = ensemble.predict_market(market)
+    except Exception as e:
+        logger.debug(f"Ensemble prediction unavailable: {e}")
 
     return {
         "market_id": market_id,
@@ -49,8 +70,44 @@ async def get_prediction(
                 "direction": mispricing["direction"],
                 "edge_estimate": mispricing["edge_estimate"],
             },
+            "ensemble": ensemble_data,
         },
     }
+
+
+@router.get("/predictions/{market_id}/ensemble")
+async def get_ensemble_prediction(
+    market_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get ensemble (calibration + XGBoost + LightGBM) prediction."""
+    market = await session.get(Market, market_id)
+    if not market:
+        return {"error": "Market not found"}
+
+    if market.price_yes is None:
+        return {"error": "No price data available"}
+
+    try:
+        ensemble = get_ensemble_model()
+        result = ensemble.predict_market(market)
+        return {
+            "market_id": market_id,
+            "question": market.question,
+            "ensemble": result,
+        }
+    except Exception as e:
+        # Fallback to calibration-only
+        model = get_calibration_model()
+        mispricing = model.get_mispricing(market.price_yes)
+        return {
+            "market_id": market_id,
+            "question": market.question,
+            "ensemble": None,
+            "fallback": "calibration_only",
+            "calibration": mispricing,
+            "error": str(e),
+        }
 
 
 @router.get("/predictions/top/mispriced")
@@ -90,6 +147,60 @@ async def top_mispriced(
     # Sort by absolute delta (biggest mispricings first)
     results.sort(key=lambda x: abs(x["delta_pct"]), reverse=True)
     return {"markets": results[:limit]}
+
+
+@router.get("/predictions/accuracy")
+async def get_model_accuracy():
+    """Get model performance metrics from training."""
+    try:
+        ensemble = get_ensemble_model()
+        metrics = ensemble.metrics
+        weights = ensemble.weights
+
+        return {
+            "trained": bool(metrics),
+            "metrics": metrics,
+            "weights": weights,
+            "models": {
+                "calibration": {
+                    "name": "Isotonic Regression",
+                    "type": "calibration",
+                    "brier_score": metrics.get("calibration_brier"),
+                    "weight": weights.get("calibration", 0),
+                },
+                "xgboost": {
+                    "name": "XGBoost",
+                    "type": "gradient_boosting",
+                    "brier_score": metrics.get("xgboost_brier"),
+                    "weight": weights.get("xgboost", 0),
+                    "feature_importance": metrics.get("xgb_feature_importance", {}),
+                },
+                "lightgbm": {
+                    "name": "LightGBM",
+                    "type": "gradient_boosting",
+                    "brier_score": metrics.get("lightgbm_brier"),
+                    "weight": weights.get("lightgbm", 0),
+                    "feature_importance": metrics.get("lgb_feature_importance", {}),
+                },
+                "ensemble": {
+                    "name": "Weighted Ensemble",
+                    "type": "ensemble",
+                    "brier_score": metrics.get("ensemble_brier"),
+                    "auc_roc": metrics.get("ensemble_auc"),
+                },
+            },
+            "baseline_brier": metrics.get("baseline_brier"),
+            "training_samples": metrics.get("n_train"),
+            "test_samples": metrics.get("n_test"),
+            "total_resolved": metrics.get("n_total_resolved"),
+            "usable_samples": metrics.get("n_usable"),
+        }
+    except Exception as e:
+        return {
+            "trained": False,
+            "error": str(e),
+            "hint": "Run: python scripts/train_ensemble.py",
+        }
 
 
 @router.get("/calibration/curve")

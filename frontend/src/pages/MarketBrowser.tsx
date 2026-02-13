@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -26,9 +26,30 @@ interface Market {
   liquidity: number | null
   updated_at: string | null
   last_fetched_at: string | null
+  is_resolved: boolean
+  is_active: boolean
 }
 
-type SortField = 'volume_24h' | 'price_yes' | 'question' | 'end_date' | 'liquidity' | 'updated_at'
+// Helper: Calculate time until market closes
+function getTimeToClose(endDate: string | null): string | null {
+  if (!endDate) return null
+  const now = Date.now()
+  const end = new Date(endDate).getTime()
+  const diff = end - now
+
+  if (diff < 0) return 'Closed'
+
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+
+  if (days > 30) return `${Math.floor(days / 30)}mo`
+  if (days > 0) return `${days}d`
+  if (hours > 0) return `${hours}h`
+  return '<1h'
+}
+
+type SortField = 'volume_24h' | 'price_yes' | 'end_date' | 'liquidity' | 'updated_at'
+type StatusFilter = 'active' | 'resolved' | 'all'
 
 const PAGE_SIZE = 24
 
@@ -38,19 +59,21 @@ export default function MarketBrowser() {
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [platformFilter, setPlatformFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('active')
   const [sortField, setSortField] = useState<SortField>('volume_24h')
+  const [sortAsc, setSortAsc] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid')
   const [page, setPage] = useState(0)
 
   // Debounce search input
-  const searchTimeout = useState<ReturnType<typeof setTimeout> | null>(null)
+  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handleSearch = (value: string) => {
     setSearch(value)
-    if (searchTimeout[0]) clearTimeout(searchTimeout[0])
-    searchTimeout[1](setTimeout(() => {
+    if (searchTimeout.current) clearTimeout(searchTimeout.current)
+    searchTimeout.current = setTimeout(() => {
       setDebouncedSearch(value)
       setPage(0)
-    }, 300))
+    }, 300)
   }
 
   // Fetch categories from server
@@ -63,22 +86,39 @@ export default function MarketBrowser() {
   })
   const categories = categoriesData ?? []
 
-  // Fetch markets with server-side filters
+  // Fetch markets — backend handles quality filtering (dead prices, combos, expired)
   const { data, isLoading, error } = useQuery<{ markets: Market[]; total: number }>({
-    queryKey: ['markets', debouncedSearch, categoryFilter, platformFilter, sortField, page],
+    queryKey: ['markets', debouncedSearch, categoryFilter, platformFilter, statusFilter, sortField, sortAsc, page],
     queryFn: async () => {
       const params: Record<string, any> = {
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
         sort_by: sortField,
+        sort_dir: sortAsc ? 'asc' : 'desc',
+        exclude_combos: true,
       }
       if (debouncedSearch) params.search = debouncedSearch
       if (categoryFilter !== 'all') params.category = categoryFilter
       if (platformFilter !== 'all') params.platform = platformFilter
+      if (statusFilter === 'active') {
+        params.is_active = true
+        params.is_resolved = false
+      } else if (statusFilter === 'resolved') {
+        params.is_active = false
+        params.is_resolved = true
+        params.exclude_combos = false
+      } else {
+        // "all" — show everything, disable quality filters
+        params.is_active = false
+        params.exclude_combos = false
+      }
       const response = await apiClient.get('/markets', { params })
       return response.data
     },
     refetchInterval: 30_000,
+    staleTime: 60_000,
+    gcTime: 300_000,
+    placeholderData: (previousData) => previousData,
   })
 
   const markets = data?.markets ?? []
@@ -142,8 +182,9 @@ export default function MarketBrowser() {
         ))}
       </div>
 
-      {/* Search + Platform + View Toggle */}
-      <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+      {/* Search + Filters + View Toggle */}
+      <div className="flex flex-col gap-3">
+        {/* Search bar */}
         <div className="relative flex-1">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: 'var(--text-3)' }} />
           <input
@@ -155,74 +196,113 @@ export default function MarketBrowser() {
           />
         </div>
 
-        {/* Platform filter */}
-        <div className="flex gap-1.5 flex-shrink-0">
-          {['all', 'polymarket', 'kalshi'].map((p) => (
+        {/* Filters row */}
+        <div className="flex flex-wrap gap-3 items-center">
+          {/* Status filter */}
+          <div className="flex gap-1.5 items-center">
+            {(['active', 'resolved', 'all'] as StatusFilter[]).map((s) => (
+              <button
+                key={s}
+                onClick={() => { setStatusFilter(s); setPage(0) }}
+                className="px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors capitalize"
+                style={{
+                  background: statusFilter === s ? 'var(--accent)' : 'var(--card)',
+                  color: statusFilter === s ? '#000' : 'var(--text-3)',
+                  border: `1px solid ${statusFilter === s ? 'var(--accent)' : 'var(--border)'}`,
+                }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+
+          {/* Separator */}
+          <div className="w-px h-5" style={{ background: 'var(--border)' }} />
+
+          {/* Platform filter */}
+          <div className="flex gap-1.5 items-center">
+            {['all', 'polymarket', 'kalshi'].map((p) => (
+              <button
+                key={p}
+                onClick={() => { setPlatformFilter(p); setPage(0) }}
+                className="px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors capitalize"
+                style={{
+                  background: platformFilter === p ? 'var(--card)' : 'transparent',
+                  color: platformFilter === p ? 'var(--text)' : 'var(--text-3)',
+                  border: `1px solid ${platformFilter === p ? 'var(--border)' : 'transparent'}`,
+                }}
+              >
+                {p === 'all' ? 'All' : p.charAt(0).toUpperCase() + p.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* View toggle */}
+          <div className="flex gap-1">
             <button
-              key={p}
-              onClick={() => { setPlatformFilter(p); setPage(0) }}
-              className="px-3 py-2 rounded-lg text-[11px] font-medium transition-colors"
+              onClick={() => setViewMode('list')}
+              className="p-2 rounded-lg transition-colors"
               style={{
-                background: platformFilter === p ? 'var(--card)' : 'transparent',
-                color: platformFilter === p ? 'var(--text)' : 'var(--text-3)',
-                border: `1px solid ${platformFilter === p ? 'var(--border)' : 'transparent'}`,
+                background: viewMode === 'list' ? 'var(--card)' : 'transparent',
+                color: viewMode === 'list' ? 'var(--text)' : 'var(--text-3)',
+                border: `1px solid ${viewMode === 'list' ? 'var(--border)' : 'transparent'}`,
               }}
             >
-              {p === 'all' ? 'All' : p.charAt(0).toUpperCase() + p.slice(1)}
+              <List className="h-4 w-4" />
             </button>
-          ))}
-        </div>
-
-        {/* View toggle */}
-        <div className="flex gap-1 flex-shrink-0">
-          <button
-            onClick={() => setViewMode('list')}
-            className="p-2 rounded-lg transition-colors"
-            style={{
-              background: viewMode === 'list' ? 'var(--card)' : 'transparent',
-              color: viewMode === 'list' ? 'var(--text)' : 'var(--text-3)',
-            }}
-          >
-            <List className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setViewMode('grid')}
-            className="p-2 rounded-lg transition-colors"
-            style={{
-              background: viewMode === 'grid' ? 'var(--card)' : 'transparent',
-              color: viewMode === 'grid' ? 'var(--text)' : 'var(--text-3)',
-            }}
-          >
-            <LayoutGrid className="h-4 w-4" />
-          </button>
+            <button
+              onClick={() => setViewMode('grid')}
+              className="p-2 rounded-lg transition-colors"
+              style={{
+                background: viewMode === 'grid' ? 'var(--card)' : 'transparent',
+                color: viewMode === 'grid' ? 'var(--text)' : 'var(--text-3)',
+                border: `1px solid ${viewMode === 'grid' ? 'var(--border)' : 'transparent'}`,
+              }}
+            >
+              <LayoutGrid className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Sort + Count */}
-      <div className="flex items-center justify-between">
-        <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[12px] font-medium" style={{ color: 'var(--text-2)' }}>
           {data?.total?.toLocaleString() ?? 0} markets
         </p>
-        <div className="flex gap-1.5 overflow-x-auto scrollbar-hide">
+        <div className="flex gap-1.5 items-center">
           {([
-            ['volume_24h', 'Volume'],
-            ['price_yes', 'Price'],
+            ['volume_24h', 'Trending'],
+            ['updated_at', 'Latest'],
             ['liquidity', 'Liquidity'],
-            ['end_date', 'End Date'],
-            ['updated_at', 'Updated'],
-            ['question', 'Name'],
+            ['end_date', 'Closes Soon'],
+            ['price_yes', 'Price'],
           ] as [SortField, string][]).map(([field, label]) => (
             <button
               key={field}
-              onClick={() => { setSortField(field); setPage(0) }}
-              className="px-3 py-1 rounded-lg text-[11px] font-medium transition-colors whitespace-nowrap flex-shrink-0"
+              onClick={() => {
+                if (sortField === field) {
+                  setSortAsc(!sortAsc)
+                } else {
+                  setSortField(field)
+                  setSortAsc(false)
+                }
+                setPage(0)
+              }}
+              className="px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors whitespace-nowrap flex items-center gap-1"
               style={{
                 background: sortField === field ? 'var(--card)' : 'transparent',
                 color: sortField === field ? 'var(--text)' : 'var(--text-3)',
                 border: sortField === field ? '1px solid var(--border)' : '1px solid transparent',
               }}
             >
-              {label} {sortField === field && '↓'}
+              {label}
+              {sortField === field && (
+                <span style={{ color: 'var(--accent)' }}>{sortAsc ? '↑' : '↓'}</span>
+              )}
             </button>
           ))}
         </div>
@@ -234,16 +314,24 @@ export default function MarketBrowser() {
           {markets.map((market) => {
             const p = market.price_yes ?? 0
             const pNo = market.price_no ?? (1 - p)
+            const ttc = getTimeToClose(market.end_date)
             return (
               <div
                 key={market.id}
                 onClick={() => navigate(`/markets/${market.id}`)}
                 className="card card-hover p-5 cursor-pointer group"
+                style={{ opacity: market.is_resolved ? 0.6 : 1 }}
               >
-                {/* Platform + Category */}
-                <div className="flex items-center gap-2 mb-3">
+                {/* Platform + Category + Time */}
+                <div className="flex items-center gap-2 mb-3 flex-wrap">
                   <span className="pill pill-accent capitalize text-[10px]">{market.platform}</span>
                   <span className="pill text-[10px]">{market.category ?? 'other'}</span>
+                  {market.is_resolved && (
+                    <span className="pill pill-red text-[10px] font-semibold">Resolved</span>
+                  )}
+                  {!market.is_resolved && ttc && ttc !== 'Closed' && (
+                    <span className="pill pill-blue text-[10px] font-semibold">{ttc}</span>
+                  )}
                 </div>
 
                 {/* Question */}
@@ -300,6 +388,7 @@ export default function MarketBrowser() {
                 key={market.id}
                 onClick={() => navigate(`/markets/${market.id}`)}
                 className="card card-hover flex items-center gap-4 px-5 py-4 cursor-pointer group"
+                style={{ opacity: market.is_resolved ? 0.6 : 1 }}
               >
                 {/* Price */}
                 <div

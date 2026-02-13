@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi_cache.decorator import cache
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,20 +21,35 @@ async def list_markets(
     is_active: bool = True,
     is_resolved: bool | None = None,
     sort_by: str = "volume_24h",
+    sort_dir: str = "desc",
+    exclude_combos: bool = True,
     price_min: float | None = Query(default=None, ge=0, le=1),
     price_max: float | None = Query(default=None, ge=0, le=1),
     limit: int = Query(default=50, le=500),
     offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ):
-    """List markets with filters."""
+    """List markets with filters. Active markets exclude dead (price 0/1) and expired by default."""
     query = select(Market)
 
     if is_active:
         query = query.where(Market.is_active == True)  # noqa
+        # Exclude effectively-resolved markets (price stuck at 0 or 1)
+        query = query.where(Market.price_yes > 0.01, Market.price_yes < 0.99)
+        # Exclude expired markets (past end_date)
+        query = query.where(
+            or_(Market.end_date == None, Market.end_date >= func.now())  # noqa
+        )
 
     if is_resolved is not None:
         query = query.where(Market.is_resolved == is_resolved)
+
+    # Exclude Kalshi combo/parlay markets (contain ",yes " or ",no " patterns)
+    if exclude_combos:
+        query = query.where(
+            ~Market.question.like('%,yes %'),
+            ~Market.question.like('%,no %'),
+        )
 
     p_obj = None
     if platform:
@@ -60,7 +76,7 @@ async def list_markets(
     if price_max is not None:
         query = query.where(Market.price_yes <= price_max)
 
-    # Sorting
+    # Sorting with direction support
     valid_sorts = {
         "volume_24h": Market.volume_24h,
         "volume_total": Market.volume_total,
@@ -71,8 +87,8 @@ async def list_markets(
         "updated_at": Market.updated_at,
     }
     sort_col = valid_sorts.get(sort_by, Market.volume_24h)
-    if sort_by == "question":
-        query = query.order_by(sort_col.asc()).offset(offset).limit(limit)
+    if sort_dir == "asc":
+        query = query.order_by(sort_col.asc().nullslast()).offset(offset).limit(limit)
     else:
         query = query.order_by(sort_col.desc().nullslast()).offset(offset).limit(limit)
 
@@ -83,8 +99,17 @@ async def list_markets(
     count_query = select(func.count(Market.id))
     if is_active:
         count_query = count_query.where(Market.is_active == True)  # noqa
+        count_query = count_query.where(Market.price_yes > 0.01, Market.price_yes < 0.99)
+        count_query = count_query.where(
+            or_(Market.end_date == None, Market.end_date >= func.now())  # noqa
+        )
     if is_resolved is not None:
         count_query = count_query.where(Market.is_resolved == is_resolved)
+    if exclude_combos:
+        count_query = count_query.where(
+            ~Market.question.like('%,yes %'),
+            ~Market.question.like('%,no %'),
+        )
     if p_obj:
         count_query = count_query.where(Market.platform_id == p_obj.id)
     if category:
@@ -119,6 +144,8 @@ async def list_markets(
                 "liquidity": m.liquidity,
                 "end_date": m.end_date.isoformat() if m.end_date else None,
                 "is_neg_risk": m.is_neg_risk,
+                "is_resolved": m.is_resolved,
+                "is_active": m.is_active,
                 "updated_at": m.updated_at.isoformat() if m.updated_at else None,
                 "last_fetched_at": m.last_fetched_at.isoformat() if m.last_fetched_at else None,
             }
@@ -131,6 +158,7 @@ async def list_markets(
 
 
 @router.get("/markets/categories")
+@cache(expire=300)  # Cache for 5 minutes
 async def list_categories(session: AsyncSession = Depends(get_session)):
     """List all market categories with counts (normalized)."""
     result = await session.execute(
@@ -196,6 +224,16 @@ async def get_market_detail(
                 "similarity": m.similarity_score,
             })
 
+    # Fetch recent news (async, non-blocking)
+    news_articles = []
+    try:
+        from data_pipeline.collectors.gdelt_news import get_market_news as fetch_news
+        news_articles = await fetch_news(market.question, market.category)
+        news_articles = news_articles[:3]  # Top 3 only
+    except Exception as e:
+        # Don't fail the whole request if news fetch fails
+        print(f"News fetch failed: {e}")
+
     return {
         "id": market.id,
         "platform": platform.name if platform else "unknown",
@@ -224,6 +262,7 @@ async def get_market_detail(
             for p in reversed(prices)
         ],
         "cross_platform_matches": matched_markets,
+        "news": news_articles,  # NEW: Include news context
     }
 
 
@@ -413,4 +452,35 @@ async def get_orderbook(
         "asks": asks_cumulative[:10],  # Top 10 levels
         "bid_depth_total": snapshot.bid_depth_total,
         "ask_depth_total": snapshot.ask_depth_total,
+    }
+
+
+@router.get("/markets/{market_id}/news")
+async def get_market_news(
+    market_id: int,
+    max_articles: int = Query(default=5, le=10),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get relevant news articles for a market via GDELT.
+
+    Returns recent news context to help traders understand price moves.
+    """
+    from data_pipeline.collectors.gdelt_news import get_market_news as fetch_news
+
+    # Get market to extract question and category
+    market = await session.get(Market, market_id)
+    if not market:
+        raise HTTPException(status_code=404, detail="Market not found")
+
+    # Fetch news from GDELT
+    articles = await fetch_news(
+        question=market.question,
+        category=market.category,
+    )
+
+    # Return up to max_articles
+    return {
+        "market_id": market_id,
+        "articles": articles[:max_articles],
+        "count": len(articles),
     }

@@ -122,22 +122,35 @@ async def fetch_event(event_ticker: str) -> dict | None:
             return None
 
 
+def _cents_to_prob(raw_val) -> float:
+    """Convert Kalshi cent-based price (0-100) to probability (0-1).
+
+    Kalshi API returns prices in cents. response_price_units = 'usd_cent'.
+    A value of 88 means $0.88 = 88% probability.
+    """
+    if raw_val is None:
+        return 0.0
+    val = float(raw_val)
+    # Kalshi prices are always in cents (0-100 range)
+    # Divide by 100 unless it's already clearly a probability
+    if val > 1.0:
+        return val / 100.0
+    # Values 0 or 1 could be either 0 cents or 0/1 probability
+    # Since Kalshi uses cents, 0 means 0% and 1 means 1 cent = 1%
+    return val / 100.0 if val == 1.0 else val
+
+
 def parse_kalshi_market(raw: dict) -> dict:
     """Normalize a Kalshi market into our unified format."""
     # Kalshi prices are in cents (0-100), convert to 0-1
-    yes_price_raw = raw.get("yes_bid") or raw.get("last_price") or 0
-    no_price_raw = raw.get("no_bid") or 0
+    # Use None-aware fallback (0 is a valid price, not falsy)
+    yes_bid = raw.get("yes_bid")
+    last_price = raw.get("last_price")
+    yes_price_raw = yes_bid if yes_bid is not None and yes_bid > 0 else (last_price if last_price is not None else 0)
+    no_price_raw = raw.get("no_bid") if raw.get("no_bid") else 0
 
-    # Handle both cent-based (0-100) and decimal (0-1) formats
-    if isinstance(yes_price_raw, (int, float)) and yes_price_raw > 1:
-        price_yes = yes_price_raw / 100.0
-    else:
-        price_yes = float(yes_price_raw or 0)
-
-    if isinstance(no_price_raw, (int, float)) and no_price_raw > 1:
-        price_no = no_price_raw / 100.0
-    else:
-        price_no = float(no_price_raw or 0)
+    price_yes = _cents_to_prob(yes_price_raw)
+    price_no = _cents_to_prob(no_price_raw)
 
     # If we only have yes price, infer no price
     if price_yes > 0 and price_no == 0:

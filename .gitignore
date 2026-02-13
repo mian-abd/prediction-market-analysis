@@ -19,8 +19,12 @@ venv/
 
 # Database
 *.db
+*.db-journal
 *.sqlite
 *.sqlite3
+
+# Windows reserved name
+nul
 
 # ML models
 ml/saved_models/*.joblib

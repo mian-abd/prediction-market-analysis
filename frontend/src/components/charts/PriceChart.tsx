@@ -57,7 +57,6 @@ export default function PriceChart({
   const containerCallbackRef = (node: HTMLDivElement | null) => {
     chartContainerRef.current = node
     if (node && !containerMounted) {
-      console.log('[PriceChart] Container mounted in DOM')
       setContainerMounted(true)
     }
   }
@@ -65,7 +64,6 @@ export default function PriceChart({
   // Fetch price data from API
   useEffect(() => {
     if (providedData) {
-      console.log('[PriceChart] Using provided data:', providedData.length, 'points')
       setPriceData(providedData)
       setIsLoading(false)
       return
@@ -78,7 +76,6 @@ export default function PriceChart({
 
         // Fetch price snapshots for this market
         const url = `/api/v1/markets/${marketId}/price-history?interval=${interval}&limit=500`
-        console.log('[PriceChart] Fetching from:', url)
         const response = await fetch(url)
 
         if (!response.ok) {
@@ -86,7 +83,6 @@ export default function PriceChart({
         }
 
         const result = await response.json()
-        console.log('[PriceChart] Received data:', result.data?.length || 0, 'points', result)
         setPriceData(result.data || [])
       } catch (err) {
         console.error('[PriceChart] Failed to fetch price data:', err)
@@ -108,20 +104,22 @@ export default function PriceChart({
   // Initialize chart
   useEffect(() => {
     if (!containerMounted || !chartContainerRef.current) {
-      console.log('[PriceChart] Waiting for container to mount...')
       return
     }
 
     const containerWidth = chartContainerRef.current.clientWidth
-    console.log('[PriceChart] Initializing chart - container width:', containerWidth, 'height:', height)
 
-    // Don't initialize if container has no width (not laid out yet)
     if (containerWidth === 0) {
-      console.warn('[PriceChart] Container width is 0, cannot initialize')
       return
     }
 
-    console.log('[PriceChart] Creating chart instance...')
+    const handleResize = () => {
+      if (chartContainerRef.current && chartRef.current) {
+        chartRef.current.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+        })
+      }
+    }
 
     try {
       // Create chart instance
@@ -176,13 +174,10 @@ export default function PriceChart({
         },
       })
 
-      console.log('[PriceChart] Chart created:', chart)
-      console.log('[PriceChart] Chart methods:', Object.keys(chart))
       chartRef.current = chart
 
       // Create main price series based on type (v5 API)
       if (type === 'candlestick') {
-        console.log('[PriceChart] Adding candlestick series...')
         mainSeriesRef.current = chart.addSeries(CandlestickSeries, {
           upColor: '#10B981', // Tailwind green-500
           downColor: '#EF4444', // Tailwind red-500
@@ -226,18 +221,8 @@ export default function PriceChart({
         })
       }
 
-    // Handle resize
-    const handleResize = () => {
-      if (chartContainerRef.current && chartRef.current) {
-        chartRef.current.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-        })
-      }
-    }
-
       window.addEventListener('resize', handleResize)
 
-      console.log('[PriceChart] Chart initialization complete')
     } catch (err) {
       console.error('[PriceChart] Error during chart initialization:', err)
       setError(err instanceof Error ? err.message : 'Failed to initialize chart')
@@ -255,15 +240,11 @@ export default function PriceChart({
 
   // Update chart data
   useEffect(() => {
-    console.log('[PriceChart] Update effect - mainSeries:', !!mainSeriesRef.current, 'priceData:', priceData.length)
-
     if (!mainSeriesRef.current || !priceData.length) {
-      console.log('[PriceChart] Skipping update - no series or no data')
       return
     }
 
     try {
-      console.log('[PriceChart] Updating chart with', priceData.length, 'data points')
       if (type === 'candlestick') {
         const candlestickData: CandlestickData<Time>[] = priceData.map((d) => ({
           time: d.timestamp as Time,
@@ -272,7 +253,6 @@ export default function PriceChart({
           low: d.low,
           close: d.close,
         }))
-        console.log('[PriceChart] Setting candlestick data, first point:', candlestickData[0])
         mainSeriesRef.current.setData(candlestickData)
       } else {
         // For line and area, use close price
@@ -280,7 +260,6 @@ export default function PriceChart({
           time: d.timestamp as Time,
           value: d.close,
         }))
-        console.log('[PriceChart] Setting line data, first point:', lineData[0])
         mainSeriesRef.current.setData(lineData)
       }
 
@@ -296,21 +275,17 @@ export default function PriceChart({
             color: isUp ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)', // Green/Red with alpha
           }
         })
-        console.log('[PriceChart] Setting volume data')
         volumeSeriesRef.current.setData(volumeData)
       }
 
       // Fit content to visible range
       if (chartRef.current) {
         chartRef.current.timeScale().fitContent()
-        console.log('[PriceChart] Fitted content to chart')
       }
     } catch (err) {
       console.error('[PriceChart] Failed to update chart data:', err)
     }
   }, [priceData, type, showVolume])
-
-  console.log('[PriceChart] Render - isLoading:', isLoading, 'error:', error, 'priceData.length:', priceData.length)
 
   if (isLoading) {
     return (
@@ -366,8 +341,6 @@ export default function PriceChart({
       </div>
     )
   }
-
-  console.log('[PriceChart] Rendering chart container')
 
   return (
     <div

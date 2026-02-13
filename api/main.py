@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
 
 from config.settings import settings
 from db.database import init_db, close_db
@@ -31,6 +33,10 @@ async def lifespan(app: FastAPI):
     # Initialize database tables
     logger.info("Initializing database...")
     await init_db()
+
+    # Initialize in-memory cache
+    logger.info("Initializing API cache...")
+    FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
 
     # Start background data pipeline
     logger.info("Starting background data pipeline...")
@@ -67,7 +73,7 @@ def create_app() -> FastAPI:
     )
 
     # Register routes
-    from api.routes import markets, arbitrage, system, ml_predictions, ai_analysis, portfolio, analytics
+    from api.routes import markets, arbitrage, system, ml_predictions, ai_analysis, portfolio, analytics, copy_trading
     app.include_router(markets.router, prefix="/api/v1")
     app.include_router(arbitrage.router, prefix="/api/v1")
     app.include_router(system.router, prefix="/api/v1")
@@ -75,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(ai_analysis.router, prefix="/api/v1")
     app.include_router(portfolio.router, prefix="/api/v1")
     app.include_router(analytics.router, prefix="/api/v1")
+    app.include_router(copy_trading.router, prefix="/api/v1")
 
     return app
 
