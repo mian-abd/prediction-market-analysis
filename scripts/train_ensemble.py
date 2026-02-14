@@ -131,28 +131,47 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
             if skipped_no_snapshots > 0:
                 logger.info(f"  Skipped {skipped_no_snapshots} markets (no snapshots before as_of)")
 
-        # Load latest orderbook snapshot for each market (no as_of enforcement yet)
+        # Load latest orderbook snapshot BEFORE as_of for each market (temporal integrity)
         orderbook_snapshots_map: dict[int, OrderbookSnapshot] = {}
         if market_ids:
-            subq = (
-                select(
-                    OrderbookSnapshot.market_id,
-                    func.max(OrderbookSnapshot.timestamp).label('max_time')
-                )
-                .where(OrderbookSnapshot.market_id.in_(market_ids))
-                .group_by(OrderbookSnapshot.market_id)
-                .subquery()
-            )
+            # Load ALL orderbook snapshots, then filter per-market by as_of
             result = await session.execute(
                 select(OrderbookSnapshot)
-                .join(
-                    subq,
-                    (OrderbookSnapshot.market_id == subq.c.market_id) &
-                    (OrderbookSnapshot.timestamp == subq.c.max_time)
-                )
+                .where(OrderbookSnapshot.market_id.in_(market_ids))
+                .order_by(OrderbookSnapshot.market_id, OrderbookSnapshot.timestamp.desc())
             )
-            for ob in result.scalars().all():
-                orderbook_snapshots_map[ob.market_id] = ob
+            all_orderbooks = result.scalars().all()
+
+            # Group by market and filter to as_of
+            markets_by_id = {m.id: m for m in markets}
+            skipped_no_ob_as_of = 0
+
+            for market_id in market_ids:
+                market = markets_by_id.get(market_id)
+                if not market:
+                    continue
+
+                # Compute as_of = resolved_at - 24h (same logic as price snapshots)
+                if market.resolved_at:
+                    as_of = market.resolved_at - timedelta(hours=24)
+                elif getattr(market, 'end_date', None):
+                    as_of = market.end_date - timedelta(hours=24)
+                else:
+                    skipped_no_ob_as_of += 1
+                    continue
+
+                # Filter orderbooks to timestamp <= as_of, take latest
+                valid_obs = [ob for ob in all_orderbooks
+                            if ob.market_id == market_id and ob.timestamp <= as_of]
+
+                if valid_obs:
+                    # Already sorted by timestamp desc, so first is latest before as_of
+                    orderbook_snapshots_map[market_id] = valid_obs[0]
+                # Else: no orderbook before as_of, skip (no entry in map)
+
+            if skipped_no_ob_as_of > 0:
+                logger.info(f"  Orderbook: skipped {skipped_no_ob_as_of} markets (no valid as_of time)")
+
             session.expunge_all()
 
         logger.info(
@@ -506,6 +525,28 @@ async def main():
             "Brier score may be artificially low (near-decided markets)."
         )
 
+    # --- Tripwire: Volume contamination check ---
+    # Volume features should NOT be highly correlated with resolution outcome
+    # High correlation suggests post-resolution volume spikes are leaking into training
+    volume_corrs = {}
+    for vol_feature in ["volume_volatility", "volume_trend_7d", "log_volume_total", "volume_per_day"]:
+        if vol_feature in ENSEMBLE_FEATURE_NAMES:
+            vol_idx = ENSEMBLE_FEATURE_NAMES.index(vol_feature)
+            # Compute Pearson correlation between volume feature and resolution outcome
+            corr = np.corrcoef(X[:, vol_idx], y)[0, 1]
+            volume_corrs[vol_feature] = corr
+
+    if volume_corrs:
+        logger.info(f"\nVolume feature correlations with resolution:")
+        for feat, corr in volume_corrs.items():
+            logger.info(f"  {feat}: {corr:.3f}")
+            if abs(corr) > 0.4:
+                logger.warning(
+                    f"HIGH CORRELATION WARNING: {feat} has correlation {corr:.3f} with resolution. "
+                    f"Suggests post-resolution volume contamination. Consider excluding volume features or "
+                    f"implementing clean volume_24h computed from historical snapshots."
+                )
+
     # --- Tripwire: Naive baseline ---
     class_prior = float(y.mean())
     naive_brier = class_prior * (1 - class_prior)
@@ -776,6 +817,13 @@ async def main():
             "pct_near_0": round(pct_near_0, 3),
             "pct_near_1": round(pct_near_1, 3),
         },
+        "leakage_warnings": [
+            "orderbook_snapshots: filtered to as_of timestamp (fixed as of 2026-02-14)",
+            f"volume_features: correlation with resolution = {max(volume_corrs.values(), key=abs) if volume_corrs else 0.0:.3f} (check if >0.3)"
+            if volume_corrs else "volume_features: correlation check not performed",
+            f"price_distribution: {pct_near_0 + pct_near_1:.1%} near-extremes (inflates metrics, real-world harder)",
+            f"survivorship_bias: {len(y)}/{len(markets)} ({100*len(y)/max(1,len(markets)):.1f}%) of resolved markets used (volume>0 filter)",
+        ],
     }
 
     if xgb_model:

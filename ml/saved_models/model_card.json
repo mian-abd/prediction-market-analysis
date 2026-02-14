@@ -1,5 +1,5 @@
 {
-  "trained_at": "2026-02-14T05:33:00.814463",
+  "trained_at": "2026-02-14T07:14:45.734550",
   "n_total_resolved": 13199,
   "n_usable": 2840,
   "n_train": 2272,
@@ -9,17 +9,12 @@
   "feature_names": [
     "price_yes",
     "price_distance_from_50",
-    "log_volume_total",
     "log_open_interest",
     "calibration_bias",
     "time_to_resolution_hrs",
-    "volume_per_day",
     "return_1h",
     "volatility_20",
-    "zscore_24h",
-    "volume_trend_7d",
-    "volume_volatility",
-    "volume_acceleration"
+    "zscore_24h"
   ],
   "features_dropped": [
     "price_bucket (near-constant, 20 unique/2272)",
@@ -32,8 +27,7 @@
     "depth_ratio (zero variance)",
     "bid_depth_usd (zero variance)",
     "ask_depth_usd (zero variance)",
-    "vwap_deviation (zero variance)",
-    "volume_to_liquidity_ratio (near-constant, 23 unique/2272)"
+    "vwap_deviation (zero variance)"
   ],
   "models_included": [
     "calibration",
@@ -43,64 +37,60 @@
   "models_excluded": [],
   "oof_brier": {
     "calibration": 0.1026,
-    "xgboost": 0.0509,
-    "lightgbm": 0.0521
+    "xgboost": 0.0485,
+    "lightgbm": 0.0516
   },
   "baseline_brier": 0.067,
   "naive_baseline_brier": 0.2234,
   "calibration_brier": 0.0727,
-  "ensemble_brier": 0.0539,
-  "post_calibrated_brier": 0.0579,
-  "ensemble_auc": 0.9654,
-  "ensemble_logloss": 0.2106,
-  "optimal_threshold": 0.292,
+  "ensemble_brier": 0.0557,
+  "post_calibrated_brier": 0.0597,
+  "ensemble_auc": 0.9643,
+  "ensemble_logloss": 0.2168,
+  "optimal_threshold": 0.193,
   "ablation": {
     "calibration_only": 0.0727,
-    "cal_plus_xgb": 0.0577,
-    "cal_plus_lgb": 0.0564,
-    "full_ensemble": 0.0539
+    "cal_plus_xgb": 0.06,
+    "cal_plus_lgb": 0.0572,
+    "full_ensemble": 0.0557
   },
   "profit_simulation": {
-    "ungated_pnl": 30.09,
-    "ungated_trades": 372,
-    "ungated_win_rate": 0.882,
-    "gated_pnl": 29.52,
-    "gated_trades": 310,
-    "gated_win_rate": 0.868,
+    "ungated_pnl": 30.22,
+    "ungated_trades": 377,
+    "ungated_win_rate": 0.881,
+    "gated_pnl": 29.49,
+    "gated_trades": 314,
+    "gated_win_rate": 0.86,
     "min_net_edge": 0.03
   },
   "price_distribution": {
     "pct_near_0": 0.197,
     "pct_near_1": 0.126
   },
+  "leakage_warnings": [
+    "orderbook_snapshots: filtered to as_of timestamp (fixed as of 2026-02-14)",
+    "volume_features: correlation check not performed",
+    "price_distribution: 32.3% near-extremes (inflates metrics, real-world harder)",
+    "survivorship_bias: 2840/13199 (21.5%) of resolved markets used (volume>0 filter)"
+  ],
   "xgb_feature_importance": {
-    "volume_volatility": 0.5557646751403809,
-    "volume_trend_7d": 0.2603655159473419,
-    "log_open_interest": 0.04804370924830437,
-    "price_yes": 0.036175549030303955,
-    "price_distance_from_50": 0.026700371876358986,
-    "calibration_bias": 0.025125602260231972,
-    "volume_per_day": 0.01783539354801178,
-    "time_to_resolution_hrs": 0.017731845378875732,
-    "log_volume_total": 0.012257375754415989,
+    "log_open_interest": 0.4185101091861725,
+    "price_yes": 0.22671298682689667,
+    "volatility_20": 0.2024313360452652,
+    "calibration_bias": 0.11332561820745468,
+    "time_to_resolution_hrs": 0.02238580398261547,
+    "price_distance_from_50": 0.016634095460176468,
     "return_1h": 0.0,
-    "volatility_20": 0.0,
-    "zscore_24h": 0.0,
-    "volume_acceleration": 0.0
+    "zscore_24h": 0.0
   },
   "lgb_feature_importance": {
-    "log_open_interest": 99,
-    "price_yes": 96,
-    "log_volume_total": 83,
-    "time_to_resolution_hrs": 48,
-    "price_distance_from_50": 40,
-    "calibration_bias": 33,
-    "volume_volatility": 33,
-    "volume_per_day": 22,
-    "volume_trend_7d": 7,
+    "log_open_interest": 170,
+    "price_yes": 80,
+    "price_distance_from_50": 49,
+    "time_to_resolution_hrs": 46,
+    "calibration_bias": 40,
+    "volatility_20": 12,
     "return_1h": 0,
-    "volatility_20": 0,
-    "zscore_24h": 0,
-    "volume_acceleration": 0
+    "zscore_24h": 0
   }
 }

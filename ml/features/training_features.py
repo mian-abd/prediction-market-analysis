@@ -38,13 +38,15 @@ ENSEMBLE_FEATURE_NAMES: list[str] = [
     "price_bucket",
     "price_distance_from_50",
     # Volume/liquidity features
-    "log_volume_total",
-    "log_open_interest",
+    # EXCLUDED 2026-02-14: log_volume_total (0.664 correlation with resolution - contaminated)
+    # "log_volume_total",
+    "log_open_interest",  # Keep open_interest (less contaminated)
     # Calibration features (derived from price_yes)
     "calibration_bias",
     # Time features
     "time_to_resolution_hrs",
-    "volume_per_day",
+    # EXCLUDED 2026-02-14: volume_per_day (derived from contaminated volume_24h)
+    # "volume_per_day",
     # Market features (from market_features.py)
     "category_encoded",
     "is_weekend",
@@ -62,10 +64,15 @@ ENSEMBLE_FEATURE_NAMES: list[str] = [
     "ask_depth_usd",
     "vwap_deviation",
     # Volume pattern features (from volume_features.py)
-    "volume_trend_7d",
-    "volume_volatility",
-    "volume_acceleration",
-    "volume_to_liquidity_ratio",
+    # EXCLUDED 2026-02-14: All volume pattern features show high correlation with resolution
+    # - volume_trend_7d: 0.809 correlation (post-resolution spike contamination)
+    # - volume_volatility: 0.853 correlation (SEVERE contamination, was 55.6% XGBoost importance)
+    # - volume_acceleration: likely contaminated (not tested but derived from volume_24h)
+    # - volume_to_liquidity_ratio: derived from contaminated volume
+    # "volume_trend_7d",
+    # "volume_volatility",
+    # "volume_acceleration",
+    # "volume_to_liquidity_ratio",
 ]
 
 N_FEATURES = len(ENSEMBLE_FEATURE_NAMES)  # 25 (was 28, removed 3 redundant)

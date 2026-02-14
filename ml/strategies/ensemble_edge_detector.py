@@ -14,10 +14,10 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# --- Quality Gate Thresholds ---
-MIN_VOLUME_TOTAL = 5000     # USD, liquid enough to trade
-MIN_VOLUME_24H = 200        # USD, market is actively traded
-MIN_LIQUIDITY = 1000        # Open interest, can absorb position
+# --- Quality Gate Thresholds (TIGHTENED 2026-02-14 to prevent thin market losses) ---
+MIN_VOLUME_TOTAL = 10000    # USD, liquid enough to trade (was 5K, now 2× stricter)
+MIN_VOLUME_24H = 1000       # USD, market is actively traded (was 200, now 5× stricter)
+MIN_LIQUIDITY = 5000        # Open interest, can absorb position (was 1K, now 5× stricter)
 MIN_PRICE = 0.02            # Tradeable range lower bound
 MAX_PRICE = 0.98            # Tradeable range upper bound
 
@@ -133,8 +133,12 @@ def compute_kelly(
         # f* = (q - p - fees) / q for buying NO
         kelly_raw = (market_price - ensemble_prob - fee_cost) / max(0.01, market_price)
 
-    # Apply fractional Kelly for safety and clip
-    return max(0.0, min(kelly_raw * KELLY_FRACTION, MAX_KELLY))
+    # Apply fractional Kelly for safety: cap raw Kelly FIRST, then apply fraction
+    # This allows position size to scale with edge magnitude (up to 8% raw → 2% fractional)
+    # BEFORE (BUG): min(kelly_raw * 0.25, 0.02) → always caps at 2% for edge >8%
+    # AFTER (FIX): min(kelly_raw, 0.08) * 0.25 → scales from 0-2% as edge grows 0-8%
+    kelly_capped = min(kelly_raw, MAX_KELLY / KELLY_FRACTION)  # Cap raw Kelly at 8%
+    return max(0.0, kelly_capped * KELLY_FRACTION)  # Apply 0.25× → 2% max
 
 
 def compute_confidence(
