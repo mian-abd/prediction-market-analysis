@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Platform, Market, PriceSnapshot, OrderbookSnapshot
+from data_pipeline.category_normalizer import normalize_category
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,9 @@ async def upsert_markets(
             existing.question = m["question"]
             existing.description = m.get("description")
             existing.category = m.get("category")
+            existing.normalized_category = normalize_category(
+                m.get("category"), m.get("question", ""), m.get("description", ""),
+            )
             existing.price_yes = m.get("price_yes")
             existing.price_no = m.get("price_no")
             existing.volume_24h = m.get("volume_24h", 0)
@@ -86,6 +90,9 @@ async def upsert_markets(
                 question=m["question"],
                 description=m.get("description"),
                 category=m.get("category"),
+                normalized_category=normalize_category(
+                    m.get("category"), m.get("question", ""), m.get("description", ""),
+                ),
                 slug=m.get("slug"),
                 price_yes=m.get("price_yes"),
                 price_no=m.get("price_no"),

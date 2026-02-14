@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react'
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts'
 import { Loader2, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react'
 import apiClient from '../../api/client'
+import EmptyState from '../EmptyState'
 
 interface StrategyWinRate {
   strategy: string
@@ -39,13 +40,6 @@ const getWinRateColor = (winRate: number): string => {
   if (winRate >= 60) return '#4CAF70' // Green (good)
   if (winRate >= 50) return '#C4A24D' // Yellow/Accent (neutral)
   return '#CF6679' // Red (poor)
-}
-
-const STRATEGY_COLORS: Record<string, string> = {
-  single_market_arb: '#4CAF70',
-  cross_platform_arb: '#5EB4EF',
-  calibration: '#B27BCC',
-  manual: '#8E8E93',
 }
 
 export default function WinRateChart({ minTrades = 1 }: WinRateChartProps) {
@@ -91,12 +85,11 @@ export default function WinRateChart({ minTrades = 1 }: WinRateChartProps) {
 
   if (data.strategies.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-2">
-        <AlertCircle className="h-5 w-5" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>
-          No trades yet
-        </p>
-      </div>
+      <EmptyState
+        icon={TrendingUp}
+        title="No trades yet"
+        message="Win rate statistics will appear here once you start trading."
+      />
     )
   }
 
@@ -151,7 +144,7 @@ export default function WinRateChart({ minTrades = 1 }: WinRateChartProps) {
               innerRadius={60}
               outerRadius={90}
               paddingAngle={2}
-              label={({ name, win_rate }) => `${name}: ${win_rate.toFixed(0)}%`}
+              label={(props: any) => `${props.name}: ${props.win_rate.toFixed(0)}%`}
               labelLine={{ stroke: 'rgba(255,255,255,0.3)', strokeWidth: 1 }}
             >
               {pieData.map((entry, index) => (
@@ -172,7 +165,7 @@ export default function WinRateChart({ minTrades = 1 }: WinRateChartProps) {
                 fontSize: '12px',
                 padding: '10px',
               }}
-              formatter={(value: number, name: string, props: any) => {
+              formatter={((value: number, name: string, props: any) => {
                 const { payload } = props
                 return [
                   <div key={name} className="space-y-1">
@@ -200,7 +193,7 @@ export default function WinRateChart({ minTrades = 1 }: WinRateChartProps) {
                     </div>
                   </div>,
                 ]
-              }}
+              }) as any}
             />
             <Legend
               wrapperStyle={{ fontSize: '11px', color: '#8E8E93' }}

@@ -9,8 +9,10 @@
  */
 
 import { useEffect, useState } from 'react'
-import { Loader2, AlertCircle } from 'lucide-react'
+import { Loader2, Network } from 'lucide-react'
 import apiClient from '../../api/client'
+import EmptyState from '../EmptyState'
+import ErrorState from '../ErrorState'
 
 interface CorrelationPair {
   market_a_id: number
@@ -33,6 +35,7 @@ interface CorrelationData {
   lookback_days: number
   min_correlation: number
   total_pairs: number
+  message?: string
 }
 
 interface CorrelationMatrixProps {
@@ -87,29 +90,22 @@ export default function CorrelationMatrix({
 
   if (error || !data) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 gap-3">
-        <AlertCircle className="h-6 w-6" style={{ color: 'var(--red)' }} />
-        <p className="text-[14px]" style={{ color: 'var(--text-3)' }}>
-          {error || 'No correlation data'}
-        </p>
-        <button onClick={fetchCorrelations} className="btn-ghost text-[13px]">
-          Retry
-        </button>
-      </div>
+      <ErrorState
+        title="Failed to load correlations"
+        message={error || 'Could not compute market correlations.'}
+        onRetry={fetchCorrelations}
+        showBackendHint={false}
+      />
     )
   }
 
   if (data.correlations.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 gap-2">
-        <AlertCircle className="h-6 w-6" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[14px]" style={{ color: 'var(--text-3)' }}>
-          {data.message || 'No correlations found'}
-        </p>
-        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
-          Try lowering the minimum correlation threshold
-        </p>
-      </div>
+      <EmptyState
+        icon={Network}
+        title={data.message || 'No correlations found'}
+        message="Try lowering the minimum correlation threshold or select a different category."
+      />
     )
   }
 

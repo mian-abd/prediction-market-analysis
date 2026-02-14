@@ -1,6 +1,6 @@
 """Copy Trading API routes - trader discovery, following, and performance tracking."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select, func, desc, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
@@ -10,10 +10,15 @@ from pydantic import BaseModel
 from db.database import get_session
 from db.models import (
     TraderProfile, FollowedTrader, CopyTrade, TraderActivity,
-    PortfolioPosition
+    PortfolioPosition, Market
 )
 
 router = APIRouter(prefix="/copy-trading", tags=["copy_trading"])
+
+
+async def get_current_user(x_user_id: str = Header(default="anonymous")) -> str:
+    """Extract user ID from X-User-Id header. Defaults to 'anonymous'."""
+    return x_user_id
 
 
 # ============================================================================
@@ -77,7 +82,7 @@ class Following(BaseModel):
 async def get_trader_leaderboard(
     sort_by: str = Query("total_pnl", regex="^(total_pnl|roi_pct|win_rate|total_trades)$"),
     limit: int = Query(50, ge=1, le=100),
-    current_user: str = "user_1",  # TODO: Extract from auth
+    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -135,7 +140,7 @@ async def get_trader_leaderboard(
 @router.get("/traders/{trader_id}", response_model=TraderDetail)
 async def get_trader_profile(
     trader_id: str,
-    current_user: str = "user_1",  # TODO: Extract from auth
+    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Get detailed trader profile with full stats."""
@@ -182,7 +187,7 @@ async def get_trader_profile(
 @router.post("/follow")
 async def follow_trader(
     request: FollowRequest,
-    current_user: str = "user_1",  # TODO: Extract from auth
+    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Start following a trader and copy their trades."""
@@ -241,7 +246,7 @@ async def follow_trader(
 @router.delete("/follow/{trader_id}")
 async def unfollow_trader(
     trader_id: str,
-    current_user: str = "user_1",  # TODO: Extract from auth
+    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Stop following a trader (does not close existing copied positions)."""
@@ -279,7 +284,7 @@ async def unfollow_trader(
 
 @router.get("/following", response_model=List[Following])
 async def get_following_traders(
-    current_user: str = "user_1",  # TODO: Extract from auth
+    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Get list of traders the current user is following."""
@@ -339,7 +344,7 @@ async def get_following_traders(
 
 @router.get("/performance")
 async def get_copy_performance(
-    current_user: str = "user_1",  # TODO: Extract from auth
+    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Get overall copy trading performance for current user."""
@@ -393,4 +398,192 @@ async def get_copy_performance(
         "total_pnl": total_pnl,
         "winning_trades": winning_trades,
         "win_rate": win_rate,
+    }
+
+
+# ============================================================================
+# TRADER ACTIVITY FEED
+# ============================================================================
+
+@router.get("/traders/{trader_id}/activity")
+async def get_trader_activity(
+    trader_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get recent activity feed for a trader."""
+    result = await session.execute(
+        select(TraderActivity)
+        .where(TraderActivity.trader_id == trader_id)
+        .order_by(TraderActivity.created_at.desc())
+        .limit(limit)
+    )
+    activities = result.scalars().all()
+
+    feed = []
+    for activity in activities:
+        data = activity.activity_data or {}
+
+        # Enrich with market name if available
+        market_name = None
+        if data.get("market_id"):
+            market = await session.get(Market, data["market_id"])
+            if market:
+                market_name = market.question
+
+        feed.append({
+            "id": activity.id,
+            "type": activity.activity_type,
+            "data": data,
+            "market_name": market_name,
+            "created_at": activity.created_at.isoformat(),
+        })
+
+    return feed
+
+
+@router.get("/traders/{trader_id}/positions")
+async def get_trader_positions(
+    trader_id: str,
+    status: str = Query("all", regex="^(open|closed|all)$"),
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get a trader's recent positions (for analytics display)."""
+    query = select(PortfolioPosition).where(
+        PortfolioPosition.user_id == trader_id,
+    )
+
+    if status == "open":
+        query = query.where(PortfolioPosition.exit_time == None)
+    elif status == "closed":
+        query = query.where(PortfolioPosition.exit_time != None)
+
+    query = query.order_by(PortfolioPosition.entry_time.desc()).limit(limit)
+
+    result = await session.execute(query)
+    positions = result.scalars().all()
+
+    items = []
+    for pos in positions:
+        market = await session.get(Market, pos.market_id)
+        items.append({
+            "id": pos.id,
+            "market_id": pos.market_id,
+            "market_name": market.question if market else "Unknown",
+            "side": pos.side,
+            "entry_price": pos.entry_price,
+            "quantity": pos.quantity,
+            "entry_time": pos.entry_time.isoformat(),
+            "exit_price": pos.exit_price,
+            "exit_time": pos.exit_time.isoformat() if pos.exit_time else None,
+            "realized_pnl": pos.realized_pnl,
+            "strategy": pos.strategy,
+        })
+
+    return {"positions": items, "count": len(items)}
+
+
+@router.get("/traders/{trader_id}/equity-curve")
+async def get_trader_equity_curve(
+    trader_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get cumulative P&L over time for a trader's equity curve."""
+    result = await session.execute(
+        select(PortfolioPosition)
+        .where(
+            PortfolioPosition.user_id == trader_id,
+            PortfolioPosition.exit_time != None,
+        )
+        .order_by(PortfolioPosition.exit_time)
+    )
+    positions = result.scalars().all()
+
+    if not positions:
+        return {"data": [], "total_pnl": 0}
+
+    cumulative = 0.0
+    data = []
+    for pos in positions:
+        pnl = pos.realized_pnl or 0
+        cumulative += pnl
+        data.append({
+            "timestamp": pos.exit_time.isoformat(),
+            "pnl": pnl,
+            "cumulative_pnl": cumulative,
+        })
+
+    return {"data": data, "total_pnl": cumulative}
+
+
+@router.get("/traders/{trader_id}/drawdown")
+async def get_trader_drawdown(
+    trader_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get drawdown curve and P&L distribution for a trader."""
+    result = await session.execute(
+        select(PortfolioPosition)
+        .where(
+            PortfolioPosition.user_id == trader_id,
+            PortfolioPosition.exit_time != None,
+        )
+        .order_by(PortfolioPosition.exit_time)
+    )
+    positions = result.scalars().all()
+
+    if not positions:
+        return {"drawdown": [], "pnl_distribution": [], "max_drawdown": 0}
+
+    # Compute drawdown curve
+    cumulative = 0.0
+    peak = 0.0
+    drawdown_data = []
+    pnl_values = []
+
+    for pos in positions:
+        pnl = pos.realized_pnl or 0
+        pnl_values.append(pnl)
+        cumulative += pnl
+        peak = max(peak, cumulative)
+        dd = cumulative - peak  # Negative when in drawdown
+
+        drawdown_data.append({
+            "timestamp": pos.exit_time.isoformat(),
+            "drawdown": dd,
+            "cumulative_pnl": cumulative,
+            "peak": peak,
+        })
+
+    # P&L distribution (bucketed)
+    if pnl_values:
+        min_pnl = min(pnl_values)
+        max_pnl = max(pnl_values)
+        bucket_count = 20
+        range_size = (max_pnl - min_pnl) if max_pnl != min_pnl else 1
+        bucket_size = range_size / bucket_count
+
+        buckets = [0] * bucket_count
+        for v in pnl_values:
+            idx = min(int((v - min_pnl) / bucket_size), bucket_count - 1)
+            buckets[idx] += 1
+
+        pnl_distribution = [
+            {
+                "range_start": min_pnl + i * bucket_size,
+                "range_end": min_pnl + (i + 1) * bucket_size,
+                "count": buckets[i],
+            }
+            for i in range(bucket_count)
+        ]
+    else:
+        pnl_distribution = []
+
+    max_dd = min(d["drawdown"] for d in drawdown_data) if drawdown_data else 0
+
+    return {
+        "drawdown": drawdown_data,
+        "pnl_distribution": pnl_distribution,
+        "max_drawdown": max_dd,
     }

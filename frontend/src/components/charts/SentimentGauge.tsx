@@ -8,8 +8,9 @@
  */
 
 import { useEffect, useState } from 'react'
-import { Loader2, AlertCircle, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { Loader2, TrendingUp, TrendingDown, Minus, Gauge } from 'lucide-react'
 import apiClient from '../../api/client'
+import EmptyState from '../EmptyState'
 
 interface SentimentData {
   sentiment_score: number // 0-100
@@ -119,12 +120,11 @@ export default function SentimentGauge({
 
   if (error || !data) {
     return (
-      <div className="flex flex-col items-center justify-center h-32 gap-2">
-        <AlertCircle className="h-4 w-4" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
-          {error || 'No sentiment data'}
-        </p>
-      </div>
+      <EmptyState
+        icon={Gauge}
+        title={error || 'No sentiment data'}
+        message="Unable to calculate market sentiment at this time."
+      />
     )
   }
 
@@ -141,15 +141,8 @@ export default function SentimentGauge({
     return 'Bullish'
   }
 
-  const getSentimentIcon = (s: number) => {
-    if (s < 33) return TrendingDown
-    if (s < 66) return Minus
-    return TrendingUp
-  }
-
   const color = getSentimentColor(score)
   const label = getSentimentLabel(score)
-  const Icon = getSentimentIcon(score)
 
   // Gauge dimensions
   const gaugeSize = size === 'small' ? 120 : 160

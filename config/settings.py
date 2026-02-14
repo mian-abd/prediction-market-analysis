@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     max_daily_trades: int = 50
     max_loss_per_day_usd: float = 50.0
 
+    # Elo sports edge detection
+    elo_min_net_edge: float = 0.03  # 3% minimum net edge after fees
+    elo_min_confidence: float = 0.5  # Minimum Elo confidence for signals
+    elo_slippage_buffer: float = 0.01  # 1% assumed slippage
+    elo_max_kelly: float = 0.02  # Maximum Kelly fraction (2%)
+    elo_scan_interval_sec: int = 600  # Scan every 10 minutes
+
     # Server
     api_host: str = "0.0.0.0"
     api_port: int = 8000

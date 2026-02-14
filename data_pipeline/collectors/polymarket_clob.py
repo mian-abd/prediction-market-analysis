@@ -73,12 +73,12 @@ async def fetch_price_history(
     fidelity: int = 60,
 ) -> list[dict]:
     """Fetch price history timeseries.
-    interval: '1d', '1w', '1m', '3m', '6m', 'max'
-    fidelity: seconds between points (60=1min, 3600=1hr, 86400=1day)
+    interval: '1m', '1w', '1d', '6h', '1h', 'max'
+    fidelity: MINUTES between points (60=1hr, 1440=1day)
     Returns: [{"t": 1700000000, "p": "0.55"}, ...]
     """
     params = {
-        "token_id": token_id,
+        "market": token_id,  # FIXED: API expects 'market' parameter, not 'token_id'
         "interval": interval,
         "fidelity": fidelity,
     }

@@ -21,6 +21,7 @@ import {
 } from 'recharts'
 import { Loader2, AlertCircle, TrendingDown } from 'lucide-react'
 import apiClient from '../../api/client'
+import EmptyState from '../EmptyState'
 
 interface DrawdownPoint {
   date: string
@@ -130,12 +131,11 @@ export default function DrawdownChart({ timeRange = '30d' }: DrawdownChartProps)
 
   if (data.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-2">
-        <AlertCircle className="h-5 w-5" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>
-          No drawdown data available
-        </p>
-      </div>
+      <EmptyState
+        icon={TrendingDown}
+        title="No drawdown data available"
+        message="Drawdown analysis will appear here once you have trading history."
+      />
     )
   }
 
@@ -220,7 +220,7 @@ export default function DrawdownChart({ timeRange = '30d' }: DrawdownChartProps)
                 fontSize: '12px',
                 padding: '8px 12px',
               }}
-              formatter={(value: number) => [`${value.toFixed(2)}%`, 'Drawdown']}
+              formatter={(value: number | undefined) => [`${(value ?? 0).toFixed(2)}%`, 'Drawdown']}
               labelFormatter={(label) => `Date: ${label}`}
             />
 

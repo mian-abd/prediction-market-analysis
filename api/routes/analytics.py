@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 import numpy as np
 from collections import defaultdict
@@ -31,7 +31,13 @@ async def get_market_correlations(
         Market.price_yes != None,  # noqa
     )
     if category:
-        query = query.where(Market.category == category)
+        # Use normalized_category for consistent filtering
+        query = query.where(
+            or_(
+                Market.normalized_category == category,
+                Market.category == category,
+            )
+        )
 
     result = await session.execute(query.limit(50))  # Limit to 50 markets for performance
     markets = result.scalars().all()

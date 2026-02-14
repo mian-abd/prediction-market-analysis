@@ -19,8 +19,9 @@ import {
   Cell,
   ReferenceLine,
 } from 'recharts'
-import { Loader2, AlertCircle } from 'lucide-react'
+import { Loader2, AlertCircle, BarChart3 } from 'lucide-react'
 import apiClient from '../../api/client'
+import EmptyState from '../EmptyState'
 
 interface WaterfallItem {
   name: string
@@ -125,12 +126,11 @@ export default function PerformanceAttribution() {
 
   if (data.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-2">
-        <AlertCircle className="h-5 w-5" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>
-          No performance data available
-        </p>
-      </div>
+      <EmptyState
+        icon={BarChart3}
+        title="No performance data available"
+        message="Strategy attribution will appear here once you have trading history."
+      />
     )
   }
 
@@ -269,7 +269,7 @@ export default function PerformanceAttribution() {
                 fontSize: '12px',
                 padding: '8px 12px',
               }}
-              formatter={(value: number, name: string, props: any) => {
+              formatter={((_value: number | undefined, name: string | undefined, props: any) => {
                 const { payload } = props
                 return [
                   <div key={name} className="space-y-1">
@@ -285,7 +285,7 @@ export default function PerformanceAttribution() {
                     </div>
                   </div>,
                 ]
-              }}
+              }) as any}
             />
 
             {/* Reference line at starting capital */}

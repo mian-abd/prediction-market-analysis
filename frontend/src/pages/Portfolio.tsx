@@ -10,8 +10,10 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Briefcase, Loader2, AlertCircle } from 'lucide-react'
+import { Briefcase, AlertCircle } from 'lucide-react'
 import apiClient from '../api/client'
+import ErrorState from '../components/ErrorState'
+import { TableSkeleton, Skeleton } from '../components/LoadingSkeleton'
 import EquityCurve from '../components/charts/EquityCurve'
 import DrawdownChart from '../components/charts/DrawdownChart'
 import WinRateChart from '../components/charts/WinRateChart'
@@ -53,7 +55,7 @@ export default function Portfolio() {
   const [positionStatus, setPositionStatus] = useState<'open' | 'closed' | 'all'>('open')
 
   // Fetch portfolio summary
-  const { data: summary, isLoading: summaryLoading } = useQuery<PortfolioSummary>({
+  const { data: summary, isLoading: summaryLoading, error: summaryError, refetch: refetchSummary } = useQuery<PortfolioSummary>({
     queryKey: ['portfolio-summary'],
     queryFn: async () => {
       const response = await apiClient.get('/portfolio/summary')
@@ -74,11 +76,13 @@ export default function Portfolio() {
 
   const positions = positionsData?.positions || []
 
-  if (summaryLoading) {
+  if (summaryError) {
     return (
-      <div className="flex items-center justify-center h-80">
-        <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--text-3)' }} />
-      </div>
+      <ErrorState
+        title="Failed to load portfolio"
+        message="Could not fetch portfolio data from the API."
+        onRetry={() => refetchSummary()}
+      />
     )
   }
 
@@ -105,7 +109,16 @@ export default function Portfolio() {
       </div>
 
       {/* Summary stats */}
-      {summary && (
+      {summaryLoading ? (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="card p-4 space-y-2">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-7 w-24" />
+            </div>
+          ))}
+        </div>
+      ) : summary ? (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <div className="card p-4">
             <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>
@@ -155,7 +168,7 @@ export default function Portfolio() {
             </p>
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* Equity Curve */}
       <div className="card p-6">
@@ -226,9 +239,7 @@ export default function Portfolio() {
         </div>
 
         {positionsLoading ? (
-          <div className="flex items-center justify-center h-40">
-            <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--text-3)' }} />
-          </div>
+          <TableSkeleton rows={5} columns={7} />
         ) : positions.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-40 gap-2">
             <AlertCircle className="h-5 w-5" style={{ color: 'var(--text-3)' }} />

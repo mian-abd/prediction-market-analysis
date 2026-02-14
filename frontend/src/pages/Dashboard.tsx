@@ -5,11 +5,11 @@ import {
   ArrowLeftRight,
   Brain,
   Target,
-  Loader2,
-  AlertCircle,
   ChevronRight,
 } from 'lucide-react'
 import apiClient from '../api/client'
+import ErrorState from '../components/ErrorState'
+import { StatsGridSkeleton } from '../components/LoadingSkeleton'
 
 interface DashboardStats {
   total_active_markets: number
@@ -21,7 +21,7 @@ interface DashboardStats {
 }
 
 export default function Dashboard() {
-  const { data, isLoading, error } = useQuery<DashboardStats>({
+  const { data, isLoading, error, refetch } = useQuery<DashboardStats>({
     queryKey: ['dashboard-stats'],
     queryFn: async () => {
       const response = await apiClient.get('/system/stats')
@@ -32,23 +32,27 @@ export default function Dashboard() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-80">
-        <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--text-3)' }} />
+      <div className="space-y-8 fade-up">
+        <div>
+          <h1 className="text-[26px] font-bold" style={{ color: 'var(--text)' }}>
+            Dashboard
+          </h1>
+          <p className="text-[13px] mt-1" style={{ color: 'var(--text-2)' }}>
+            Real-time prediction market overview
+          </p>
+        </div>
+        <StatsGridSkeleton count={4} />
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-80 gap-3">
-        <AlertCircle className="h-8 w-8" style={{ color: 'var(--red)' }} />
-        <p className="text-[14px] font-medium" style={{ color: 'var(--text)' }}>
-          Failed to load dashboard
-        </p>
-        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
-          Check that the backend is running at localhost:8000
-        </p>
-      </div>
+      <ErrorState
+        title="Failed to load dashboard"
+        message="Could not connect to the API server."
+        onRetry={() => refetch()}
+      />
     )
   }
 

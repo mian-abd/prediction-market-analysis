@@ -22,6 +22,7 @@ import {
 } from 'recharts'
 import { Loader2, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react'
 import apiClient from '../../api/client'
+import EmptyState from '../EmptyState'
 
 interface EquityPoint {
   timestamp: string
@@ -56,7 +57,7 @@ const STRATEGY_COLORS: Record<string, string> = {
 
 export default function EquityCurve({
   timeRange = '30d',
-  showDrawdown = false,
+  showDrawdown: _showDrawdown = false,
   autoRefresh = false,
 }: EquityCurveProps) {
   const [data, setData] = useState<EquityCurveData | null>(null)
@@ -106,15 +107,11 @@ export default function EquityCurve({
 
   if (data.data.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-80 gap-2">
-        <AlertCircle className="h-6 w-6" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[14px]" style={{ color: 'var(--text-3)' }}>
-          No closed positions yet
-        </p>
-        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
-          Start trading to see your equity curve
-        </p>
-      </div>
+      <EmptyState
+        icon={TrendingUp}
+        title="No trading history yet"
+        message="Your equity curve will appear here once you start trading."
+      />
     )
   }
 
@@ -265,9 +262,9 @@ export default function EquityCurve({
                 fontSize: '12px',
                 padding: '8px 12px',
               }}
-              formatter={(value: number, name: string) => [
-                `$${value.toFixed(2)}`,
-                name === 'all' ? 'Total' : name.replace('_', ' '),
+              formatter={(value: number | undefined, name: string | undefined) => [
+                `$${(value ?? 0).toFixed(2)}`,
+                (name === 'all' ? 'Total' : (name ?? '').replace('_', ' ')),
               ]}
               labelFormatter={(label) => `Date: ${label}`}
             />

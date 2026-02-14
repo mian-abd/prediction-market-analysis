@@ -20,8 +20,9 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from 'recharts'
-import { Loader2, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react'
+import { Loader2, AlertCircle, TrendingUp, TrendingDown, BookOpen } from 'lucide-react'
 import apiClient from '../../api/client'
+import EmptyState from '../EmptyState'
 
 interface OrderbookLevel {
   price: number
@@ -105,12 +106,11 @@ export default function OrderbookDepth({
 
   if (data.bids.length === 0 && data.asks.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-2">
-        <AlertCircle className="h-5 w-5" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>
-          Empty orderbook
-        </p>
-      </div>
+      <EmptyState
+        icon={BookOpen}
+        title="Empty orderbook"
+        message="No bids or asks available for this market at this time."
+      />
     )
   }
 
@@ -249,9 +249,9 @@ export default function OrderbookDepth({
                 fontSize: '12px',
                 padding: '8px 12px',
               }}
-              formatter={(value: number | null, name: string) => {
-                if (value === null) return null
-                return [value.toFixed(2), name === 'bidDepth' ? 'Bid Depth' : 'Ask Depth']
+              formatter={(value, name) => {
+                if (value == null) return null
+                return [Number(value).toFixed(2), name === 'bidDepth' ? 'Bid Depth' : 'Ask Depth']
               }}
               labelFormatter={(price) => `Price: ${Number(price).toFixed(3)}`}
             />

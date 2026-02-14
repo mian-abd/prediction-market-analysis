@@ -5,7 +5,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from sqlalchemy import update, func
+from sqlalchemy import update, select, func
 
 from db.database import async_session
 from db.models import Market
@@ -18,7 +18,90 @@ from data_pipeline.collectors.polymarket_gamma import parse_gamma_market
 from data_pipeline.collectors.kalshi_markets import parse_kalshi_market
 from data_pipeline.collectors import polymarket_clob
 
+from db.models import TraderProfile, EloEdgeSignal, EnsembleEdgeSignal
+
 logger = logging.getLogger(__name__)
+
+
+# ── Trader Data Refresh ──────────────────────────────────────────────
+
+async def refresh_trader_stats():
+    """Refresh trader profiles with latest data from Polymarket leaderboard.
+
+    Runs periodically to keep trader PnL, win rate, and volume stats current.
+    Updates existing traders and adds new ones from the leaderboard.
+    """
+    logger.info("Refreshing trader stats from Polymarket...")
+    try:
+        from data_pipeline.collectors.trader_data import fetch_polymarket_leaderboard
+        from scripts.backfill_real_traders import estimate_trader_stats, generate_bio
+
+        # Fetch latest leaderboard data
+        leaderboard = await fetch_polymarket_leaderboard(
+            time_period="MONTH", limit=50, order_by="PNL"
+        )
+
+        if not leaderboard:
+            logger.warning("Empty leaderboard response, skipping refresh")
+            return
+
+        async with async_session() as session:
+            updated = 0
+            created = 0
+
+            for trader_data in leaderboard:
+                wallet = trader_data.get("proxyWallet")
+                if not wallet:
+                    continue
+
+                # Check if trader exists
+                result = await session.execute(
+                    select(TraderProfile).where(TraderProfile.user_id == wallet)
+                )
+                existing = result.scalar_one_or_none()
+
+                stats = estimate_trader_stats(trader_data)
+
+                if existing:
+                    # Update existing trader stats
+                    existing.total_pnl = stats["total_pnl"]
+                    existing.roi_pct = stats["roi_pct"]
+                    existing.win_rate = stats["win_rate"]
+                    existing.total_trades = stats["total_trades"]
+                    existing.winning_trades = stats["winning_trades"]
+                    existing.risk_score = stats["risk_score"]
+                    existing.max_drawdown = stats["max_drawdown"]
+                    updated += 1
+                else:
+                    # Add new trader
+                    username = trader_data.get("userName")
+                    display_name = username if username else f"Trader_{wallet[-6:].upper()}"
+                    bio = generate_bio(trader_data, stats)
+
+                    new_trader = TraderProfile(
+                        user_id=wallet,
+                        display_name=display_name,
+                        bio=bio,
+                        total_pnl=stats["total_pnl"],
+                        roi_pct=stats["roi_pct"],
+                        win_rate=stats["win_rate"],
+                        total_trades=stats["total_trades"],
+                        winning_trades=stats["winning_trades"],
+                        avg_trade_duration_hrs=stats["avg_trade_duration_hrs"],
+                        risk_score=stats["risk_score"],
+                        max_drawdown=stats["max_drawdown"],
+                        follower_count=0,
+                        is_public=True,
+                        accepts_copiers=True,
+                    )
+                    session.add(new_trader)
+                    created += 1
+
+            await session.commit()
+            logger.info(f"Trader refresh: {updated} updated, {created} new")
+
+    except Exception as e:
+        logger.error(f"Trader stats refresh failed: {e}")
 
 
 # ── Market Lifecycle ─────────────────────────────────────────────────
@@ -179,6 +262,110 @@ async def scan_arbitrage():
             logger.error(f"Arbitrage scan failed: {e}")
 
 
+# ── Elo Edge Scanning ────────────────────────────────────────────────
+
+async def scan_elo_edges():
+    """Scan active sports markets for Elo-based edge signals."""
+    logger.info("Starting Elo edge scan...")
+    try:
+        from ml.strategies.elo_edge_detector import scan_for_edges, get_active_edges
+        from ml.models.elo_sports import Glicko2Engine
+
+        engine = Glicko2Engine.load("ml/saved_models/elo_atp_ratings.joblib")
+        if not engine or not engine.ratings:
+            logger.info("No Elo ratings loaded yet, skipping scan")
+            return
+
+        async with async_session() as session:
+            new_signals = await scan_for_edges(session, engine)
+            active = await get_active_edges(session)
+            logger.info(f"Elo scan: {len(new_signals)} new signals, {len(active)} active edges")
+    except FileNotFoundError:
+        logger.info("Elo ratings file not found, skipping scan (run build_elo_ratings.py first)")
+    except Exception as e:
+        logger.error(f"Elo edge scan failed: {e}")
+
+
+# ── Ensemble Edge Scanning ──────────────────────────────────────────
+
+async def scan_ensemble_edges():
+    """Scan active markets for ML ensemble-based edge signals."""
+    logger.info("Starting ensemble edge scan...")
+    try:
+        from ml.models.ensemble import EnsembleModel
+        from ml.strategies.ensemble_edge_detector import (
+            check_quality_gates, detect_edge, edge_signal_to_dict,
+        )
+
+        # Load ensemble (cached singleton pattern)
+        ensemble = EnsembleModel()
+        if not ensemble.load_all():
+            logger.info("Ensemble not fully loaded, skipping scan")
+            return
+
+        async with async_session() as session:
+            # Expire old signals (>30 min)
+            cutoff = datetime.utcnow() - timedelta(minutes=30)
+            from sqlalchemy import update as sa_update
+            await session.execute(
+                sa_update(EnsembleEdgeSignal)
+                .where(
+                    EnsembleEdgeSignal.expired_at == None,  # noqa: E711
+                    EnsembleEdgeSignal.detected_at < cutoff,
+                )
+                .values(expired_at=datetime.utcnow())
+            )
+            await session.commit()
+
+            # Query top 500 liquid active markets
+            markets = (await session.execute(
+                select(Market)
+                .where(Market.is_active == True, Market.price_yes != None)  # noqa
+                .order_by(Market.volume_24h.desc())
+                .limit(500)
+            )).scalars().all()
+
+            edges_found = 0
+            for market in markets:
+                try:
+                    # Quick quality gate filter (fast, no ML)
+                    gate = check_quality_gates(market)
+                    if not gate.passes:
+                        continue
+
+                    # Full ensemble prediction + edge detection
+                    result = ensemble.predict_market(market)
+                    edge = detect_edge(market, result)
+
+                    # Only persist tradeable edges
+                    if edge.direction and edge.net_ev > 0.03 and edge.confidence >= 0.4:
+                        signal = EnsembleEdgeSignal(
+                            market_id=market.id,
+                            detected_at=datetime.utcnow(),
+                            direction=edge.direction,
+                            ensemble_prob=edge.ensemble_prob,
+                            market_price=edge.market_price,
+                            raw_edge=edge.raw_edge,
+                            fee_cost=edge.fee_cost,
+                            net_ev=edge.net_ev,
+                            kelly_fraction=edge.kelly_fraction,
+                            confidence=edge.confidence,
+                            quality_tier=edge.quality_tier,
+                            model_predictions=edge.model_predictions,
+                        )
+                        session.add(signal)
+                        edges_found += 1
+
+                except Exception as e:
+                    logger.debug(f"Edge detection failed for market {market.id}: {e}")
+
+            await session.commit()
+            logger.info(f"Ensemble scan: {edges_found} new edges from {len(markets)} markets")
+
+    except Exception as e:
+        logger.error(f"Ensemble edge scan failed: {e}")
+
+
 # ── Orchestration ────────────────────────────────────────────────────
 
 async def run_pipeline_once():
@@ -224,6 +411,9 @@ async def run_pipeline_loop():
     cycles_per_market_refresh = max(1, market_interval // price_interval)
     cycles_per_arb_scan = 5       # Every 5 price cycles
     cycles_per_orderbook = max(1, settings.orderbook_poll_interval_sec // price_interval)
+    cycles_per_trader_refresh = max(1, 1800 // price_interval)  # Every ~30 min
+    cycles_per_elo_scan = max(1, settings.elo_scan_interval_sec // price_interval)  # Every ~10 min
+    cycles_per_ensemble_scan = max(1, 900 // price_interval)  # Every ~15 min
 
     cycle = 0
 
@@ -250,6 +440,27 @@ async def run_pipeline_loop():
                 await collect_orderbooks()
             except Exception as e:
                 logger.error(f"Orderbook collection error: {e}")
+
+        # ── Elo edge scan every ~10 min ──
+        if cycle % cycles_per_elo_scan == 0:
+            try:
+                await scan_elo_edges()
+            except Exception as e:
+                logger.error(f"Elo edge scan error: {e}")
+
+        # ── Ensemble edge scan every ~15 min ──
+        if cycle % cycles_per_ensemble_scan == 0:
+            try:
+                await scan_ensemble_edges()
+            except Exception as e:
+                logger.error(f"Ensemble edge scan error: {e}")
+
+        # ── Trader stats refresh every ~30 min ──
+        if cycle % cycles_per_trader_refresh == 0:
+            try:
+                await refresh_trader_stats()
+            except Exception as e:
+                logger.error(f"Trader stats refresh error: {e}")
 
         # ── Full market refresh + deactivate expired + re-match every ~1 hr ──
         if cycle % cycles_per_market_refresh == 0:

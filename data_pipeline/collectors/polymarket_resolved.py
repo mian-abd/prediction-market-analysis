@@ -86,11 +86,29 @@ def parse_resolved_market(raw: dict) -> dict:
 
     # Add resolution-specific fields
     market["is_resolved"] = True
-    market["resolved_at"] = raw.get("endDate") or raw.get("end_date")
+
+    # Parse resolved_at to datetime (comes as ISO string like "2026-02-13T00:30:00Z")
+    resolved_at_str = raw.get("endDate") or raw.get("end_date")
+    if resolved_at_str:
+        from dateutil import parser
+        try:
+            market["resolved_at"] = parser.isoparse(resolved_at_str)
+        except (ValueError, TypeError):
+            market["resolved_at"] = None
+    else:
+        market["resolved_at"] = None
 
     # Extract outcome from Gamma API
     # Polymarket markets resolve to YES (1.0) or NO (0.0)
     outcome_prices = raw.get("outcomePrices", [])
+
+    # outcomePrices often comes as a JSON string like '["0.04", "0.96"]'
+    if isinstance(outcome_prices, str):
+        import json
+        try:
+            outcome_prices = [float(p) for p in json.loads(outcome_prices)]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            outcome_prices = []
 
     # If market is closed, final price = resolution
     if outcome_prices and len(outcome_prices) >= 2:

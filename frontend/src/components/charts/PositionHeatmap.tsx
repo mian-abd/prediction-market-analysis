@@ -10,8 +10,9 @@
 
 import { useEffect, useState } from 'react'
 import { Treemap, ResponsiveContainer, Tooltip } from 'recharts'
-import { Loader2, AlertCircle } from 'lucide-react'
+import { Loader2, AlertCircle, Layout } from 'lucide-react'
 import apiClient from '../../api/client'
+import EmptyState from '../EmptyState'
 
 interface PositionData {
   id: number
@@ -34,6 +35,7 @@ interface TreemapNode {
   size: number
   pnl_pct: number
   position: PositionData
+  [key: string]: unknown
 }
 
 export default function PositionHeatmap() {
@@ -118,15 +120,11 @@ export default function PositionHeatmap() {
 
   if (data.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 gap-2">
-        <AlertCircle className="h-6 w-6" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[14px]" style={{ color: 'var(--text-3)' }}>
-          No open positions
-        </p>
-        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
-          Start trading to see your portfolio heatmap
-        </p>
-      </div>
+      <EmptyState
+        icon={Layout}
+        title="No open positions"
+        message="Your portfolio heatmap will appear here once you start trading."
+      />
     )
   }
 
@@ -245,7 +243,7 @@ export default function PositionHeatmap() {
                 fontSize: '12px',
                 padding: '10px',
               }}
-              formatter={(value: number, name: string, props: any) => {
+              formatter={((_value: number | undefined, name: string | undefined, props: any) => {
                 const { payload } = props
                 if (!payload || !payload.position) return null
 
@@ -291,7 +289,7 @@ export default function PositionHeatmap() {
                     </div>
                   </div>,
                 ]
-              }}
+              }) as any}
             />
           </Treemap>
         </ResponsiveContainer>

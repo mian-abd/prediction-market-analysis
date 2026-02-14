@@ -29,7 +29,8 @@ class Market(Base):
     token_id_no = Column(String(255))
     question = Column(Text, nullable=False)
     description = Column(Text)
-    category = Column(String(100))
+    category = Column(String(100))  # Raw category from API (preserved for debugging)
+    normalized_category = Column(String(50))  # Clean category from normalizer (~10 buckets)
     slug = Column(String(255))
 
     # Current state
@@ -79,6 +80,7 @@ class PriceSnapshot(Base):
     volume = Column(Float, default=0)
 
     __table_args__ = (
+        UniqueConstraint("market_id", "timestamp", name="uq_price_market_time"),
         Index("ix_price_market_time", "market_id", "timestamp"),
     )
 
@@ -258,7 +260,7 @@ class PortfolioPosition(Base):
     __tablename__ = "portfolio_positions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(String(50), nullable=False, default="user_1")  # For copy trading support
+    user_id = Column(String(50), nullable=False)  # Set by caller (header-based)
     market_id = Column(Integer, ForeignKey("markets.id"), nullable=False)
     platform_id = Column(Integer, ForeignKey("platforms.id"), nullable=False)
     side = Column(String(3), nullable=False)
@@ -388,4 +390,115 @@ class TraderActivity(Base):
 
     __table_args__ = (
         Index("ix_activity_trader_time", "trader_id", "created_at"),
+    )
+
+
+# ============================================================================
+# ML STRATEGY SIGNAL TABLES
+# ============================================================================
+
+
+class EnsembleEdgeSignal(Base):
+    """ML ensemble-detected trading edge signals."""
+    __tablename__ = "ensemble_edge_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(Integer, ForeignKey("markets.id"), nullable=False)
+    detected_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expired_at = Column(DateTime)  # NULL = still active
+
+    # Ensemble prediction
+    direction = Column(String(10), nullable=False)  # "buy_yes" or "buy_no"
+    ensemble_prob = Column(Float, nullable=False)
+    market_price = Column(Float, nullable=False)
+
+    # Edge calculation (fee-aware)
+    raw_edge = Column(Float, nullable=False)
+    fee_cost = Column(Float, default=0.0)
+    net_ev = Column(Float, nullable=False)
+    kelly_fraction = Column(Float)
+
+    # Quality
+    confidence = Column(Float, nullable=False)
+    quality_tier = Column(String(10), nullable=False)  # "high", "medium", "low"
+    model_predictions = Column(JSON)  # Individual model probs + weights
+
+    # Outcome tracking
+    was_correct = Column(Boolean)  # NULL until resolved
+    actual_pnl = Column(Float)
+
+    __table_args__ = (
+        Index("ix_ensemble_edge_market", "market_id"),
+        Index("ix_ensemble_edge_time", "detected_at"),
+        Index("ix_ensemble_edge_tier", "quality_tier", "net_ev"),
+    )
+
+
+# ============================================================================
+# ELO / SPORTS RATING TABLES
+# ============================================================================
+
+
+class EloRating(Base):
+    """Stored Elo/Glicko-2 ratings for players (snapshots for API serving)."""
+    __tablename__ = "elo_ratings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sport = Column(String(50), nullable=False)  # "tennis"
+    player_name = Column(String(200), nullable=False)
+    surface = Column(String(20), nullable=False, default="overall")  # overall, hard, clay, grass
+
+    mu = Column(Float, nullable=False, default=1500.0)  # Rating (display scale)
+    phi = Column(Float, nullable=False, default=350.0)  # Rating deviation
+    sigma = Column(Float, nullable=False, default=0.06)  # Volatility
+    match_count = Column(Integer, default=0)
+    last_match_date = Column(String(10))  # YYYY-MM-DD
+
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("sport", "player_name", "surface", name="uq_elo_player_surface"),
+        Index("ix_elo_sport_surface", "sport", "surface"),
+        Index("ix_elo_player", "player_name"),
+        Index("ix_elo_mu", "mu"),
+    )
+
+
+class EloEdgeSignal(Base):
+    """Detected mispricing signals from Elo vs market price comparison."""
+    __tablename__ = "elo_edge_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(Integer, ForeignKey("markets.id"), nullable=False)
+    sport = Column(String(50), nullable=False)
+    detected_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expired_at = Column(DateTime)  # NULL = still active
+
+    # Players
+    player_a = Column(String(200), nullable=False)
+    player_b = Column(String(200), nullable=False)
+    surface = Column(String(20))
+
+    # Elo prediction
+    elo_prob_a = Column(Float, nullable=False)  # Elo win probability for player A
+    elo_confidence = Column(Float, nullable=False)  # Rating confidence (0-1)
+
+    # Market price
+    market_price_yes = Column(Float, nullable=False)  # Current market price for "Yes" side
+    yes_side_player = Column(String(200))  # Which player the "Yes" price maps to
+
+    # Edge calculation (fee-aware)
+    raw_edge = Column(Float, nullable=False)  # |elo_prob - market_price|
+    fee_cost = Column(Float, default=0.0)  # taker_fee_bps / 10000 + slippage
+    net_edge = Column(Float, nullable=False)  # raw_edge - fee_cost
+    kelly_fraction = Column(Float)  # Kelly criterion bet size (clipped to 2%)
+
+    # Outcome tracking
+    was_correct = Column(Boolean)  # NULL until resolved
+    actual_pnl = Column(Float)  # NULL until resolved
+
+    __table_args__ = (
+        Index("ix_edge_market", "market_id"),
+        Index("ix_edge_sport_time", "sport", "detected_at"),
+        Index("ix_edge_net_edge", "net_edge"),
     )

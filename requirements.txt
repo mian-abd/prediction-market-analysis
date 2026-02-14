@@ -30,5 +30,12 @@ apscheduler==3.10.4
 # AI (Claude - used sparingly)
 anthropic==0.43.0
 
+# Fuzzy matching (for sports matchup parser)
+thefuzz>=0.22.1
+python-Levenshtein>=0.25.0
+
+# Caching
+fastapi-cache2>=0.2.2
+
 # Utilities
 python-dateutil==2.9.0

@@ -61,7 +61,13 @@ async def list_markets(
             query = query.where(Market.platform_id == p_obj.id)
 
     if category:
-        query = query.where(Market.category == category)
+        # Filter on normalized_category (pre-computed), fallback to raw category
+        query = query.where(
+            or_(
+                Market.normalized_category == category,
+                Market.category == category,
+            )
+        )
 
     if search:
         query = query.where(
@@ -113,7 +119,12 @@ async def list_markets(
     if p_obj:
         count_query = count_query.where(Market.platform_id == p_obj.id)
     if category:
-        count_query = count_query.where(Market.category == category)
+        count_query = count_query.where(
+            or_(
+                Market.normalized_category == category,
+                Market.category == category,
+            )
+        )
     if search:
         count_query = count_query.where(
             or_(Market.question.ilike(f"%{search}%"), Market.description.ilike(f"%{search}%"))
@@ -136,7 +147,7 @@ async def list_markets(
                 "external_id": m.external_id,
                 "question": m.question,
                 "description": m.description,
-                "category": normalize_category(m.category, m.question),
+                "category": m.normalized_category or normalize_category(m.category, m.question),
                 "price_yes": m.price_yes,
                 "price_no": m.price_no,
                 "volume_24h": m.volume_24h,
@@ -161,14 +172,25 @@ async def list_markets(
 @cache(expire=300)  # Cache for 5 minutes
 async def list_categories(session: AsyncSession = Depends(get_session)):
     """List all market categories with counts (normalized)."""
+    # Use pre-computed normalized_category for fast grouping (10 buckets vs 750+)
     result = await session.execute(
+        select(Market.normalized_category, func.count(Market.id))
+        .where(Market.is_active == True)  # noqa
+        .where(Market.normalized_category != None)  # noqa
+        .group_by(Market.normalized_category)
+    )
+    counts: dict[str, int] = {}
+    for cat, count in result.all():
+        counts[cat or "other"] = counts.get(cat or "other", 0) + count
+
+    # Fallback: count markets without normalized_category
+    fallback_result = await session.execute(
         select(Market.category, func.count(Market.id))
         .where(Market.is_active == True)  # noqa
+        .where(Market.normalized_category == None)  # noqa
         .group_by(Market.category)
     )
-    # Aggregate by normalized category
-    counts: dict[str, int] = {}
-    for raw_cat, count in result.all():
+    for raw_cat, count in fallback_result.all():
         normalized = normalize_category(raw_cat)
         counts[normalized] = counts.get(normalized, 0) + count
 
@@ -240,7 +262,7 @@ async def get_market_detail(
         "external_id": market.external_id,
         "question": market.question,
         "description": market.description,
-        "category": normalize_category(market.category, market.question),
+        "category": market.normalized_category or normalize_category(market.category, market.question),
         "price_yes": market.price_yes,
         "price_no": market.price_no,
         "volume_24h": market.volume_24h,
@@ -475,7 +497,7 @@ async def get_market_news(
     # Fetch news from GDELT
     articles = await fetch_news(
         question=market.question,
-        category=market.category,
+        category=market.normalized_category or market.category,
     )
 
     # Return up to max_articles

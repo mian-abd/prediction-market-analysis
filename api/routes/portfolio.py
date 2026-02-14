@@ -2,15 +2,21 @@
 Supports simulated positions for strategy backtesting on prop accounts."""
 
 from datetime import datetime
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_session
 from db.models import PortfolioPosition, Market, Platform
+from data_pipeline.copy_engine import on_position_opened, on_position_closed
 
 router = APIRouter(tags=["portfolio"])
+
+
+async def get_current_user(x_user_id: str = Header(default="anonymous")) -> str:
+    """Extract user ID from X-User-Id header. Defaults to 'anonymous'."""
+    return x_user_id
 
 
 class OpenPositionRequest(BaseModel):
@@ -94,6 +100,7 @@ async def list_positions(
 @router.post("/portfolio/positions")
 async def open_position(
     req: OpenPositionRequest,
+    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Open a new paper trading position."""
@@ -104,6 +111,7 @@ async def open_position(
     position = PortfolioPosition(
         market_id=req.market_id,
         platform_id=market.platform_id,
+        user_id=current_user,
         side=req.side,
         entry_price=req.entry_price,
         quantity=req.quantity,
@@ -112,8 +120,13 @@ async def open_position(
         is_simulated=True,
     )
     session.add(position)
-    await session.commit()
+    await session.flush()
     await session.refresh(position)
+
+    # Auto-copy to followers
+    copied_ids = await on_position_opened(position, session)
+
+    await session.commit()
 
     return {
         "id": position.id,
@@ -122,6 +135,7 @@ async def open_position(
         "entry_price": position.entry_price,
         "quantity": position.quantity,
         "strategy": position.strategy,
+        "copies_created": len(copied_ids),
         "message": "Paper position opened",
     }
 
@@ -143,12 +157,16 @@ async def close_position(
     position.exit_time = datetime.utcnow()
     position.realized_pnl = (req.exit_price - position.entry_price) * position.quantity
 
+    # Auto-close copied positions
+    closed_ids = await on_position_closed(position, session)
+
     await session.commit()
 
     return {
         "id": position.id,
         "realized_pnl": position.realized_pnl,
         "exit_price": position.exit_price,
+        "copies_closed": len(closed_ids),
         "message": "Position closed",
     }
 

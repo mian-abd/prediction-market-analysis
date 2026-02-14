@@ -138,6 +138,30 @@ def parse_gamma_market(raw: dict) -> dict:
     price_yes = prices[0] if len(prices) > 0 else None
     price_no = prices[1] if len(prices) > 1 else None
 
+    # VALIDATE parsed prices (reject impossible values)
+    if price_yes is not None and price_no is not None:
+        price_sum = price_yes + price_no
+
+        # Reject clearly invalid prices
+        if price_yes <= 0.0 or price_no <= 0.0:
+            logger.warning(
+                f"Invalid zero price for market {raw.get('id', 'unknown')}: "
+                f"YES={price_yes}, NO={price_no}"
+            )
+            price_yes, price_no = None, None
+        elif price_sum < 0.50:  # Nonsensical (too low)
+            logger.warning(
+                f"Invalid price sum (too low) for market {raw.get('id', 'unknown')}: "
+                f"sum={price_sum:.3f}"
+            )
+            price_yes, price_no = None, None
+        elif price_sum > 1.15:  # Nonsensical (too high)
+            logger.warning(
+                f"Invalid price sum (too high) for market {raw.get('id', 'unknown')}: "
+                f"sum={price_sum:.3f}"
+            )
+            price_yes, price_no = None, None
+
     # Parse end date
     end_date = None
     end_date_str = raw.get("endDate") or raw.get("end_date_iso")

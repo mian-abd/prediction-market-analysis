@@ -20,8 +20,9 @@ import {
   Cell,
   ReferenceLine,
 } from 'recharts'
-import { Loader2, AlertCircle, Target } from 'lucide-react'
+import { Loader2, AlertCircle, Target, BarChart3 } from 'lucide-react'
 import apiClient from '../../api/client'
+import EmptyState from '../EmptyState'
 
 interface VolumeBucket {
   price_level: number
@@ -144,17 +145,13 @@ export default function VolumeProfile({
 
   if (data.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-2">
-        <AlertCircle className="h-5 w-5" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>
-          No volume data available
-        </p>
-      </div>
+      <EmptyState
+        icon={BarChart3}
+        title="No volume data available"
+        message="Volume profile will appear here once trading activity is recorded."
+      />
     )
   }
-
-  // Find max volume for scaling
-  const maxVolume = Math.max(...data.map((d) => d.volume))
 
   return (
     <div className="space-y-4">
@@ -224,7 +221,7 @@ export default function VolumeProfile({
                 fontSize: '12px',
                 padding: '8px 12px',
               }}
-              formatter={(value: number, name: string, props: any) => {
+              formatter={((value: number, name: string, props: any) => {
                 const { payload } = props
                 return [
                   <div key={name} className="space-y-1">
@@ -248,7 +245,7 @@ export default function VolumeProfile({
                     )}
                   </div>,
                 ]
-              }}
+              }) as any}
             />
 
             {/* POC reference line */}

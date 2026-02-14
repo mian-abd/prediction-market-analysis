@@ -1,12 +1,22 @@
-"""ML model prediction endpoints."""
+"""ML model prediction endpoints.
+
+Two modes:
+- Coverage (dashboard/research): predict everything with quality metadata
+- Precision (trading signals): only return markets that pass quality gates
+"""
 
 import logging
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_session
 from db.models import Market
 from ml.models.calibration_model import CalibrationModel
+from ml.strategies.ensemble_edge_detector import (
+    detect_edge,
+    edge_signal_to_dict,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["ml"])
@@ -39,7 +49,7 @@ async def get_prediction(
     market_id: int,
     session: AsyncSession = Depends(get_session),
 ):
-    """Get ML predictions for a market (calibration + ensemble if available)."""
+    """Get ML predictions for a market with quality gates and edge signal."""
     market = await session.get(Market, market_id)
     if not market:
         return {"error": "Market not found"}
@@ -50,13 +60,16 @@ async def get_prediction(
     model = get_calibration_model()
     mispricing = model.get_mispricing(market.price_yes)
 
-    # Try ensemble prediction
+    # Ensemble prediction + edge detection
     ensemble_data = None
+    edge_data = None
     try:
         ensemble = get_ensemble_model()
         ensemble_data = ensemble.predict_market(market)
+        edge = detect_edge(market, ensemble_data)
+        edge_data = edge_signal_to_dict(edge)
     except Exception as e:
-        logger.debug(f"Ensemble prediction unavailable: {e}")
+        logger.debug(f"Ensemble/edge detection unavailable: {e}")
 
     return {
         "market_id": market_id,
@@ -72,6 +85,7 @@ async def get_prediction(
             },
             "ensemble": ensemble_data,
         },
+        "edge_signal": edge_data,
     }
 
 
@@ -91,10 +105,12 @@ async def get_ensemble_prediction(
     try:
         ensemble = get_ensemble_model()
         result = ensemble.predict_market(market)
+        edge = detect_edge(market, result)
         return {
             "market_id": market_id,
             "question": market.question,
             "ensemble": result,
+            "edge_signal": edge_signal_to_dict(edge),
         }
     except Exception as e:
         # Fallback to calibration-only
@@ -112,17 +128,23 @@ async def get_ensemble_prediction(
 
 @router.get("/predictions/top/mispriced")
 async def top_mispriced(
-    limit: int = 20,
+    limit: int = Query(default=20, le=100),
+    min_edge: float = Query(default=0.0, ge=0.0, description="Minimum edge % (0-100)"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get markets with highest calibration mispricing."""
-    from sqlalchemy import select
+    """Coverage mode: markets with highest mispricing, with quality metadata."""
     markets = (await session.execute(
         select(Market)
         .where(Market.is_active == True, Market.price_yes != None)  # noqa
         .order_by(Market.volume_24h.desc())
         .limit(200)
     )).scalars().all()
+
+    ensemble = None
+    try:
+        ensemble = get_ensemble_model()
+    except Exception:
+        pass
 
     model = get_calibration_model()
     results = []
@@ -132,21 +154,118 @@ async def top_mispriced(
             continue
 
         mispricing = model.get_mispricing(m.price_yes)
+
+        # Ensemble + edge if available
+        edge_data = None
+        ensemble_data = None
+        if ensemble:
+            try:
+                ensemble_data = ensemble.predict_market(m)
+                edge = detect_edge(m, ensemble_data)
+                edge_data = edge_signal_to_dict(edge)
+            except Exception:
+                pass
+
+        # Use ensemble delta if available, otherwise calibration
+        if ensemble_data:
+            delta_pct = ensemble_data["delta_pct"]
+            direction = ensemble_data["direction"]
+            edge_estimate = ensemble_data["edge_estimate"]
+        else:
+            delta_pct = mispricing["delta_pct"]
+            direction = mispricing["direction"]
+            edge_estimate = mispricing["edge_estimate"]
+
+        # Filter by min_edge if specified
+        if min_edge > 0 and abs(delta_pct) < min_edge:
+            continue
+
         results.append({
             "market_id": m.id,
             "question": m.question,
-            "category": m.category,
+            "category": m.normalized_category or m.category,
             "price_yes": m.price_yes,
             "calibrated_price": mispricing["calibrated_price"],
-            "delta_pct": mispricing["delta_pct"],
-            "direction": mispricing["direction"],
-            "edge_estimate": mispricing["edge_estimate"],
+            "delta_pct": delta_pct,
+            "direction": direction,
+            "edge_estimate": edge_estimate,
             "volume_24h": m.volume_24h,
+            "edge_signal": edge_data,
         })
 
     # Sort by absolute delta (biggest mispricings first)
     results.sort(key=lambda x: abs(x["delta_pct"]), reverse=True)
     return {"markets": results[:limit]}
+
+
+@router.get("/predictions/top/edges")
+async def top_edges(
+    limit: int = Query(default=20, le=100),
+    min_edge: float = Query(default=3.0, ge=0.0, description="Minimum net edge % after fees"),
+    min_confidence: float = Query(default=0.5, ge=0.0, le=1.0),
+    quality: str = Query(default="all", pattern="^(high|medium|all)$"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Precision mode: only markets passing ALL quality gates with actionable edges.
+
+    This is the "what should I actually trade?" endpoint.
+    """
+    markets = (await session.execute(
+        select(Market)
+        .where(Market.is_active == True, Market.price_yes != None)  # noqa
+        .order_by(Market.volume_24h.desc())
+        .limit(500)
+    )).scalars().all()
+
+    try:
+        ensemble = get_ensemble_model()
+    except Exception as e:
+        return {"error": f"Ensemble not available: {e}", "edges": []}
+
+    results = []
+
+    for m in markets:
+        if m.price_yes is None or m.price_yes <= 0.01 or m.price_yes >= 0.99:
+            continue
+
+        try:
+            ensemble_data = ensemble.predict_market(m)
+            edge = detect_edge(m, ensemble_data)
+        except Exception:
+            continue
+
+        # Quality gate check
+        if not edge.quality_gate.passes:
+            continue
+
+        # Edge threshold
+        if edge.net_ev * 100 < min_edge:
+            continue
+
+        # Confidence threshold
+        if edge.confidence < min_confidence:
+            continue
+
+        # Quality tier filter
+        if quality == "high" and edge.quality_tier != "high":
+            continue
+        if quality == "medium" and edge.quality_tier not in ("high", "medium"):
+            continue
+
+        # Must have a tradeable direction
+        if edge.direction is None:
+            continue
+
+        results.append({
+            "market_id": m.id,
+            "question": m.question,
+            "category": m.normalized_category or m.category,
+            **edge_signal_to_dict(edge),
+        })
+
+    # Sort by net EV descending
+    results.sort(key=lambda x: x["net_ev_pct"], reverse=True)
+    return {"edges": results[:limit], "total_scanned": len(markets)}
 
 
 @router.get("/predictions/accuracy")
@@ -161,39 +280,24 @@ async def get_model_accuracy():
             "trained": bool(metrics),
             "metrics": metrics,
             "weights": weights,
-            "models": {
-                "calibration": {
-                    "name": "Isotonic Regression",
-                    "type": "calibration",
-                    "brier_score": metrics.get("calibration_brier"),
-                    "weight": weights.get("calibration", 0),
-                },
-                "xgboost": {
-                    "name": "XGBoost",
-                    "type": "gradient_boosting",
-                    "brier_score": metrics.get("xgboost_brier"),
-                    "weight": weights.get("xgboost", 0),
-                    "feature_importance": metrics.get("xgb_feature_importance", {}),
-                },
-                "lightgbm": {
-                    "name": "LightGBM",
-                    "type": "gradient_boosting",
-                    "brier_score": metrics.get("lightgbm_brier"),
-                    "weight": weights.get("lightgbm", 0),
-                    "feature_importance": metrics.get("lgb_feature_importance", {}),
-                },
-                "ensemble": {
-                    "name": "Weighted Ensemble",
-                    "type": "ensemble",
-                    "brier_score": metrics.get("ensemble_brier"),
-                    "auc_roc": metrics.get("ensemble_auc"),
-                },
+            "models_included": metrics.get("models_included", []),
+            "models_excluded": metrics.get("models_excluded", []),
+            "methodology": {
+                "temporal_split": True,
+                "walk_forward_cv": True,
+                "significance_gated": True,
+                "split_date": metrics.get("temporal_split_date"),
             },
             "baseline_brier": metrics.get("baseline_brier"),
+            "naive_baseline_brier": metrics.get("naive_baseline_brier"),
+            "ensemble_brier": metrics.get("post_calibrated_brier") or metrics.get("ensemble_brier"),
+            "ensemble_auc": metrics.get("ensemble_auc"),
+            "ablation": metrics.get("ablation"),
+            "profit_simulation": metrics.get("profit_simulation"),
             "training_samples": metrics.get("n_train"),
             "test_samples": metrics.get("n_test"),
-            "total_resolved": metrics.get("n_total_resolved"),
-            "usable_samples": metrics.get("n_usable"),
+            "features_used": len(metrics.get("feature_names", [])),
+            "features_dropped": len(metrics.get("features_dropped", [])),
         }
     except Exception as e:
         return {

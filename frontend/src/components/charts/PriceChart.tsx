@@ -9,6 +9,8 @@ import {
   HistogramSeries
 } from 'lightweight-charts'
 import type { IChartApi, ISeriesApi, CandlestickData, Time, LineData, HistogramData } from 'lightweight-charts'
+import { LineChart } from 'lucide-react'
+import EmptyState from '../EmptyState'
 
 export type ChartType = 'candlestick' | 'line' | 'area'
 export type TimeInterval = '1m' | '5m' | '15m' | '1h' | '4h' | '1d'
@@ -214,6 +216,8 @@ export default function PriceChart({
             type: 'volume',
           },
           priceScaleId: '', // Use separate price scale
+        })
+        volumeSeriesRef.current.priceScale().applyOptions({
           scaleMargins: {
             top: 0.8,
             bottom: 0,
@@ -327,17 +331,13 @@ export default function PriceChart({
   if (!priceData.length) {
     return (
       <div
-        className="flex items-center justify-center"
-        style={{ height: `${height}px`, background: 'var(--card)', borderRadius: '12px' }}
+        style={{ height: `${height}px`, background: 'var(--card)', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
       >
-        <div className="text-center">
-          <p className="text-sm" style={{ color: 'var(--text-3)' }}>
-            No price data available
-          </p>
-          <p className="mt-2 text-xs" style={{ color: 'var(--text-3)' }}>
-            Try selecting a different interval
-          </p>
-        </div>
+        <EmptyState
+          icon={LineChart}
+          title="No price data available"
+          message="Try selecting a different time interval to view price history."
+        />
       </div>
     )
   }

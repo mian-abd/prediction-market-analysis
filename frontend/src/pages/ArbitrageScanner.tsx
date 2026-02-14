@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import {
   Loader2,
-  AlertCircle,
   ArrowLeftRight,
   RefreshCw,
 } from 'lucide-react'
 import apiClient from '../api/client'
+import ErrorState from '../components/ErrorState'
 
 interface ArbitrageOpportunity {
   id: number
@@ -28,6 +28,7 @@ export default function ArbitrageScanner() {
     isLoading,
     error,
     dataUpdatedAt,
+    refetch,
   } = useQuery<{ opportunities: ArbitrageOpportunity[]; count: number }>({
     queryKey: ['arbitrage-opportunities'],
     queryFn: async () => {
@@ -47,11 +48,11 @@ export default function ArbitrageScanner() {
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-80 gap-3">
-        <AlertCircle className="h-8 w-8" style={{ color: 'var(--red)' }} />
-        <p className="text-[14px] font-medium">Failed to load arbitrage data</p>
-        <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>Check API connection.</p>
-      </div>
+      <ErrorState
+        title="Failed to load arbitrage data"
+        message="Could not fetch arbitrage opportunities from the API."
+        onRetry={() => refetch()}
+      />
     )
   }
 
