@@ -159,7 +159,59 @@ async def check_risk_limits(
             circuit_breaker_active=True,
         )
 
-    # 4. Daily trade count check
+    # 4. Portfolio-level stop-loss (prediction markets version: -5% of exposure)
+    # If total unrealized loss is > 5% of open exposure, stop opening new positions
+    unrealized_query = (
+        select(
+            func.sum(
+                case(
+                    (PortfolioPosition.side == "yes",
+                     (1 - PortfolioPosition.entry_price) * PortfolioPosition.quantity),  # Simulated current price at 1 for YES that dropped
+                    else_=(PortfolioPosition.entry_price) * PortfolioPosition.quantity,
+                )
+            )
+        )
+        .where(PortfolioPosition.exit_time == None)  # noqa: E711
+    )
+    unrealized_query = _apply_portfolio_filter(unrealized_query, portfolio_type)
+
+    # Simplified: just check if total unrealized is significantly negative relative to exposure
+    # Get unrealized loss across open positions
+    from db.models import Market
+    open_positions_query = (
+        select(PortfolioPosition)
+        .where(PortfolioPosition.exit_time == None)  # noqa: E711
+    )
+    open_positions_query = _apply_portfolio_filter(open_positions_query, portfolio_type)
+    open_positions = (await session.execute(open_positions_query)).scalars().all()
+
+    total_unrealized = 0.0
+    for pos in open_positions:
+        market = await session.get(Market, pos.market_id)
+        if market and market.price_yes is not None:
+            if pos.side == "yes":
+                unrealized = (market.price_yes - pos.entry_price) * pos.quantity
+            else:
+                unrealized = (pos.entry_price - market.price_yes) * pos.quantity
+            total_unrealized += unrealized
+
+    if total_exposure > 0 and total_unrealized < -0.05 * total_exposure:
+        logger.warning(
+            f"PORTFOLIO STOP-LOSS: unrealized loss ${total_unrealized:.2f} "
+            f"exceeds -5% of exposure ${total_exposure:.2f}"
+        )
+        return RiskCheckResult(
+            allowed=False,
+            reason=(
+                f"Portfolio stop-loss triggered: unrealized loss ${total_unrealized:.2f} "
+                f"exceeds -5% threshold"
+            ),
+            current_exposure=total_exposure,
+            daily_pnl=daily_pnl,
+            circuit_breaker_active=True,
+        )
+
+    # 5. Daily trade count check
     trades_query = (
         select(func.count(PortfolioPosition.id))
         .where(PortfolioPosition.entry_time >= today_start)

@@ -78,6 +78,7 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
             close_reason = "market_deactivated"
 
         # 2. Stop loss — check BEFORE signal expiry to prevent unbounded losses
+        # Also check for momentum (consistent downtrend) in prediction markets
         if exit_price is None and config and config.stop_loss_pct > 0:
             if market.price_yes is not None:
                 if pos.side == "yes":
@@ -90,6 +91,13 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
                 if position_cost > 0 and unrealized / position_cost < -config.stop_loss_pct:
                     exit_price = market.price_yes
                     close_reason = "stop_loss"
+                # Momentum-based close: prediction markets trending toward extremes (0/1) are unlikely to recover
+                # Close if down 5%+ AND price near extreme
+                elif (position_cost > 0 and
+                      unrealized / position_cost < -0.05 and  # Down 5%+
+                      (market.price_yes <= 0.05 or market.price_yes >= 0.95)):  # Near extreme
+                    exit_price = market.price_yes
+                    close_reason = "momentum_downtrend"
 
         # 3. Signal expired (only if config says so)
         if exit_price is None and config and config.close_on_signal_expiry:
