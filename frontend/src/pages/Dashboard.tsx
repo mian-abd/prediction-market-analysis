@@ -160,16 +160,16 @@ export default function Dashboard() {
                 Portfolio P&L
               </p>
               <div className="flex items-center gap-3">
-                {portfolioSummary.total_pnl >= 0 ? (
+                {(portfolioSummary.total_pnl ?? 0) >= 0 ? (
                   <TrendingUp className="h-6 w-6" style={{ color: 'var(--green)' }} />
                 ) : (
                   <TrendingDown className="h-6 w-6" style={{ color: 'var(--red)' }} />
                 )}
                 <span
                   className="text-[32px] font-mono font-bold"
-                  style={{ color: portfolioSummary.total_pnl >= 0 ? 'var(--green)' : 'var(--red)' }}
+                  style={{ color: (portfolioSummary.total_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}
                 >
-                  {portfolioSummary.total_pnl >= 0 ? '+' : ''}${portfolioSummary.total_pnl.toFixed(2)}
+                  {(portfolioSummary.total_pnl ?? 0) >= 0 ? '+' : ''}${(portfolioSummary.total_pnl ?? 0).toFixed(2)}
                 </span>
               </div>
             </div>
@@ -177,32 +177,32 @@ export default function Dashboard() {
               <div className="text-center">
                 <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>Realized</p>
                 <p className="text-[16px] font-mono font-medium" style={{
-                  color: portfolioSummary.total_realized_pnl >= 0 ? 'var(--green)' : 'var(--red)'
+                  color: (portfolioSummary.total_realized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)'
                 }}>
-                  ${portfolioSummary.total_realized_pnl.toFixed(2)}
+                  ${(portfolioSummary.total_realized_pnl ?? 0).toFixed(2)}
                 </p>
               </div>
               <div className="text-center">
                 <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>Unrealized</p>
                 <p className="text-[16px] font-mono font-medium" style={{
-                  color: portfolioSummary.total_unrealized_pnl >= 0 ? 'var(--green)' : 'var(--red)'
+                  color: (portfolioSummary.total_unrealized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)'
                 }}>
-                  ${portfolioSummary.total_unrealized_pnl.toFixed(2)}
+                  ${(portfolioSummary.total_unrealized_pnl ?? 0).toFixed(2)}
                 </p>
               </div>
               <div className="text-center">
                 <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>Win Rate</p>
                 <p className="text-[16px] font-mono font-medium" style={{ color: 'var(--accent)' }}>
-                  {portfolioSummary.win_rate.toFixed(1)}%
+                  {(portfolioSummary.win_rate ?? 0).toFixed(1)}%
                 </p>
               </div>
               {portfolioSummary.sharpe_ratio != null && (
                 <div className="text-center">
                   <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>Sharpe</p>
                   <p className="text-[16px] font-mono font-medium" style={{
-                    color: portfolioSummary.sharpe_ratio >= 1 ? 'var(--green)' : portfolioSummary.sharpe_ratio >= 0 ? 'var(--accent)' : 'var(--red)'
+                    color: (portfolioSummary.sharpe_ratio ?? 0) >= 1 ? 'var(--green)' : (portfolioSummary.sharpe_ratio ?? 0) >= 0 ? 'var(--accent)' : 'var(--red)'
                   }}>
-                    {portfolioSummary.sharpe_ratio.toFixed(2)}
+                    {(portfolioSummary.sharpe_ratio ?? 0).toFixed(2)}
                   </p>
                 </div>
               )}

@@ -394,11 +394,11 @@ export default function Portfolio() {
               className="text-[20px] font-mono font-bold"
               style={{ color: (summary.total_pnl ?? summary.total_realized_pnl) >= 0 ? 'var(--green)' : 'var(--red)' }}
             >
-              ${(summary.total_pnl ?? summary.total_realized_pnl).toFixed(2)}
+              ${(summary.total_pnl ?? summary.total_realized_pnl ?? 0).toFixed(2)}
             </p>
             {summary.total_unrealized_pnl != null && summary.total_unrealized_pnl !== 0 && (
               <p className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--text-3)' }}>
-                Unrealized: ${summary.total_unrealized_pnl.toFixed(2)}
+                Unrealized: ${(summary.total_unrealized_pnl ?? 0).toFixed(2)}
               </p>
             )}
           </div>
@@ -408,7 +408,7 @@ export default function Portfolio() {
               Win Rate
             </p>
             <p className="text-[20px] font-mono font-bold" style={{ color: 'var(--accent)' }}>
-              {summary.win_rate.toFixed(1)}%
+              {(summary.win_rate ?? 0).toFixed(1)}%
             </p>
           </div>
 
@@ -418,10 +418,10 @@ export default function Portfolio() {
             </p>
             <p className="text-[20px] font-mono font-bold" style={{
               color: summary.sharpe_ratio != null
-                ? summary.sharpe_ratio >= 1 ? 'var(--green)' : summary.sharpe_ratio >= 0 ? 'var(--accent)' : 'var(--red)'
+                ? (summary.sharpe_ratio ?? 0) >= 1 ? 'var(--green)' : (summary.sharpe_ratio ?? 0) >= 0 ? 'var(--accent)' : 'var(--red)'
                 : 'var(--text-3)'
             }}>
-              {summary.sharpe_ratio != null ? summary.sharpe_ratio.toFixed(2) : '—'}
+              {summary.sharpe_ratio != null ? (summary.sharpe_ratio ?? 0).toFixed(2) : '—'}
             </p>
           </div>
 
@@ -448,7 +448,7 @@ export default function Portfolio() {
               Exposure
             </p>
             <p className="text-[20px] font-mono font-bold" style={{ color: 'var(--text)' }}>
-              ${summary.total_exposure.toFixed(2)}
+              ${(summary.total_exposure ?? 0).toFixed(2)}
             </p>
           </div>
         </div>
@@ -617,13 +617,13 @@ export default function Portfolio() {
                         </span>
                       </td>
                       <td className="py-3 px-3 text-right font-mono" style={{ color: 'var(--text)' }}>
-                        {pos.entry_price.toFixed(3)}
+                        {(pos.entry_price ?? 0).toFixed(3)}
                       </td>
                       <td className="py-3 px-3 text-right font-mono" style={{ color: 'var(--text)' }}>
                         {(pos.exit_price ?? pos.current_price ?? 0).toFixed(3)}
                       </td>
                       <td className="py-3 px-3 text-right font-mono" style={{ color: 'var(--text)' }}>
-                        {pos.quantity.toFixed(0)}
+                        {(pos.quantity ?? 0).toFixed(0)}
                       </td>
                       <td className="py-3 px-3 text-right font-mono font-semibold">
                         <span style={{ color: isProfitable ? 'var(--green)' : 'var(--red)' }}>
