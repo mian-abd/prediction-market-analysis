@@ -42,31 +42,48 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing API cache...")
     FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
 
-    # Auto-initialize default configs (survives Railway redeployments)
+    # Auto-initialize and sync auto-trading configs (survives Railway redeployments)
     logger.info("Initializing default configs...")
     try:
         from db.database import async_session
         from sqlalchemy import select
         from db.models import AutoTradingConfig
 
+        # Tightened defaults — these are the production-quality values
+        DESIRED_CONFIGS = {
+            "ensemble": dict(
+                is_enabled=True, bankroll=1000.0,
+                min_confidence=0.6, min_net_ev=0.07, max_kelly_fraction=0.02,
+                stop_loss_pct=0.20, min_quality_tier="high", close_on_signal_expiry=True,
+                max_position_usd=100.0, max_total_exposure_usd=500.0,
+                max_loss_per_day_usd=25.0, max_daily_trades=20,
+            ),
+            "elo": dict(
+                is_enabled=False, bankroll=500.0,
+                min_confidence=0.6, min_net_ev=0.05, max_kelly_fraction=0.02,
+                stop_loss_pct=0.20, min_quality_tier="high", close_on_signal_expiry=True,
+                max_position_usd=100.0, max_total_exposure_usd=500.0,
+                max_loss_per_day_usd=25.0, max_daily_trades=20,
+            ),
+        }
+
         async with async_session() as session:
             result = await session.execute(select(AutoTradingConfig))
-            existing = result.scalars().all()
-            if not existing:
-                session.add(AutoTradingConfig(
-                    strategy="ensemble", is_enabled=True, bankroll=1000.0,
-                    min_confidence=0.5, min_net_ev=0.05, max_kelly_fraction=0.02,
-                    stop_loss_pct=0.25, min_quality_tier="medium", close_on_signal_expiry=True,
-                ))
-                session.add(AutoTradingConfig(
-                    strategy="elo", is_enabled=False, bankroll=500.0,
-                    min_confidence=0.5, min_net_ev=0.03, max_kelly_fraction=0.02,
-                    stop_loss_pct=0.15, min_quality_tier="medium", close_on_signal_expiry=True,
-                ))
-                await session.commit()
-                logger.info("Created default auto-trading configs (ensemble enabled, elo disabled)")
-            else:
-                logger.info(f"Auto-trading configs already exist ({len(existing)} strategies)")
+            existing = {c.strategy: c for c in result.scalars().all()}
+
+            for strategy, defaults in DESIRED_CONFIGS.items():
+                if strategy not in existing:
+                    session.add(AutoTradingConfig(strategy=strategy, **defaults))
+                    logger.info(f"Created auto-trading config: {strategy}")
+                else:
+                    # Sync key fields to ensure Railway matches local
+                    cfg = existing[strategy]
+                    for key, val in defaults.items():
+                        setattr(cfg, key, val)
+                    logger.info(f"Synced auto-trading config: {strategy}")
+
+            await session.commit()
+            logger.info("Auto-trading configs initialized/synced")
     except Exception as e:
         logger.error(f"Failed to init auto-trading configs: {e}")
 
