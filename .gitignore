@@ -26,8 +26,9 @@ venv/
 # Windows reserved name
 nul
 
-# ML models
-ml/saved_models/*.joblib
+# ML models - deploy trained models (~410KB total) for Railway
+# Re-add exclusion if models become large:
+# ml/saved_models/*.joblib
 ml/saved_models/*.pkl
 
 # IDE

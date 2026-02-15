@@ -4,12 +4,13 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import update, text, select
+from sqlalchemy import update, text, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.database import get_session
+from db.database import get_session, async_session
 from db.models import (
-    PortfolioPosition, EnsembleEdgeSignal, EloEdgeSignal, AutoTradingConfig
+    PortfolioPosition, EnsembleEdgeSignal, EloEdgeSignal, AutoTradingConfig,
+    TraderProfile,
 )
 
 logger = logging.getLogger(__name__)
@@ -179,4 +180,112 @@ async def init_auto_trading(session: AsyncSession = Depends(get_session)):
     except Exception as e:
         await session.rollback()
         logger.error(f"Init auto-trading failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/backfill-traders")
+async def backfill_traders(replace: bool = False):
+    """Fetch real trader profiles from Polymarket leaderboard and populate DB.
+
+    This enables the Copy Trading page. Safe to call multiple times.
+    Use ?replace=true to refresh all trader data.
+    """
+    try:
+        from data_pipeline.collectors.trader_data import fetch_polymarket_leaderboard
+
+        async with async_session() as session:
+            # Check existing traders
+            result = await session.execute(select(TraderProfile))
+            existing = result.scalars().all()
+
+            if existing and not replace:
+                return {
+                    "success": True,
+                    "message": f"Already have {len(existing)} traders. Use ?replace=true to refresh.",
+                    "trader_count": len(existing),
+                }
+
+            if replace and existing:
+                await session.execute(delete(TraderProfile))
+                await session.commit()
+                logger.info(f"Deleted {len(existing)} existing traders")
+
+            # Fetch from multiple Polymarket leaderboard windows
+            all_traders_data = []
+
+            for time_period, order_by, limit in [
+                ("MONTH", "PNL", 50),
+                ("MONTH", "VOL", 30),
+                ("WEEK", "PNL", 20),
+            ]:
+                try:
+                    traders = await fetch_polymarket_leaderboard(
+                        time_period=time_period,
+                        limit=limit,
+                        order_by=order_by,
+                        category="OVERALL",
+                    )
+                    all_traders_data.extend(traders)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch {time_period}/{order_by}: {e}")
+
+            # Deduplicate by wallet
+            seen_wallets = set()
+            unique_traders = []
+            for trader in all_traders_data:
+                wallet = trader.get("proxyWallet")
+                if wallet and wallet not in seen_wallets:
+                    seen_wallets.add(wallet)
+                    unique_traders.append(trader)
+
+            # Import stat estimation from backfill script
+            from scripts.backfill_real_traders import estimate_trader_stats, generate_bio
+
+            created_count = 0
+            for trader_data in unique_traders:
+                wallet = trader_data.get("proxyWallet")
+                if not wallet:
+                    continue
+
+                username = trader_data.get("userName")
+                display_name = username if username else f"Trader_{wallet[-6:].upper()}"
+
+                stats = estimate_trader_stats(trader_data)
+                bio = generate_bio(trader_data, stats)
+
+                profile = TraderProfile(
+                    user_id=wallet,
+                    display_name=display_name,
+                    bio=bio,
+                    total_pnl=stats["total_pnl"],
+                    roi_pct=stats["roi_pct"],
+                    win_rate=stats["win_rate"],
+                    total_trades=stats["total_trades"],
+                    winning_trades=stats["winning_trades"],
+                    avg_trade_duration_hrs=stats["avg_trade_duration_hrs"],
+                    risk_score=stats["risk_score"],
+                    max_drawdown=stats["max_drawdown"],
+                    follower_count=0,
+                    is_public=True,
+                    accepts_copiers=True,
+                )
+                session.add(profile)
+                created_count += 1
+
+                if created_count % 10 == 0:
+                    await session.commit()
+
+            await session.commit()
+            logger.info(f"Backfilled {created_count} trader profiles")
+
+            return {
+                "success": True,
+                "traders_created": created_count,
+                "total_fetched": len(all_traders_data),
+                "unique_wallets": len(unique_traders),
+                "message": f"Successfully created {created_count} trader profiles from Polymarket leaderboard.",
+            }
+
+    except Exception as e:
+        logger.error(f"Trader backfill failed: {e}")
         return {"success": False, "error": str(e)}
