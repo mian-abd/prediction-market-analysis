@@ -5,8 +5,10 @@ Manual/copy positions are never modified.
 
 Close conditions (checked in order):
 1. Market resolved -> close at resolution value (1.0 or 0.0)
-2. Signal expired -> close at current market price (if close_on_signal_expiry=True)
-3. Stop loss hit -> close at current market price
+1b. Effectively resolved -> price near 0/1 (lock in profits immediately)
+1c. Market deactivated -> close at last price
+2. Stop loss hit -> close at current market price
+3. Signal expired -> close at current market price (if close_on_signal_expiry=True)
 """
 
 import logging
@@ -62,6 +64,18 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
         if market.is_resolved and market.resolution_value is not None:
             exit_price = market.resolution_value
             close_reason = "market_resolved"
+
+        # 1b. Effectively resolved — price near 0 or 1 means market is decided
+        # Lock in profits/losses rather than waiting for official resolution
+        if exit_price is None and market.price_yes is not None:
+            if market.price_yes <= 0.02 or market.price_yes >= 0.98:
+                exit_price = market.price_yes
+                close_reason = "effectively_resolved"
+
+        # 1c. Market deactivated (expired or dead) — close at last known price
+        if exit_price is None and not market.is_active and market.price_yes is not None:
+            exit_price = market.price_yes
+            close_reason = "market_deactivated"
 
         # 2. Stop loss — check BEFORE signal expiry to prevent unbounded losses
         if exit_price is None and config and config.stop_loss_pct > 0:
