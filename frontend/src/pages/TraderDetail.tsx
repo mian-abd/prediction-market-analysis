@@ -150,12 +150,24 @@ export default function TraderDetail() {
   // Follow mutation
   const followMutation = useMutation({
     mutationFn: async (settings: FollowSettings) => {
-      await apiClient.post('/copy-trading/follow', settings)
+      const response = await apiClient.post('/copy-trading/follow', settings)
+      return response.data
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['trader', traderId] })
       queryClient.invalidateQueries({ queryKey: ['traders'] })
+      queryClient.invalidateQueries({ queryKey: ['portfolio'] })
       setShowFollowModal(false)
+
+      // Show success feedback (temporary alert until toast system is added)
+      if (data?.mode === 'auto') {
+        alert(`✓ Now auto-copying ${trader?.display_name || 'trader'}! Future trades will appear in your Manual & Copy portfolio.`)
+      } else {
+        alert(`✓ Now following ${trader?.display_name || 'trader'}! You'll be notified of new trades.`)
+      }
+    },
+    onError: (error: any) => {
+      alert(`❌ Failed to follow trader: ${error.response?.data?.detail || error.message}`)
     },
   })
 

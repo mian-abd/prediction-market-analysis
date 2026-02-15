@@ -61,19 +61,28 @@ async def get_market_correlations(
         )
         prices = price_result.scalars().all()
 
-        if len(prices) < 5:  # Need at least 5 data points
+        # Reduced minimum: need at least 3 data points (lowered from 5 for early stage data)
+        if len(prices) < 3:
             continue
 
         # Extract YES prices
         price_series = [p.price_yes for p in prices if p.price_yes is not None]
-        if len(price_series) >= 5:
+        if len(price_series) >= 3:
             market_prices[market.id] = {
                 "market": market,
                 "prices": np.array(price_series),
             }
 
     if len(market_prices) < 2:
-        return {"markets": [], "correlations": [], "message": "Not enough price data for correlation"}
+        return {
+            "markets": [],
+            "correlations": [],
+            "lookback_days": lookback_days,
+            "min_correlation": min_correlation,
+            "total_pairs": 0,
+            "message": f"Collecting price data... Found snapshots for {len(market_prices)}/20 markets. "
+                      f"Correlations will appear once 2+ markets have 3+ snapshots in the last {lookback_days} days."
+        }
 
     # Compute pairwise correlations using Pearson correlation
     market_ids = list(market_prices.keys())
