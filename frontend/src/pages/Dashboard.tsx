@@ -39,6 +39,15 @@ interface AutoTradingStatus {
   open_positions: Record<string, number>
 }
 
+interface PortfolioSummaryBrief {
+  total_pnl: number
+  total_realized_pnl: number
+  total_unrealized_pnl: number
+  open_positions: number
+  win_rate: number
+  sharpe_ratio: number | null
+}
+
 interface DashboardStats {
   total_active_markets: number
   active_arbitrage_opportunities: number
@@ -106,6 +115,13 @@ export default function Dashboard() {
     retry: 1,
   })
 
+  const { data: portfolioSummary } = useQuery<PortfolioSummaryBrief>({
+    queryKey: ['portfolio-summary-dash'],
+    queryFn: async () => (await apiClient.get('/portfolio/summary')).data,
+    refetchInterval: 15_000,
+    retry: 1,
+  })
+
   if (error) {
     return <ErrorState title="Dashboard unavailable" message="Cannot reach the API server." onRetry={() => refetch()} />
   }
@@ -134,6 +150,72 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* P&L Ticker */}
+      {portfolioSummary && (
+        <div className="card p-5">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <p className="text-[10px] uppercase font-semibold tracking-wider mb-1" style={{ color: 'var(--text-3)' }}>
+                Portfolio P&L
+              </p>
+              <div className="flex items-center gap-3">
+                {portfolioSummary.total_pnl >= 0 ? (
+                  <TrendingUp className="h-6 w-6" style={{ color: 'var(--green)' }} />
+                ) : (
+                  <TrendingDown className="h-6 w-6" style={{ color: 'var(--red)' }} />
+                )}
+                <span
+                  className="text-[32px] font-mono font-bold"
+                  style={{ color: portfolioSummary.total_pnl >= 0 ? 'var(--green)' : 'var(--red)' }}
+                >
+                  {portfolioSummary.total_pnl >= 0 ? '+' : ''}${portfolioSummary.total_pnl.toFixed(2)}
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-6">
+              <div className="text-center">
+                <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>Realized</p>
+                <p className="text-[16px] font-mono font-medium" style={{
+                  color: portfolioSummary.total_realized_pnl >= 0 ? 'var(--green)' : 'var(--red)'
+                }}>
+                  ${portfolioSummary.total_realized_pnl.toFixed(2)}
+                </p>
+              </div>
+              <div className="text-center">
+                <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>Unrealized</p>
+                <p className="text-[16px] font-mono font-medium" style={{
+                  color: portfolioSummary.total_unrealized_pnl >= 0 ? 'var(--green)' : 'var(--red)'
+                }}>
+                  ${portfolioSummary.total_unrealized_pnl.toFixed(2)}
+                </p>
+              </div>
+              <div className="text-center">
+                <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>Win Rate</p>
+                <p className="text-[16px] font-mono font-medium" style={{ color: 'var(--accent)' }}>
+                  {portfolioSummary.win_rate.toFixed(1)}%
+                </p>
+              </div>
+              {portfolioSummary.sharpe_ratio != null && (
+                <div className="text-center">
+                  <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>Sharpe</p>
+                  <p className="text-[16px] font-mono font-medium" style={{
+                    color: portfolioSummary.sharpe_ratio >= 1 ? 'var(--green)' : portfolioSummary.sharpe_ratio >= 0 ? 'var(--accent)' : 'var(--red)'
+                  }}>
+                    {portfolioSummary.sharpe_ratio.toFixed(2)}
+                  </p>
+                </div>
+              )}
+              <div className="text-center">
+                <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>Positions</p>
+                <p className="text-[16px] font-semibold" style={{ color: 'var(--text)' }}>
+                  {portfolioSummary.open_positions}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

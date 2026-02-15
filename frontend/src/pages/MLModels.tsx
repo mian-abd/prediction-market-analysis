@@ -10,7 +10,18 @@ import {
   ChevronRight,
   Layers,
   BarChart3,
+  Target,
 } from 'lucide-react'
+import {
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+} from 'recharts'
 import apiClient from '../api/client'
 import SignalAccuracyChart from '../components/charts/SignalAccuracyChart'
 
@@ -99,6 +110,13 @@ export default function MLModels() {
       return response.data
     },
     refetchInterval: 300_000,
+  })
+
+  const { data: calCurveData } = useQuery<{ curve: Array<{ market_price: number; calibrated_price: number }> }>({
+    queryKey: ['calibration-curve'],
+    queryFn: async () => (await apiClient.get('/calibration/curve')).data,
+    refetchInterval: 600_000,
+    retry: 1,
   })
 
   const markets = data?.markets ?? []
@@ -243,6 +261,91 @@ export default function MLModels() {
           )}
         </div>
       </div>
+
+      {/* Calibration Curve */}
+      {calCurveData?.curve && calCurveData.curve.length > 0 && (
+        <div className="card p-6">
+          <div className="flex items-center gap-3 mb-5">
+            <Target className="h-5 w-5" style={{ color: 'var(--accent)' }} />
+            <div>
+              <p className="text-[14px] font-semibold" style={{ color: 'var(--text)' }}>
+                Calibration Curve
+              </p>
+              <p className="text-[12px]" style={{ color: 'var(--text-3)' }}>
+                Market price vs calibrated probability &middot; Diagonal = perfectly calibrated
+              </p>
+            </div>
+          </div>
+          <div style={{ width: '100%', height: '300px' }}>
+            <ResponsiveContainer width="100%" height={300}>
+              <ScatterChart margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                <XAxis
+                  dataKey="market_price"
+                  type="number"
+                  domain={[0, 1]}
+                  tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
+                  stroke="rgba(255,255,255,0.06)"
+                  tick={{ fill: '#48484A', fontSize: 11 }}
+                  label={{ value: 'Market Price', position: 'insideBottom', offset: -5, fill: '#48484A', fontSize: 11 }}
+                />
+                <YAxis
+                  dataKey="calibrated_price"
+                  type="number"
+                  domain={[0, 1]}
+                  tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
+                  stroke="rgba(255,255,255,0.06)"
+                  tick={{ fill: '#48484A', fontSize: 11 }}
+                  label={{ value: 'Calibrated Prob', angle: -90, position: 'insideLeft', offset: 10, fill: '#48484A', fontSize: 11 }}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#1A1A1C',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '12px',
+                    color: '#FFF',
+                    fontSize: '12px',
+                    padding: '8px 12px',
+                  }}
+                  formatter={(value: number | undefined, name: string | undefined) => [
+                    `${((value ?? 0) * 100).toFixed(1)}%`,
+                    name === 'calibrated_price' ? 'Calibrated' : 'Market',
+                  ]}
+                />
+                {/* Perfect calibration diagonal */}
+                <ReferenceLine
+                  segment={[{ x: 0, y: 0 }, { x: 1, y: 1 }]}
+                  stroke="rgba(255,255,255,0.15)"
+                  strokeDasharray="6 4"
+                  label={{ value: 'Perfect', position: 'insideTopLeft', fill: '#48484A', fontSize: 10 }}
+                />
+                {/* Calibrated curve as scatter + line */}
+                <Scatter
+                  data={calCurveData.curve}
+                  fill="#C4A24D"
+                  fillOpacity={0.9}
+                  r={4}
+                  line={{ stroke: '#C4A24D', strokeWidth: 2 }}
+                  lineType="fitting"
+                />
+              </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="flex items-center gap-4 mt-3 text-[11px]" style={{ color: 'var(--text-3)' }}>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-0.5" style={{ background: 'rgba(255,255,255,0.15)', borderTop: '1px dashed rgba(255,255,255,0.15)' }} />
+              Perfect calibration
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#C4A24D' }} />
+              Isotonic model
+            </span>
+            <span>
+              Points above diagonal = market overpriced (buy NO), below = underpriced (buy YES)
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Accuracy Metrics (if trained) */}
       {accuracy?.trained && accuracy.metrics && (

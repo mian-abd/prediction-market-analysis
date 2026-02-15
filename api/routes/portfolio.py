@@ -275,6 +275,27 @@ async def portfolio_summary(
             else:
                 total_unrealized += (pos.entry_price - market.price_yes) * pos.quantity
 
+    # Sharpe ratio from daily realized P&L
+    sharpe_ratio = None
+    if closed_count >= 2:
+        from collections import defaultdict as _dd
+        daily_pnl_map = _dd(float)
+        for pos in (await session.execute(
+            _apply_portfolio_filter(
+                select(PortfolioPosition).where(PortfolioPosition.exit_time != None),  # noqa: E711
+                portfolio_type,
+            )
+        )).scalars().all():
+            day_key = pos.exit_time.strftime("%Y-%m-%d")
+            daily_pnl_map[day_key] += pos.realized_pnl or 0.0
+        if len(daily_pnl_map) >= 2:
+            import numpy as np
+            daily_returns = list(daily_pnl_map.values())
+            mean_r = np.mean(daily_returns)
+            std_r = np.std(daily_returns, ddof=1)
+            if std_r > 0:
+                sharpe_ratio = round(float(mean_r / std_r * (252 ** 0.5)), 2)  # annualized
+
     return {
         "open_positions": open_count,
         "closed_positions": closed_count,
@@ -284,6 +305,7 @@ async def portfolio_summary(
         "win_rate": round(win_rate, 1),
         "total_exposure": round(total_exposure, 2),
         "by_strategy": by_strategy,
+        "sharpe_ratio": sharpe_ratio,
     }
 
 
@@ -334,6 +356,16 @@ async def get_equity_curve(
     # Build events: entries (timeline anchors) + exits (realized P&L)
     # NO per-position unrealized events - those create the sloped-line bug
     events = []
+    trade_events = []  # Discrete trade markers for equity curve overlay
+    # Pre-fetch market questions for trade markers
+    market_names = {}
+    for pos in positions:
+        if pos.market_id not in market_names:
+            market = await session.get(Market, pos.market_id)
+            if market:
+                q = market.question or ""
+                market_names[pos.market_id] = q[:60] + ("..." if len(q) > 60 else "")
+
     for pos in positions:
         strategy = pos.strategy or "manual"
         events.append({
@@ -342,12 +374,35 @@ async def get_equity_curve(
             "pnl": 0.0,
             "event_type": "entry",
         })
+        # Entry trade marker
+        trade_events.append({
+            "timestamp": pos.entry_time.isoformat(),
+            "type": "entry",
+            "side": pos.side,
+            "strategy": strategy,
+            "market": market_names.get(pos.market_id, ""),
+            "price": round(pos.entry_price, 4),
+            "quantity": round(pos.quantity, 2),
+            "pnl": None,
+        })
         if pos.exit_time:
+            pnl = pos.realized_pnl or 0.0
             events.append({
                 "timestamp": pos.exit_time,
                 "strategy": strategy,
-                "pnl": pos.realized_pnl or 0.0,
+                "pnl": pnl,
                 "event_type": "exit",
+            })
+            # Exit trade marker with realized P&L
+            trade_events.append({
+                "timestamp": pos.exit_time.isoformat(),
+                "type": "exit",
+                "side": pos.side,
+                "strategy": strategy,
+                "market": market_names.get(pos.market_id, ""),
+                "price": round(pos.exit_price or pos.entry_price, 4),
+                "quantity": round(pos.quantity, 2),
+                "pnl": round(pnl, 2),
             })
 
     # Compute total unrealized as SINGLE aggregate (not per-position)
@@ -398,7 +453,64 @@ async def get_equity_curve(
         else:
             strategy_data["all"][-1]["cumulative_pnl"] = round(all_cumulative, 2)
 
-    # Append SINGLE "now" point with unrealized P&L
+    # Build intermediate unrealized P&L points from price snapshots.
+    # This makes the equity curve show live P&L movement between trades.
+    from db.models import PriceSnapshot
+    open_positions = [p for p in positions if p.exit_time is None]
+    if open_positions:
+        # Get hourly price snapshots for open positions since their entry
+        earliest_entry = min(p.entry_time for p in open_positions)
+        open_market_ids = list({p.market_id for p in open_positions})
+        snap_result = await session.execute(
+            select(PriceSnapshot)
+            .where(
+                PriceSnapshot.market_id.in_(open_market_ids),
+                PriceSnapshot.timestamp >= earliest_entry,
+                PriceSnapshot.price_yes != None,  # noqa
+            )
+            .order_by(PriceSnapshot.timestamp)
+        )
+        snapshots = snap_result.scalars().all()
+
+        # Group snapshots by hour for reasonable granularity
+        hourly_prices: dict[str, dict[int, float]] = defaultdict(dict)
+        for snap in snapshots:
+            hour_key = snap.timestamp.strftime("%Y-%m-%dT%H:00:00")
+            hourly_prices[hour_key][snap.market_id] = snap.price_yes
+
+        # For each hourly bucket, compute aggregate unrealized P&L
+        realized_at_point = all_cumulative  # realized P&L from closed positions
+        for hour_key in sorted(hourly_prices.keys()):
+            hour_unrealized = 0.0
+            hour_unrealized_by_strat = defaultdict(float)
+            price_map = hourly_prices[hour_key]
+
+            for pos in open_positions:
+                px = price_map.get(pos.market_id)
+                if px is None:
+                    continue
+                # Only count if the position was already open at this hour
+                pos_entry_hour = pos.entry_time.strftime("%Y-%m-%dT%H:00:00")
+                if hour_key < pos_entry_hour:
+                    continue
+                if pos.side == "yes":
+                    u = (px - pos.entry_price) * pos.quantity
+                else:
+                    u = (pos.entry_price - px) * pos.quantity
+                hour_unrealized += u
+                hour_unrealized_by_strat[pos.strategy or "manual"] += u
+
+            if hour_unrealized != 0.0:
+                ts = hour_key
+                total_at_hour = realized_at_point + hour_unrealized
+                # Add to "all" timeline
+                if not strategy_data.get("all") or strategy_data["all"][-1].get("timestamp") != ts:
+                    strategy_data["all"].append({
+                        "timestamp": ts,
+                        "cumulative_pnl": round(total_at_hour, 2),
+                    })
+
+    # Append final "now" point with current unrealized P&L
     now_iso = datetime.utcnow().isoformat()
     for strat_name, unrealized in unrealized_by_strategy.items():
         strategy_cumulative[strat_name] += unrealized
@@ -431,6 +543,7 @@ async def get_equity_curve(
         "data": strategies,
         "strategies": list(strategy_data.keys()),
         "total_pnl": round(all_cumulative, 2),
+        "trade_events": trade_events,
     }
 
 

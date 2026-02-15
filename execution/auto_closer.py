@@ -58,23 +58,14 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
         exit_price = None
         close_reason = None
 
-        # 1. Market resolved
+        # 1. Market resolved — highest priority
         if market.is_resolved and market.resolution_value is not None:
             exit_price = market.resolution_value
             close_reason = "market_resolved"
 
-        # 2. Signal expired (only if config says so)
-        elif config and config.close_on_signal_expiry:
-            has_active_signal = await _has_active_signal(session, pos.market_id, pos.strategy)
-            if not has_active_signal:
-                if market.price_yes is not None:
-                    exit_price = market.price_yes
-                    close_reason = "signal_expired"
-
-        # 3. Stop loss
+        # 2. Stop loss — check BEFORE signal expiry to prevent unbounded losses
         if exit_price is None and config and config.stop_loss_pct > 0:
             if market.price_yes is not None:
-                # Calculate unrealized P&L
                 if pos.side == "yes":
                     unrealized = (market.price_yes - pos.entry_price) * pos.quantity
                     position_cost = pos.entry_price * pos.quantity
@@ -85,6 +76,29 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
                 if position_cost > 0 and unrealized / position_cost < -config.stop_loss_pct:
                     exit_price = market.price_yes
                     close_reason = "stop_loss"
+
+        # 3. Signal expired (only if config says so)
+        if exit_price is None and config and config.close_on_signal_expiry:
+            has_active_signal = await _has_active_signal(session, pos.market_id, pos.strategy)
+            if not has_active_signal:
+                if market.price_yes is not None:
+                    # Cap signal-expiry close at stop-loss level to prevent
+                    # signal expiry from realizing worse losses than stop-loss
+                    if config.stop_loss_pct > 0:
+                        if pos.side == "yes":
+                            unrealized = (market.price_yes - pos.entry_price) * pos.quantity
+                            position_cost = pos.entry_price * pos.quantity
+                        else:
+                            unrealized = (pos.entry_price - market.price_yes) * pos.quantity
+                            position_cost = (1.0 - pos.entry_price) * pos.quantity
+                        loss_pct = abs(unrealized / position_cost) if position_cost > 0 else 0
+                        if unrealized < 0 and loss_pct > config.stop_loss_pct:
+                            close_reason = "signal_expired_stop_loss_cap"
+                        else:
+                            close_reason = "signal_expired"
+                    else:
+                        close_reason = "signal_expired"
+                    exit_price = market.price_yes
 
         # Close the position
         if exit_price is not None:

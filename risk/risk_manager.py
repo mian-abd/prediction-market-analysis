@@ -34,13 +34,30 @@ class RiskCheckResult:
     circuit_breaker_active: bool = False
 
 
-async def _get_portfolio_limits(session, portfolio_type: str | None) -> dict:
-    """Load risk limits for a portfolio type from AutoTradingConfig or global settings."""
+async def _get_portfolio_limits(session, portfolio_type: str | None, strategy: str | None = None) -> dict:
+    """Load risk limits for a portfolio type from AutoTradingConfig or global settings.
+
+    When strategy is provided (e.g., "auto_ensemble"), uses that strategy's specific limits.
+    When strategy is None and portfolio_type is "auto", uses the most restrictive position limit
+    and each strategy's own exposure cap (summed for total portfolio budget).
+    """
     if portfolio_type == "auto":
         configs = (await session.execute(select(AutoTradingConfig))).scalars().all()
         if configs:
+            # If a specific strategy is requested, use its limits directly
+            if strategy:
+                strat_name = strategy.replace("auto_", "")
+                for c in configs:
+                    if c.strategy == strat_name:
+                        return {
+                            "max_position_usd": c.max_position_usd or 100.0,
+                            "max_total_exposure_usd": c.max_total_exposure_usd or 500.0,
+                            "max_loss_per_day_usd": c.max_loss_per_day_usd or 25.0,
+                            "max_daily_trades": c.max_daily_trades or 20,
+                        }
+            # Aggregate: use min for position size (most conservative), sum for budgets
             return {
-                "max_position_usd": max((c.max_position_usd or 100.0) for c in configs),
+                "max_position_usd": min((c.max_position_usd or 100.0) for c in configs),
                 "max_total_exposure_usd": sum((c.max_total_exposure_usd or 500.0) for c in configs),
                 "max_loss_per_day_usd": sum((c.max_loss_per_day_usd or 25.0) for c in configs),
                 "max_daily_trades": sum((c.max_daily_trades or 20) for c in configs),
@@ -73,6 +90,7 @@ async def check_risk_limits(
     position_cost: float,
     user_id: str = "anonymous",
     portfolio_type: str | None = None,
+    strategy: str | None = None,
 ) -> RiskCheckResult:
     """Check all risk limits before opening a new position.
 
@@ -81,11 +99,12 @@ async def check_risk_limits(
         position_cost: Actual capital deployed for the proposed trade
         user_id: User ID for per-user limits
         portfolio_type: "manual", "auto", or None (global)
+        strategy: Optional strategy name (e.g., "auto_ensemble") for per-strategy limits
 
     Returns:
         RiskCheckResult with allowed=True if all limits pass
     """
-    limits = await _get_portfolio_limits(session, portfolio_type)
+    limits = await _get_portfolio_limits(session, portfolio_type, strategy=strategy)
 
     # 1. Single position size check
     if position_cost > limits["max_position_usd"]:

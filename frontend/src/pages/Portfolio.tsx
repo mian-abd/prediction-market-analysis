@@ -31,6 +31,7 @@ interface PortfolioSummary {
   total_pnl: number
   win_rate: number
   total_exposure: number
+  sharpe_ratio: number | null
   by_strategy: Array<{
     strategy: string
     trades: number
@@ -408,6 +409,19 @@ export default function Portfolio() {
             </p>
             <p className="text-[20px] font-mono font-bold" style={{ color: 'var(--accent)' }}>
               {summary.win_rate.toFixed(1)}%
+            </p>
+          </div>
+
+          <div className="card p-4">
+            <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>
+              Sharpe Ratio
+            </p>
+            <p className="text-[20px] font-mono font-bold" style={{
+              color: summary.sharpe_ratio != null
+                ? summary.sharpe_ratio >= 1 ? 'var(--green)' : summary.sharpe_ratio >= 0 ? 'var(--accent)' : 'var(--red)'
+                : 'var(--text-3)'
+            }}>
+              {summary.sharpe_ratio != null ? summary.sharpe_ratio.toFixed(2) : '—'}
             </p>
           </div>
 

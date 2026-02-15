@@ -3,15 +3,15 @@
  *
  * Displays cumulative P&L over time with:
  * - Multiple strategy lines
- * - Sharpe ratio metrics
- * - Drawdown shading
+ * - Trade markers (entry/exit dots with hover details)
  * - Toggle between $ and % returns
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import {
-  LineChart,
+  ComposedChart,
   Line,
+  Scatter,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -19,6 +19,7 @@ import {
   ResponsiveContainer,
   Legend,
   ReferenceLine,
+  Cell,
 } from 'recharts'
 import { Loader2, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react'
 import apiClient from '../../api/client'
@@ -35,10 +36,22 @@ interface StrategyData {
   final_pnl: number
 }
 
+interface TradeEvent {
+  timestamp: string
+  type: 'entry' | 'exit'
+  side: string
+  strategy: string
+  market: string
+  price: number
+  quantity: number
+  pnl: number | null
+}
+
 interface EquityCurveData {
   data: StrategyData[]
   strategies: string[]
   total_pnl: number
+  trade_events?: TradeEvent[]
 }
 
 interface EquityCurveProps {
@@ -56,6 +69,108 @@ const STRATEGY_COLORS: Record<string, string> = {
   manual: '#8E8E93', // Gray
 }
 
+function TradeMarkerDot(props: any) {
+  const { cx, cy, payload } = props
+  if (!cx || !cy || !payload?.tradeType) return null
+
+  const isExit = payload.tradeType === 'exit'
+  const isWin = isExit && payload.tradePnl != null && payload.tradePnl >= 0
+  const isLoss = isExit && payload.tradePnl != null && payload.tradePnl < 0
+
+  const color = isWin ? '#4CAF70' : isLoss ? '#EF5350' : '#C4A24D'
+  const size = isExit ? 6 : 4
+
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={size} fill={color} fillOpacity={0.9} stroke="#000" strokeWidth={1.5} />
+      {!isExit && (
+        // Entry marker: small upward triangle
+        <polygon
+          points={`${cx},${cy - 8} ${cx - 4},${cy - 3} ${cx + 4},${cy - 3}`}
+          fill={color}
+          fillOpacity={0.7}
+        />
+      )}
+    </g>
+  )
+}
+
+function TradeTooltipContent({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null
+
+  const tradePayload = payload.find((p: any) => p.dataKey === 'tradeMarker')
+
+  return (
+    <div
+      style={{
+        backgroundColor: '#1A1A1C',
+        border: '1px solid rgba(255,255,255,0.12)',
+        borderRadius: '12px',
+        padding: '10px 14px',
+        fontSize: '12px',
+        color: '#FFF',
+        maxWidth: '280px',
+      }}
+    >
+      <p style={{ color: '#8E8E93', marginBottom: '6px' }}>{label}</p>
+
+      {/* Equity values */}
+      {payload
+        .filter((p: any) => p.dataKey !== 'tradeMarker' && p.value != null)
+        .map((p: any) => (
+          <div key={p.dataKey} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '2px' }}>
+            <span style={{ color: '#8E8E93' }}>
+              {p.dataKey === 'all' ? 'Total' : p.dataKey.replace(/_/g, ' ')}
+            </span>
+            <span className="font-mono" style={{ color: p.value >= 0 ? '#4CAF70' : '#EF5350' }}>
+              ${p.value.toFixed(2)}
+            </span>
+          </div>
+        ))}
+
+      {/* Trade event details */}
+      {tradePayload?.payload?.tradeType && (
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: '6px', paddingTop: '6px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+            <span
+              style={{
+                display: 'inline-block',
+                padding: '1px 6px',
+                borderRadius: '4px',
+                fontSize: '10px',
+                fontWeight: 600,
+                textTransform: 'uppercase',
+                background: tradePayload.payload.tradeType === 'entry' ? 'rgba(196,162,77,0.2)' : tradePayload.payload.tradePnl >= 0 ? 'rgba(76,175,112,0.2)' : 'rgba(239,83,80,0.2)',
+                color: tradePayload.payload.tradeType === 'entry' ? '#C4A24D' : tradePayload.payload.tradePnl >= 0 ? '#4CAF70' : '#EF5350',
+              }}
+            >
+              {tradePayload.payload.tradeType}
+            </span>
+            <span style={{ color: '#8E8E93', fontSize: '10px' }}>
+              {tradePayload.payload.tradeSide?.toUpperCase()} · {tradePayload.payload.tradeStrategy?.replace(/_/g, ' ')}
+            </span>
+          </div>
+          {tradePayload.payload.tradeMarket && (
+            <p style={{ color: '#CCC', fontSize: '11px', lineHeight: '1.3', marginBottom: '4px' }}>
+              {tradePayload.payload.tradeMarket}
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: '12px', fontSize: '11px' }}>
+            <span style={{ color: '#8E8E93' }}>
+              @ ${tradePayload.payload.tradePrice?.toFixed(2)} × {tradePayload.payload.tradeQty}
+            </span>
+            {tradePayload.payload.tradePnl != null && (
+              <span className="font-mono" style={{ fontWeight: 600, color: tradePayload.payload.tradePnl >= 0 ? '#4CAF70' : '#EF5350' }}>
+                {tradePayload.payload.tradePnl >= 0 ? '+' : ''}${tradePayload.payload.tradePnl.toFixed(2)}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function EquityCurve({
   timeRange = '30d',
   showDrawdown: _showDrawdown = false,
@@ -65,8 +180,10 @@ export default function EquityCurve({
   const [data, setData] = useState<EquityCurveData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [showMarkers, setShowMarkers] = useState(true)
 
-  const fetchEquityCurve = async () => {
+  const fetchEquityCurve = useCallback(async (showSpinner = false) => {
+    if (showSpinner) setLoading(true)
     try {
       // Don't send portfolio_type param when 'all' is selected (API doesn't accept 'all')
       const ptParam = (portfolioType && portfolioType !== 'all') ? `&portfolio_type=${portfolioType}` : ''
@@ -79,16 +196,19 @@ export default function EquityCurve({
     } finally {
       setLoading(false)
     }
-  }
+  }, [timeRange, portfolioType])
 
+  // Re-fetch with spinner when time range or portfolio type changes
   useEffect(() => {
-    fetchEquityCurve()
+    fetchEquityCurve(true)
+  }, [timeRange, portfolioType]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    if (autoRefresh) {
-      const interval = setInterval(fetchEquityCurve, 60_000) // Refresh every 60 seconds
-      return () => clearInterval(interval)
-    }
-  }, [timeRange, autoRefresh, portfolioType])
+  // Auto-refresh silently (no spinner) every 15 seconds for live P&L tracking
+  useEffect(() => {
+    if (!autoRefresh) return
+    const interval = setInterval(() => fetchEquityCurve(false), 15_000)
+    return () => clearInterval(interval)
+  }, [fetchEquityCurve, autoRefresh])
 
   if (loading) {
     return (
@@ -132,6 +252,24 @@ export default function EquityCurve({
     })
   })
 
+  // Merge trade events into chart data as marker fields
+  const tradeEvents = data.trade_events || []
+  tradeEvents.forEach((event) => {
+    const ts = event.timestamp
+    if (!chartDataMap.has(ts)) {
+      chartDataMap.set(ts, { timestamp: ts })
+    }
+    const point = chartDataMap.get(ts)!
+    // Store trade marker at the 'all' cumulative value (resolved below after forward-fill)
+    point.tradeType = event.type
+    point.tradeSide = event.side
+    point.tradeStrategy = event.strategy
+    point.tradeMarket = event.market
+    point.tradePrice = event.price
+    point.tradeQty = event.quantity
+    point.tradePnl = event.pnl
+  })
+
   // Convert to array and sort by timestamp
   const chartData = Array.from(chartDataMap.values()).sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
@@ -148,7 +286,6 @@ export default function EquityCurve({
   chartData.forEach((point) => {
     const d = new Date(point.timestamp)
     if (isIntraday) {
-      // Show time for intraday data
       point.date = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
     } else {
       point.date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -168,6 +305,19 @@ export default function EquityCurve({
     })
   })
 
+  // Set trade marker Y position to the 'all' equity value at that point
+  chartData.forEach((point) => {
+    if (point.tradeType) {
+      point.tradeMarker = point.all ?? 0
+    }
+  })
+
+  // Count trades
+  const totalTrades = tradeEvents.length
+  const exitEvents = tradeEvents.filter((e) => e.type === 'exit')
+  const wins = exitEvents.filter((e) => e.pnl != null && e.pnl >= 0).length
+  const winRate = exitEvents.length > 0 ? ((wins / exitEvents.length) * 100).toFixed(0) : '—'
+
   // Calculate metrics
   const totalPnL = data.total_pnl
   const isPositive = totalPnL >= 0
@@ -175,7 +325,7 @@ export default function EquityCurve({
   return (
     <div className="space-y-4">
       {/* Header with metrics */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-4">
           <div>
             <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>
@@ -201,39 +351,63 @@ export default function EquityCurve({
               Trades
             </p>
             <p className="text-[18px] font-semibold" style={{ color: 'var(--text)' }}>
-              {chartData.length}
+              {Math.floor(totalTrades / 2)}
+            </p>
+          </div>
+
+          <div>
+            <p className="text-[10px] uppercase mb-0.5" style={{ color: 'var(--text-3)' }}>
+              Win Rate
+            </p>
+            <p className="text-[18px] font-semibold" style={{ color: 'var(--text)' }}>
+              {winRate}%
             </p>
           </div>
         </div>
 
-        {/* Strategy breakdown */}
-        <div className="flex items-center gap-3 text-[12px]">
-          {data.data
-            .filter((s) => s.name !== 'all')
-            .map((strategy) => (
-              <div key={strategy.name} className="flex items-center gap-1.5">
-                <div
-                  className="w-3 h-3 rounded"
-                  style={{ background: STRATEGY_COLORS[strategy.name] || '#8E8E93' }}
-                />
-                <span style={{ color: 'var(--text-3)' }}>
-                  {strategy.name.replace('_', ' ')}:
-                </span>
-                <span
-                  className="font-mono font-medium"
-                  style={{ color: strategy.final_pnl >= 0 ? 'var(--green)' : 'var(--red)' }}
-                >
-                  ${strategy.final_pnl.toFixed(2)}
-                </span>
-              </div>
-            ))}
+        <div className="flex items-center gap-3">
+          {/* Trade markers toggle */}
+          <button
+            onClick={() => setShowMarkers(!showMarkers)}
+            className="text-[11px] px-2.5 py-1 rounded-md transition-colors"
+            style={{
+              background: showMarkers ? 'rgba(196,162,77,0.15)' : 'rgba(255,255,255,0.05)',
+              color: showMarkers ? '#C4A24D' : '#8E8E93',
+              border: `1px solid ${showMarkers ? 'rgba(196,162,77,0.3)' : 'rgba(255,255,255,0.08)'}`,
+            }}
+          >
+            Trades
+          </button>
+
+          {/* Strategy breakdown */}
+          <div className="flex items-center gap-3 text-[12px]">
+            {data.data
+              .filter((s) => s.name !== 'all')
+              .map((strategy) => (
+                <div key={strategy.name} className="flex items-center gap-1.5">
+                  <div
+                    className="w-3 h-3 rounded"
+                    style={{ background: STRATEGY_COLORS[strategy.name] || '#8E8E93' }}
+                  />
+                  <span style={{ color: 'var(--text-3)' }}>
+                    {strategy.name.replace(/_/g, ' ')}:
+                  </span>
+                  <span
+                    className="font-mono font-medium"
+                    style={{ color: strategy.final_pnl >= 0 ? 'var(--green)' : 'var(--red)' }}
+                  >
+                    ${strategy.final_pnl.toFixed(2)}
+                  </span>
+                </div>
+              ))}
+          </div>
         </div>
       </div>
 
       {/* Equity curve chart */}
       <div style={{ width: '100%', height: '320px', minHeight: '320px' }}>
         <ResponsiveContainer width="100%" height={320}>
-          <LineChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+          <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <defs>
               {strategyNames.map((strategy) => (
                 <linearGradient
@@ -272,25 +446,11 @@ export default function EquityCurve({
               tickFormatter={(value) => `$${value.toFixed(0)}`}
             />
 
-            <Tooltip
-              contentStyle={{
-                backgroundColor: '#1A1A1C',
-                border: '1px solid rgba(255,255,255,0.1)',
-                borderRadius: '12px',
-                color: '#FFF',
-                fontSize: '12px',
-                padding: '8px 12px',
-              }}
-              formatter={(value: number | undefined, name: string | undefined) => [
-                `$${(value ?? 0).toFixed(2)}`,
-                (name === 'all' ? 'Total' : (name ?? '').replace('_', ' ')),
-              ]}
-              labelFormatter={(label) => `Date: ${label}`}
-            />
+            <Tooltip content={<TradeTooltipContent />} />
 
             <Legend
               wrapperStyle={{ fontSize: '12px', color: '#8E8E93' }}
-              formatter={(value) => (value === 'all' ? 'Total' : value.replace('_', ' '))}
+              formatter={(value) => (value === 'all' ? 'Total' : value === 'tradeMarker' ? 'Trades' : value.replace(/_/g, ' '))}
             />
 
             {/* Zero reference line */}
@@ -309,7 +469,21 @@ export default function EquityCurve({
                 name={strategy}
               />
             ))}
-          </LineChart>
+
+            {/* Trade markers as scatter overlay */}
+            {showMarkers && (
+              <Scatter
+                dataKey="tradeMarker"
+                name="tradeMarker"
+                shape={<TradeMarkerDot />}
+                legendType="none"
+              >
+                {chartData.map((point, index) => (
+                  <Cell key={`cell-${index}`} fill={point.tradeType === 'exit' ? (point.tradePnl >= 0 ? '#4CAF70' : '#EF5350') : '#C4A24D'} />
+                ))}
+              </Scatter>
+            )}
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
     </div>

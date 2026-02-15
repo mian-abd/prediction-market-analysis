@@ -1,5 +1,6 @@
 """Analytics endpoints for correlations and performance metrics."""
 
+import logging
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, or_
@@ -11,6 +12,7 @@ from db.database import get_session
 from db.models import Market, PriceSnapshot, Platform
 
 router = APIRouter(tags=["analytics"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/analytics/correlations")
@@ -20,12 +22,15 @@ async def get_market_correlations(
     lookback_days: int = Query(30, ge=1, le=365),
     session: AsyncSession = Depends(get_session),
 ):
-    """Compute price correlations between markets using timestamp-aligned prices.
+    """Compute price RETURN correlations between markets.
+
+    IMPORTANT: Correlates price CHANGES (returns), not raw price levels.
+    Raw level correlation produces spurious results because markets trending
+    toward 0 or 1 appear correlated even when their movements are independent.
 
     Uses hourly resampling for short lookbacks (<=14d), daily for longer periods.
-    Only correlates prices observed at the same time bucket.
     """
-    # Get active markets (optionally filtered by category)
+    # Get active markets with sufficient volume (optionally filtered by category)
     query = select(Market).where(
         Market.is_active == True,  # noqa
         Market.price_yes != None,  # noqa
@@ -38,132 +43,144 @@ async def get_market_correlations(
             )
         )
 
-    result = await session.execute(query.limit(30))
+    result = await session.execute(query.limit(25))
     markets = result.scalars().all()
 
     if len(markets) < 2:
-        return {"markets": [], "correlations": [], "message": "Not enough markets for correlation"}
+        return {
+            "markets": [], "correlations": [], "total_pairs": 0,
+            "lookback_days": lookback_days, "min_correlation": min_correlation,
+            "message": "Not enough active markets for correlation analysis.",
+        }
 
     cutoff_time = datetime.utcnow() - timedelta(days=lookback_days)
 
     # Choose time bucket granularity based on lookback period
-    # Short lookbacks: hourly buckets (more data points from intraday snapshots)
-    # Long lookbacks: daily buckets (more stable, less noise)
     use_hourly = lookback_days <= 14
-
-    # Build time-bucketed price series for each market
-    market_prices: dict[int, dict] = {}
-
-    for market in markets:
-        price_result = await session.execute(
-            select(PriceSnapshot)
-            .where(
-                PriceSnapshot.market_id == market.id,
-                PriceSnapshot.timestamp >= cutoff_time,
-            )
-            .order_by(PriceSnapshot.timestamp)
-        )
-        snapshots = price_result.scalars().all()
-
-        if not snapshots:
-            continue
-
-        # Resample to time buckets: average price per bucket
-        bucket_prices: dict[str, list[float]] = defaultdict(list)
-        for snap in snapshots:
-            if snap.price_yes is not None:
-                if use_hourly:
-                    bucket_key = snap.timestamp.strftime("%Y-%m-%d %H:00")
-                else:
-                    bucket_key = snap.timestamp.strftime("%Y-%m-%d")
-                bucket_prices[bucket_key].append(snap.price_yes)
-
-        # Compute bucket averages
-        bucket_avg = {b: float(np.mean(prices)) for b, prices in bucket_prices.items()}
-
-        # Need at least 3 unique buckets for any correlation
-        if len(bucket_avg) >= 3:
-            market_prices[market.id] = {
-                "market": market,
-                "prices": bucket_avg,
-                "buckets": set(bucket_avg.keys()),
-                "num_buckets": len(bucket_avg),
-            }
-
-    bucket_type = "hours" if use_hourly else "days"
-    min_buckets = 3
-
-    if len(market_prices) < 2:
-        return {
-            "markets": [],
-            "correlations": [],
-            "lookback_days": lookback_days,
-            "min_correlation": min_correlation,
-            "total_pairs": 0,
-            "message": f"Need at least 2 markets with 3+ {bucket_type} of price data "
-                      f"in the last {lookback_days} days. Found {len(market_prices)} qualifying markets.",
-        }
-
-    # Compute pairwise correlations using TIMESTAMP-ALIGNED prices
-    market_ids = list(market_prices.keys())
-    n = len(market_ids)
-    correlations = []
 
     # Get platform map for display
     platforms_result = await session.execute(select(Platform))
     platform_map = {p.id: p.name for p in platforms_result.scalars().all()}
 
+    # Batch-fetch all price snapshots at once (much faster than per-market queries)
+    market_ids_list = [m.id for m in markets]
+    snap_result = await session.execute(
+        select(PriceSnapshot)
+        .where(
+            PriceSnapshot.market_id.in_(market_ids_list),
+            PriceSnapshot.timestamp >= cutoff_time,
+            PriceSnapshot.price_yes != None,  # noqa
+        )
+        .order_by(PriceSnapshot.timestamp)
+    )
+    all_snapshots = snap_result.scalars().all()
+
+    # Group snapshots by market_id
+    snaps_by_market: dict[int, list] = defaultdict(list)
+    for snap in all_snapshots:
+        snaps_by_market[snap.market_id].append(snap)
+
+    # Build time-bucketed price RETURN series for each market
+    market_data: dict[int, dict] = {}
+    market_obj_map = {m.id: m for m in markets}
+
+    for market_id, snapshots in snaps_by_market.items():
+        if len(snapshots) < 4:
+            continue
+
+        # Resample to time buckets: average price per bucket
+        bucket_prices: dict[str, list[float]] = defaultdict(list)
+        for snap in snapshots:
+            if use_hourly:
+                bucket_key = snap.timestamp.strftime("%Y-%m-%d %H:00")
+            else:
+                bucket_key = snap.timestamp.strftime("%Y-%m-%d")
+            bucket_prices[bucket_key].append(snap.price_yes)
+
+        # Compute bucket averages and sort chronologically
+        sorted_buckets = sorted(bucket_prices.keys())
+        bucket_avg = {b: float(np.mean(bucket_prices[b])) for b in sorted_buckets}
+
+        # Compute RETURNS (price changes) instead of raw levels
+        # This avoids spurious correlation from common trends
+        if len(sorted_buckets) >= 4:
+            returns = {}
+            for k in range(1, len(sorted_buckets)):
+                prev_price = bucket_avg[sorted_buckets[k - 1]]
+                curr_price = bucket_avg[sorted_buckets[k]]
+                if prev_price > 0.001:
+                    returns[sorted_buckets[k]] = curr_price - prev_price
+            if len(returns) >= 3:
+                market_data[market_id] = {
+                    "returns": returns,
+                    "buckets": set(returns.keys()),
+                }
+
+    bucket_type = "hours" if use_hourly else "days"
+
+    if len(market_data) < 2:
+        return {
+            "markets": [], "correlations": [],
+            "lookback_days": lookback_days, "min_correlation": min_correlation,
+            "total_pairs": 0,
+            "message": f"Need at least 2 markets with 4+ {bucket_type} of price data "
+                      f"in the last {lookback_days} days. Found {len(market_data)} qualifying.",
+        }
+
+    # Compute pairwise correlations on RETURNS
+    data_ids = list(market_data.keys())
+    n = len(data_ids)
+    correlations = []
+
     for i in range(n):
         for j in range(i + 1, n):
-            market_a_id = market_ids[i]
-            market_b_id = market_ids[j]
+            id_a, id_b = data_ids[i], data_ids[j]
+            da, db = market_data[id_a], market_data[id_b]
 
-            data_a = market_prices[market_a_id]
-            data_b = market_prices[market_b_id]
-
-            # Find COMMON time buckets (only compare prices at the same time)
-            common_buckets = sorted(data_a["buckets"] & data_b["buckets"])
-
-            # Need at least 3 common buckets for basic correlation
-            if len(common_buckets) < min_buckets:
+            # Only correlate returns at COMMON time buckets
+            common = sorted(da["buckets"] & db["buckets"])
+            if len(common) < 3:
                 continue
 
-            # Extract aligned price arrays (same buckets, same order)
-            prices_a = np.array([data_a["prices"][b] for b in common_buckets])
-            prices_b = np.array([data_b["prices"][b] for b in common_buckets])
+            returns_a = np.array([da["returns"][b] for b in common])
+            returns_b = np.array([db["returns"][b] for b in common])
 
-            # Compute Pearson correlation on properly aligned data
-            if prices_a.std() > 1e-6 and prices_b.std() > 1e-6:
-                correlation = float(np.corrcoef(prices_a, prices_b)[0, 1])
+            # Need non-zero variance in both return series
+            if returns_a.std() < 1e-8 or returns_b.std() < 1e-8:
+                continue
 
-                if abs(correlation) >= min_correlation:
-                    market_a = data_a["market"]
-                    market_b = data_b["market"]
+            corr = float(np.corrcoef(returns_a, returns_b)[0, 1])
+            if np.isnan(corr):
+                continue
 
+            if abs(corr) >= min_correlation:
+                ma = market_obj_map.get(id_a)
+                mb = market_obj_map.get(id_b)
+                if ma and mb:
                     correlations.append({
-                        "market_a_id": market_a_id,
-                        "market_a_question": market_a.question[:80],
-                        "market_a_platform": platform_map.get(market_a.platform_id, "unknown"),
-                        "market_b_id": market_b_id,
-                        "market_b_question": market_b.question[:80],
-                        "market_b_platform": platform_map.get(market_b.platform_id, "unknown"),
-                        "correlation": correlation,
-                        "common_points": len(common_buckets),
+                        "market_a_id": id_a,
+                        "market_a_question": ma.question[:80],
+                        "market_a_platform": platform_map.get(ma.platform_id, "unknown"),
+                        "market_b_id": id_b,
+                        "market_b_question": mb.question[:80],
+                        "market_b_platform": platform_map.get(mb.platform_id, "unknown"),
+                        "correlation": round(corr, 4),
+                        "common_points": len(common),
                     })
 
-    # Sort by absolute correlation (highest first)
     correlations.sort(key=lambda x: abs(x["correlation"]), reverse=True)
 
-    # Build market list for graph rendering
+    # Build market list for graph
     market_list = []
-    for market_id in market_ids:
-        market = market_prices[market_id]["market"]
-        market_list.append({
-            "id": market.id,
-            "question": market.question[:50],
-            "platform": platform_map.get(market.platform_id, "unknown"),
-            "category": market.category,
-        })
+    for mid in data_ids:
+        m = market_obj_map.get(mid)
+        if m:
+            market_list.append({
+                "id": m.id,
+                "question": m.question[:50],
+                "platform": platform_map.get(m.platform_id, "unknown"),
+                "category": m.category,
+            })
 
     return {
         "markets": market_list,

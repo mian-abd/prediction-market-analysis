@@ -99,20 +99,24 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
     signal_market_pairs = result.all()
 
     # Sort by urgency: prioritize markets ending in next 7 days
+    # BUT skip markets ending in < 2 hours (too risky, no time for stop-loss)
     def urgency_score(signal, market):
         base_ev = signal.net_ev
         if market.end_date:
-            days_until = (market.end_date - now).days
+            hours_until = (market.end_date - now).total_seconds() / 3600
+            if hours_until < 2:
+                return -1  # Skip: too close to resolution, stop-loss can't protect
+            days_until = hours_until / 24
             if days_until < 7:
-                # Boost EV by 2x for markets ending within a week
                 return base_ev * 2.0
             elif days_until < 30:
-                # Boost EV by 1.5x for markets ending within a month
                 return base_ev * 1.5
         return base_ev
 
+    # Filter out markets too close to resolution
     sorted_pairs = sorted(signal_market_pairs, key=lambda p: urgency_score(p[0], p[1]), reverse=True)
-    signals = [pair[0] for pair in sorted_pairs[:10]]  # Take top 10
+    sorted_pairs = [(s, m) for s, m in sorted_pairs if urgency_score(s, m) > 0]
+    signals = [pair[0] for pair in sorted_pairs[:10]]
 
     if not signals:
         return []
@@ -144,6 +148,15 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
         if kelly <= 0:
             continue
 
+        # Reduce position size for short-duration markets (< 24h)
+        # These have less time for stop-loss to protect and higher binary risk
+        if market.end_date:
+            hours_until = (market.end_date - now).total_seconds() / 3600
+            if hours_until < 6:
+                kelly *= 0.3  # 30% of normal size for very short markets
+            elif hours_until < 24:
+                kelly *= 0.5  # 50% of normal size for < 1 day markets
+
         # Model execution costs (2% slippage)
         exec_result = compute_execution_cost(
             direction=signal.direction,
@@ -161,7 +174,7 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
         quantity = (config.bankroll * kelly) / max(cost_per_share, 0.01)
         position_cost = cost_per_share * quantity
 
-        risk_check = await check_risk_limits(session, position_cost, "auto_ensemble", portfolio_type="auto")
+        risk_check = await check_risk_limits(session, position_cost, "auto_ensemble", portfolio_type="auto", strategy="auto_ensemble")
         if not risk_check.allowed:
             logger.info(f"Ensemble auto-trade blocked: {risk_check.reason}")
             continue
@@ -257,7 +270,7 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
         entry_price = signal.market_price_yes  # always YES price
 
         position_cost = cost_per_share * quantity
-        risk_check = await check_risk_limits(session, position_cost, "auto_elo", portfolio_type="auto")
+        risk_check = await check_risk_limits(session, position_cost, "auto_elo", portfolio_type="auto", strategy="auto_elo")
         if not risk_check.allowed:
             logger.info(f"Elo auto-trade blocked: {risk_check.reason}")
             continue
