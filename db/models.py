@@ -279,6 +279,8 @@ class PortfolioPosition(Base):
         Index("ix_position_user_time", "user_id", "entry_time"),
         Index("ix_position_user_market", "user_id", "market_id"),
         Index("ix_position_portfolio_type", "portfolio_type"),
+        # Composite index for fast open-position-per-market lookups (duplicate prevention)
+        Index("ix_position_open_market", "market_id", "portfolio_type", "exit_time"),
     )
 
 
