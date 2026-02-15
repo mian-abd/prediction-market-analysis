@@ -654,10 +654,11 @@ async def reset_portfolio(
 @router.get("/portfolio/risk-status")
 async def get_portfolio_risk_status(
     portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
+    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get current risk limit utilization for dashboard display.
+    """Get current risk limit utilization for dashboard display (filtered by current user).
 
     When portfolio_type is omitted, returns both manual and auto risk status.
     """
-    return await get_risk_status(session, portfolio_type=portfolio_type)
+    return await get_risk_status(session, user_id=current_user, portfolio_type=portfolio_type)
