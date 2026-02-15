@@ -143,6 +143,23 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
         if not market or not market.is_active:
             continue
 
+        # Skip miscategorized markets ("other") — no reliable features for prediction
+        category = (market.category or "").lower()
+        normalized_cat = (market.normalized_category or "").lower() if hasattr(market, 'normalized_category') else ""
+        if category == "other" or normalized_cat == "other":
+            continue
+
+        # Skip short-term crypto price-at-point-in-time markets (essentially random)
+        question_lower = (market.question or "").lower()
+        if category == "crypto" and market.end_date:
+            hours_left = (market.end_date - now).total_seconds() / 3600
+            is_price_prediction = any(kw in question_lower for kw in [
+                "price of", "above $", "below $", "between $", "up or down",
+                "reach $", "dip to $",
+            ])
+            if is_price_prediction and hours_left < 48:
+                continue  # Skip short-term crypto price bets
+
         kelly = signal.kelly_fraction or 0.0
         kelly = min(kelly, config.max_kelly_fraction)
         if kelly <= 0:
