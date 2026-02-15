@@ -241,6 +241,7 @@ async def backfill_traders(replace: bool = False):
             # Use real trade data for stats
             from data_pipeline.collectors.trader_data import (
                 fetch_trader_positions, calculate_trader_stats, generate_trader_bio,
+                clean_display_name,
             )
             import asyncio as _asyncio
 
@@ -250,8 +251,7 @@ async def backfill_traders(replace: bool = False):
                 if not wallet:
                     continue
 
-                username = trader_data.get("userName")
-                display_name = username if username else f"Trader_{wallet[-6:].upper()}"
+                display_name = clean_display_name(trader_data)
 
                 # Fetch real position history
                 positions = await fetch_trader_positions(wallet, limit=100)

@@ -417,6 +417,21 @@ async def get_copy_performance(
 # TRADER ACTIVITY FEED
 # ============================================================================
 
+async def _get_polymarket_positions(trader_id: str) -> list:
+    """Fetch real positions from Polymarket data API for an external trader.
+
+    Used as fallback when no local portfolio data exists.
+    """
+    try:
+        from data_pipeline.collectors.trader_data import fetch_trader_positions
+        positions = await fetch_trader_positions(trader_id, limit=100)
+        if isinstance(positions, list):
+            return positions
+    except Exception:
+        pass
+    return []
+
+
 @router.get("/traders/{trader_id}/activity")
 async def get_trader_activity(
     trader_id: str,
@@ -425,7 +440,7 @@ async def get_trader_activity(
 ):
     """Get recent activity feed for a trader.
 
-    Returns empty list if no real activity exists.
+    Falls back to Polymarket positions data for external traders.
     """
     # Try to get real activity first
     result = await session.execute(
@@ -437,7 +452,6 @@ async def get_trader_activity(
     activities = result.scalars().all()
 
     if activities:
-        # Real activity exists
         feed = []
         for activity in activities:
             data = activity.activity_data or {}
@@ -456,7 +470,33 @@ async def get_trader_activity(
             })
         return feed
 
-    # No real activity — return empty instead of fabricating data
+    # Fallback: derive activity from Polymarket positions
+    poly_positions = await _get_polymarket_positions(trader_id)
+    if poly_positions:
+        feed = []
+        for i, pos in enumerate(poly_positions[:limit]):
+            cash_pnl = float(pos.get("cashPnl", 0) or 0)
+            size = float(pos.get("size", 0) or 0)
+            title = pos.get("title", "Unknown Market")
+            outcome = pos.get("outcome", "")
+
+            activity_type = "position_opened" if cash_pnl == 0 else (
+                "position_won" if cash_pnl > 0 else "position_lost"
+            )
+            feed.append({
+                "id": f"poly_{i}",
+                "type": activity_type,
+                "data": {
+                    "market_name": title,
+                    "outcome": outcome,
+                    "size": round(size, 2),
+                    "pnl": round(cash_pnl, 2),
+                },
+                "market_name": title,
+                "created_at": pos.get("endDate") or datetime.utcnow().isoformat(),
+            })
+        return feed
+
     return []
 
 
@@ -467,11 +507,11 @@ async def get_trader_positions(
     limit: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get a trader's recent positions (for analytics display).
+    """Get a trader's recent positions.
 
-    Returns empty list if no real positions exist.
+    Falls back to Polymarket positions data for external traders.
     """
-    # Try to get real positions first
+    # Try to get local positions first
     query = select(PortfolioPosition).where(
         PortfolioPosition.user_id == trader_id,
     )
@@ -487,7 +527,6 @@ async def get_trader_positions(
     positions = result.scalars().all()
 
     if positions:
-        # Real positions exist
         items = []
         for pos in positions:
             market = await session.get(Market, pos.market_id)
@@ -506,7 +545,37 @@ async def get_trader_positions(
             })
         return {"positions": items, "count": len(items)}
 
-    # No real positions — return empty instead of fabricating data
+    # Fallback: fetch from Polymarket
+    poly_positions = await _get_polymarket_positions(trader_id)
+    if poly_positions:
+        items = []
+        for i, pos in enumerate(poly_positions[:limit]):
+            cash_pnl = float(pos.get("cashPnl", 0) or 0)
+            size = float(pos.get("size", 0) or 0)
+            avg_price = float(pos.get("avgPrice", 0) or 0)
+            cur_price = float(pos.get("curPrice", 0) or 0)
+            is_open = cash_pnl == 0 and size > 0
+
+            if status == "open" and not is_open:
+                continue
+            if status == "closed" and is_open:
+                continue
+
+            items.append({
+                "id": f"poly_{i}",
+                "market_id": pos.get("conditionId", ""),
+                "market_name": pos.get("title", "Unknown"),
+                "side": pos.get("outcome", "yes").lower(),
+                "entry_price": round(avg_price, 4),
+                "quantity": round(size, 2),
+                "entry_time": pos.get("createdAt") or datetime.utcnow().isoformat(),
+                "exit_price": None if is_open else round(cur_price, 4),
+                "exit_time": None if is_open else (pos.get("endDate") or datetime.utcnow().isoformat()),
+                "realized_pnl": round(cash_pnl, 2),
+                "strategy": "polymarket",
+            })
+        return {"positions": items, "count": len(items)}
+
     return {"positions": [], "count": 0}
 
 
@@ -517,9 +586,9 @@ async def get_trader_equity_curve(
 ):
     """Get cumulative P&L over time for a trader's equity curve.
 
-    Returns empty data if no actual positions exist.
+    Falls back to Polymarket positions data for external traders.
     """
-    # Try to get actual positions first
+    # Try local positions first
     result = await session.execute(
         select(PortfolioPosition)
         .where(
@@ -531,7 +600,6 @@ async def get_trader_equity_curve(
     positions = result.scalars().all()
 
     if positions:
-        # Real position data exists
         cumulative = 0.0
         data = []
         for pos in positions:
@@ -544,7 +612,22 @@ async def get_trader_equity_curve(
             })
         return {"data": data, "total_pnl": cumulative}
 
-    # No real positions — return empty instead of fabricating data
+    # Fallback: build equity curve from Polymarket positions
+    poly_positions = await _get_polymarket_positions(trader_id)
+    realized = [p for p in poly_positions if float(p.get("cashPnl", 0) or 0) != 0]
+    if realized:
+        cumulative = 0.0
+        data = []
+        for pos in realized:
+            pnl = float(pos.get("cashPnl", 0) or 0)
+            cumulative += pnl
+            data.append({
+                "timestamp": pos.get("endDate") or datetime.utcnow().isoformat(),
+                "pnl": round(pnl, 2),
+                "cumulative_pnl": round(cumulative, 2),
+            })
+        return {"data": data, "total_pnl": round(cumulative, 2)}
+
     return {"data": [], "total_pnl": 0}
 
 
@@ -555,9 +638,9 @@ async def get_trader_drawdown(
 ):
     """Get drawdown curve and P&L distribution for a trader.
 
-    Returns empty data if no actual positions exist.
+    Falls back to Polymarket positions data for external traders.
     """
-    # Try to get actual positions first
+    # Try local positions first
     result = await session.execute(
         select(PortfolioPosition)
         .where(
@@ -568,58 +651,63 @@ async def get_trader_drawdown(
     )
     positions = result.scalars().all()
 
+    pnl_values = []
     if positions:
-        # Real position data exists
-        cumulative = 0.0
-        peak = 0.0
-        drawdown_data = []
-        pnl_values = []
+        pnl_values = [pos.realized_pnl or 0 for pos in positions]
+        timestamps = [pos.exit_time.isoformat() for pos in positions]
+    else:
+        # Fallback: Polymarket positions
+        poly_positions = await _get_polymarket_positions(trader_id)
+        realized = [p for p in poly_positions if float(p.get("cashPnl", 0) or 0) != 0]
+        if realized:
+            pnl_values = [float(p.get("cashPnl", 0) or 0) for p in realized]
+            timestamps = [p.get("endDate") or datetime.utcnow().isoformat() for p in realized]
 
-        for pos in positions:
-            pnl = pos.realized_pnl or 0
-            pnl_values.append(pnl)
-            cumulative += pnl
-            peak = max(peak, cumulative)
-            dd = cumulative - peak
+    if not pnl_values:
+        return {"drawdown": [], "pnl_distribution": [], "max_drawdown": 0}
 
-            drawdown_data.append({
-                "timestamp": pos.exit_time.isoformat(),
-                "drawdown": dd,
-                "cumulative_pnl": cumulative,
-                "peak": peak,
-            })
+    # Build drawdown curve
+    cumulative = 0.0
+    peak = 0.0
+    drawdown_data = []
 
-        # P&L distribution (bucketed)
-        if pnl_values:
-            min_pnl = min(pnl_values)
-            max_pnl = max(pnl_values)
-            bucket_count = 20
-            range_size = (max_pnl - min_pnl) if max_pnl != min_pnl else 1
-            bucket_size = range_size / bucket_count
+    for i, pnl in enumerate(pnl_values):
+        cumulative += pnl
+        peak = max(peak, cumulative)
+        dd = cumulative - peak
 
-            buckets = [0] * bucket_count
-            for v in pnl_values:
-                idx = min(int((v - min_pnl) / bucket_size), bucket_count - 1)
-                buckets[idx] += 1
+        drawdown_data.append({
+            "timestamp": timestamps[i],
+            "drawdown": round(dd, 2),
+            "cumulative_pnl": round(cumulative, 2),
+            "peak": round(peak, 2),
+        })
 
-            pnl_distribution = [
-                {
-                    "range_start": min_pnl + i * bucket_size,
-                    "range_end": min_pnl + (i + 1) * bucket_size,
-                    "count": buckets[i],
-                }
-                for i in range(bucket_count)
-            ]
-        else:
-            pnl_distribution = []
+    # P&L distribution (bucketed)
+    min_pnl = min(pnl_values)
+    max_pnl = max(pnl_values)
+    bucket_count = 20
+    range_size = (max_pnl - min_pnl) if max_pnl != min_pnl else 1
+    bucket_size = range_size / bucket_count
 
-        max_dd = min(d["drawdown"] for d in drawdown_data) if drawdown_data else 0
+    buckets = [0] * bucket_count
+    for v in pnl_values:
+        idx = min(int((v - min_pnl) / bucket_size), bucket_count - 1)
+        buckets[idx] += 1
 
-        return {
-            "drawdown": drawdown_data,
-            "pnl_distribution": pnl_distribution,
-            "max_drawdown": max_dd,
+    pnl_distribution = [
+        {
+            "range_start": round(min_pnl + i * bucket_size, 2),
+            "range_end": round(min_pnl + (i + 1) * bucket_size, 2),
+            "count": buckets[i],
         }
+        for i in range(bucket_count)
+    ]
 
-    # No real positions — return empty instead of fabricating data
-    return {"drawdown": [], "pnl_distribution": [], "max_drawdown": 0}
+    max_dd = min(d["drawdown"] for d in drawdown_data) if drawdown_data else 0
+
+    return {
+        "drawdown": drawdown_data,
+        "pnl_distribution": pnl_distribution,
+        "max_drawdown": max_dd,
+    }

@@ -18,6 +18,7 @@ from data_pipeline.collectors.trader_data import (
     fetch_trader_positions,
     calculate_trader_stats,
     generate_trader_bio,
+    clean_display_name,
 )
 import logging
 
@@ -101,9 +102,8 @@ async def backfill_traders(replace_existing: bool = False):
                 if not wallet:
                     continue
 
-                # Use username if available, otherwise generate from wallet
-                username = trader_data.get("userName")
-                display_name = username if username else f"Trader_{wallet[-6:].upper()}"
+                # Clean display name (handles wallet-address usernames)
+                display_name = clean_display_name(trader_data)
 
                 # Fetch real positions with P&L from Polymarket data API
                 positions = await fetch_trader_positions(wallet, limit=100)

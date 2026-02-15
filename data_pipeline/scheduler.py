@@ -36,7 +36,7 @@ async def refresh_trader_stats():
     try:
         from data_pipeline.collectors.trader_data import (
             fetch_polymarket_leaderboard, fetch_trader_positions,
-            calculate_trader_stats, generate_trader_bio,
+            calculate_trader_stats, generate_trader_bio, clean_display_name,
         )
 
         # Fetch latest leaderboard data
@@ -106,8 +106,7 @@ async def refresh_trader_stats():
                     existing.max_drawdown = stats["max_drawdown"]
                     updated += 1
                 else:
-                    username = trader_data.get("userName")
-                    display_name = username if username else f"Trader_{wallet[-6:].upper()}"
+                    display_name = clean_display_name(trader_data)
                     bio = generate_trader_bio(trader_data, stats)
 
                     new_trader = TraderProfile(
@@ -490,7 +489,7 @@ async def run_pipeline_loop():
                 logger.info("No trader profiles found, backfilling from Polymarket leaderboard...")
                 from data_pipeline.collectors.trader_data import (
                     fetch_polymarket_leaderboard, fetch_trader_positions,
-                    calculate_trader_stats, generate_trader_bio,
+                    calculate_trader_stats, generate_trader_bio, clean_display_name,
                 )
                 import asyncio as _asyncio
 
@@ -523,7 +522,7 @@ async def run_pipeline_loop():
                         }
                     session.add(TraderProfile(
                         user_id=wallet,
-                        display_name=td.get("userName") or f"Trader_{wallet[-6:].upper()}",
+                        display_name=clean_display_name(td),
                         bio=generate_trader_bio(td, stats),
                         total_pnl=stats["total_pnl"], roi_pct=stats["roi_pct"],
                         win_rate=stats["win_rate"], total_trades=stats["total_trades"],

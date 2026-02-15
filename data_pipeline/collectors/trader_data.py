@@ -6,6 +6,7 @@ Uses data-api.polymarket.com for:
 - /v1/trades — individual trade executions
 """
 
+import re
 import httpx
 import logging
 from typing import List, Dict
@@ -13,6 +14,27 @@ from typing import List, Dict
 logger = logging.getLogger(__name__)
 
 POLYMARKET_DATA_API = "https://data-api.polymarket.com/v1"
+
+
+def clean_display_name(trader_data: Dict) -> str:
+    """Generate a clean display name from leaderboard data.
+
+    If userName looks like a wallet address (0x...) or contains a timestamp
+    suffix, use a shortened wallet format instead.
+    """
+    username = trader_data.get("userName", "") or ""
+    wallet = trader_data.get("proxyWallet", "") or ""
+
+    # If username is set and doesn't look like a wallet address, use it
+    if username and not username.startswith("0x"):
+        return username
+
+    # Generate clean name from wallet
+    if wallet:
+        short = wallet[2:8].upper() if wallet.startswith("0x") else wallet[:6].upper()
+        return f"Trader_{short}"
+
+    return "Unknown Trader"
 
 
 async def fetch_polymarket_leaderboard(
@@ -99,20 +121,33 @@ def calculate_trader_stats(trader_data: Dict, positions: List[Dict]) -> Dict:
     volume = float(trader_data.get("vol", 0) or 0)
 
     # Calculate stats from real position-level P&L
+    # Distinguish open vs closed positions:
+    #   size > 0  → position is still OPEN (cashPnl = unrealized mark-to-market)
+    #   size == 0 → position is CLOSED (cashPnl = realized P&L)
+    # Use realizedPnl field when available, fall back to cashPnl for closed positions
     total_positions = len(positions)
     winning_positions = 0
     losing_positions = 0
+    realized_count = 0
     pnl_values = []
 
     for pos in positions:
+        size = float(pos.get("size", 0) or 0)
         cash_pnl = float(pos.get("cashPnl", 0) or 0)
+        realized_pnl = float(pos.get("realizedPnl", 0) or 0)
         pnl_values.append(cash_pnl)
-        if cash_pnl > 0:
-            winning_positions += 1
-        elif cash_pnl < 0:
-            losing_positions += 1
 
-    win_rate = (winning_positions / total_positions * 100) if total_positions > 0 else 0.0
+        # For win rate: only count CLOSED positions (size=0) or those with realized P&L
+        pnl_for_win_rate = realized_pnl if realized_pnl != 0 else (cash_pnl if size == 0 else 0)
+        if pnl_for_win_rate > 0:
+            winning_positions += 1
+            realized_count += 1
+        elif pnl_for_win_rate < 0:
+            losing_positions += 1
+            realized_count += 1
+        # size > 0 with realizedPnl = 0 → open position, skip for win rate
+
+    win_rate = (winning_positions / realized_count * 100) if realized_count > 0 else 0.0
 
     # ROI from leaderboard data
     invested = volume - total_pnl if volume > total_pnl else volume * 0.3
