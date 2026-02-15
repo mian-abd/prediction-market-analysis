@@ -38,6 +38,34 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing API cache...")
     FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
 
+    # Auto-initialize default configs (survives Railway redeployments)
+    logger.info("Initializing default configs...")
+    try:
+        from db.database import async_session
+        from sqlalchemy import select
+        from db.models import AutoTradingConfig
+
+        async with async_session() as session:
+            result = await session.execute(select(AutoTradingConfig))
+            existing = result.scalars().all()
+            if not existing:
+                session.add(AutoTradingConfig(
+                    strategy="ensemble", is_enabled=True, bankroll=1000.0,
+                    min_confidence=0.5, min_net_ev=0.05, max_kelly_fraction=0.02,
+                    stop_loss_pct=0.25, min_quality_tier="medium", close_on_signal_expiry=True,
+                ))
+                session.add(AutoTradingConfig(
+                    strategy="elo", is_enabled=False, bankroll=500.0,
+                    min_confidence=0.5, min_net_ev=0.03, max_kelly_fraction=0.02,
+                    stop_loss_pct=0.15, min_quality_tier="medium", close_on_signal_expiry=True,
+                ))
+                await session.commit()
+                logger.info("Created default auto-trading configs (ensemble enabled, elo disabled)")
+            else:
+                logger.info(f"Auto-trading configs already exist ({len(existing)} strategies)")
+    except Exception as e:
+        logger.error(f"Failed to init auto-trading configs: {e}")
+
     # Start background data pipeline
     logger.info("Starting background data pipeline...")
     _pipeline_task = asyncio.create_task(run_pipeline_loop())

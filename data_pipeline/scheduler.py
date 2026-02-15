@@ -467,6 +467,53 @@ async def run_pipeline_loop():
     except Exception as e:
         logger.error(f"Initial paper executor error: {e}")
 
+    # ── Backfill trader profiles if empty (for Copy Trading page) ──
+    try:
+        from sqlalchemy import select as sa_select
+        from db.models import TraderProfile
+        async with async_session() as session:
+            count = (await session.execute(
+                sa_select(TraderProfile)
+            )).scalars().first()
+            if not count:
+                logger.info("No trader profiles found, backfilling from Polymarket leaderboard...")
+                from data_pipeline.collectors.trader_data import fetch_polymarket_leaderboard
+                from scripts.backfill_real_traders import estimate_trader_stats, generate_bio
+
+                all_traders = []
+                for period, order, limit in [("MONTH", "PNL", 50), ("MONTH", "VOL", 30), ("WEEK", "PNL", 20)]:
+                    try:
+                        traders = await fetch_polymarket_leaderboard(time_period=period, limit=limit, order_by=order, category="OVERALL")
+                        all_traders.extend(traders)
+                    except Exception as e:
+                        logger.warning(f"Leaderboard fetch {period}/{order} failed: {e}")
+
+                seen, created_count = set(), 0
+                for td in all_traders:
+                    wallet = td.get("proxyWallet")
+                    if not wallet or wallet in seen:
+                        continue
+                    seen.add(wallet)
+                    stats = estimate_trader_stats(td)
+                    session.add(TraderProfile(
+                        user_id=wallet,
+                        display_name=td.get("userName") or f"Trader_{wallet[-6:].upper()}",
+                        bio=generate_bio(td, stats),
+                        total_pnl=stats["total_pnl"], roi_pct=stats["roi_pct"],
+                        win_rate=stats["win_rate"], total_trades=stats["total_trades"],
+                        winning_trades=stats["winning_trades"],
+                        avg_trade_duration_hrs=stats["avg_trade_duration_hrs"],
+                        risk_score=stats["risk_score"], max_drawdown=stats["max_drawdown"],
+                        follower_count=0, is_public=True, accepts_copiers=True,
+                    ))
+                    created_count += 1
+                await session.commit()
+                logger.info(f"Backfilled {created_count} trader profiles")
+            else:
+                logger.info("Trader profiles already exist, skipping backfill")
+    except Exception as e:
+        logger.error(f"Trader backfill failed: {e}")
+
     # ── Loop configuration ──
     price_interval = settings.price_poll_interval_sec
     market_interval = settings.market_refresh_interval_sec
