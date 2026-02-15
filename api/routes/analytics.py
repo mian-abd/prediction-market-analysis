@@ -20,10 +20,10 @@ async def get_market_correlations(
     lookback_days: int = Query(7, ge=1, le=365),
     session: AsyncSession = Depends(get_session),
 ):
-    """Compute price correlations between markets.
+    """Compute price correlations between markets using timestamp-aligned daily prices.
 
-    Returns NxN correlation matrix showing how markets move together.
-    Useful for finding related markets for hedging or identifying anomalies.
+    Returns pairwise correlations showing how markets move together.
+    Uses daily resampling to ensure prices are compared at the same point in time.
     """
     # Get active markets (optionally filtered by category)
     query = select(Market).where(
@@ -31,7 +31,6 @@ async def get_market_correlations(
         Market.price_yes != None,  # noqa
     )
     if category:
-        # Use normalized_category for consistent filtering
         query = query.where(
             or_(
                 Market.normalized_category == category,
@@ -39,17 +38,18 @@ async def get_market_correlations(
             )
         )
 
-    result = await session.execute(query.limit(20))  # Limit to 20 markets (N^2 correlation is expensive)
+    result = await session.execute(query.limit(30))
     markets = result.scalars().all()
 
     if len(markets) < 2:
         return {"markets": [], "correlations": [], "message": "Not enough markets for correlation"}
 
-    # Get price history for each market (last N days)
     cutoff_time = datetime.utcnow() - timedelta(days=lookback_days)
 
-    # Build price series for each market
-    market_prices = {}
+    # Build DAILY price series for each market (timestamp-aligned)
+    # Key: market_id -> {date_str: avg_price}
+    market_daily_prices: dict[int, dict] = {}
+
     for market in markets:
         price_result = await session.execute(
             select(PriceSnapshot)
@@ -59,33 +59,43 @@ async def get_market_correlations(
             )
             .order_by(PriceSnapshot.timestamp)
         )
-        prices = price_result.scalars().all()
+        snapshots = price_result.scalars().all()
 
-        # Reduced minimum: need at least 3 data points (lowered from 5 for early stage data)
-        if len(prices) < 3:
+        if not snapshots:
             continue
 
-        # Extract YES prices
-        price_series = [p.price_yes for p in prices if p.price_yes is not None]
-        if len(price_series) >= 3:
-            market_prices[market.id] = {
+        # Resample to daily frequency: average price per date
+        daily_prices: dict[str, list[float]] = defaultdict(list)
+        for snap in snapshots:
+            if snap.price_yes is not None:
+                date_key = snap.timestamp.strftime("%Y-%m-%d")
+                daily_prices[date_key].append(snap.price_yes)
+
+        # Compute daily averages
+        daily_avg = {date: np.mean(prices) for date, prices in daily_prices.items()}
+
+        # Need at least 3 unique days for meaningful correlation
+        if len(daily_avg) >= 3:
+            market_daily_prices[market.id] = {
                 "market": market,
-                "prices": np.array(price_series),
+                "daily_prices": daily_avg,
+                "dates": set(daily_avg.keys()),
+                "num_days": len(daily_avg),
             }
 
-    if len(market_prices) < 2:
+    if len(market_daily_prices) < 2:
         return {
             "markets": [],
             "correlations": [],
             "lookback_days": lookback_days,
             "min_correlation": min_correlation,
             "total_pairs": 0,
-            "message": f"Collecting price data... Found snapshots for {len(market_prices)}/20 markets. "
-                      f"Correlations will appear once 2+ markets have 3+ snapshots in the last {lookback_days} days."
+            "message": f"Need at least 2 markets with 3+ days of price data in the last {lookback_days} days. "
+                      f"Found {len(market_daily_prices)} qualifying markets.",
         }
 
-    # Compute pairwise correlations using Pearson correlation
-    market_ids = list(market_prices.keys())
+    # Compute pairwise correlations using TIMESTAMP-ALIGNED prices
+    market_ids = list(market_daily_prices.keys())
     n = len(market_ids)
     correlations = []
 
@@ -94,26 +104,31 @@ async def get_market_correlations(
     platform_map = {p.id: p.name for p in platforms_result.scalars().all()}
 
     for i in range(n):
-        for j in range(i + 1, n):  # Only upper triangle (avoid duplicates)
+        for j in range(i + 1, n):
             market_a_id = market_ids[i]
             market_b_id = market_ids[j]
 
-            prices_a = market_prices[market_a_id]["prices"]
-            prices_b = market_prices[market_b_id]["prices"]
+            data_a = market_daily_prices[market_a_id]
+            data_b = market_daily_prices[market_b_id]
 
-            # Align series to same length (use minimum)
-            min_len = min(len(prices_a), len(prices_b))
-            prices_a_aligned = prices_a[-min_len:]
-            prices_b_aligned = prices_b[-min_len:]
+            # Find COMMON dates (only compare prices at the same time)
+            common_dates = sorted(data_a["dates"] & data_b["dates"])
 
-            # Compute Pearson correlation
-            if len(prices_a_aligned) > 1 and prices_a_aligned.std() > 0 and prices_b_aligned.std() > 0:
-                correlation = np.corrcoef(prices_a_aligned, prices_b_aligned)[0, 1]
+            # Need at least 5 common dates for statistically meaningful correlation
+            if len(common_dates) < 5:
+                continue
 
-                # Only include if above minimum threshold
+            # Extract aligned price arrays (same dates, same order)
+            prices_a = np.array([data_a["daily_prices"][d] for d in common_dates])
+            prices_b = np.array([data_b["daily_prices"][d] for d in common_dates])
+
+            # Compute Pearson correlation on properly aligned data
+            if prices_a.std() > 1e-6 and prices_b.std() > 1e-6:
+                correlation = float(np.corrcoef(prices_a, prices_b)[0, 1])
+
                 if abs(correlation) >= min_correlation:
-                    market_a = market_prices[market_a_id]["market"]
-                    market_b = market_prices[market_b_id]["market"]
+                    market_a = data_a["market"]
+                    market_b = data_b["market"]
 
                     correlations.append({
                         "market_a_id": market_a_id,
@@ -122,16 +137,17 @@ async def get_market_correlations(
                         "market_b_id": market_b_id,
                         "market_b_question": market_b.question[:80],
                         "market_b_platform": platform_map.get(market_b.platform_id, "unknown"),
-                        "correlation": float(correlation),
+                        "correlation": correlation,
+                        "common_days": len(common_dates),
                     })
 
     # Sort by absolute correlation (highest first)
     correlations.sort(key=lambda x: abs(x["correlation"]), reverse=True)
 
-    # Build market list for matrix rendering
+    # Build market list for graph rendering
     market_list = []
     for market_id in market_ids:
-        market = market_prices[market_id]["market"]
+        market = market_daily_prices[market_id]["market"]
         market_list.append({
             "id": market.id,
             "question": market.question[:50],

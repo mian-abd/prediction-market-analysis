@@ -126,10 +126,7 @@ export default function EquityCurve({
     strategy.data.forEach((point) => {
       const timestamp = point.timestamp
       if (!chartDataMap.has(timestamp)) {
-        chartDataMap.set(timestamp, {
-          timestamp,
-          date: new Date(timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        })
+        chartDataMap.set(timestamp, { timestamp })
       }
       chartDataMap.get(timestamp)![strategy.name] = point.cumulative_pnl
     })
@@ -139,6 +136,24 @@ export default function EquityCurve({
   const chartData = Array.from(chartDataMap.values()).sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   )
+
+  // Determine time span to choose appropriate x-axis labels
+  const firstTs = chartData.length > 0 ? new Date(chartData[0].timestamp).getTime() : 0
+  const lastTs = chartData.length > 0 ? new Date(chartData[chartData.length - 1].timestamp).getTime() : 0
+  const spanMs = lastTs - firstTs
+  const spanDays = spanMs / (1000 * 60 * 60 * 24)
+  const isIntraday = spanDays < 2
+
+  // Format dates based on time span
+  chartData.forEach((point) => {
+    const d = new Date(point.timestamp)
+    if (isIntraday) {
+      // Show time for intraday data
+      point.date = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    } else {
+      point.date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    }
+  })
 
   // Forward-fill missing values (carry last value forward)
   const strategyNames = data.strategies
