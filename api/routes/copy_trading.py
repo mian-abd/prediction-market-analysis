@@ -12,6 +12,7 @@ from db.models import (
     TraderProfile, FollowedTrader, CopyTrade, TraderActivity,
     PortfolioPosition, Market
 )
+from data_pipeline.copy_engine import seed_copy_positions
 
 router = APIRouter(prefix="/copy-trading", tags=["copy_trading"])
 
@@ -238,9 +239,21 @@ async def follow_trader(
     # Update follower count
     trader.follower_count += 1
 
+    # Flush to ensure follow record exists before seeding
+    await session.flush()
+
+    # Seed initial copy positions for auto_copy followers
+    follow_record = existing_follow if existing_follow else new_follow
+    seeded_ids = await seed_copy_positions(follow_record, session)
+
     await session.commit()
 
-    return {"message": "Successfully following trader", "trader_id": request.trader_id}
+    return {
+        "message": "Successfully following trader",
+        "trader_id": request.trader_id,
+        "mode": "auto" if request.auto_copy else "manual",
+        "seeded_positions": len(seeded_ids),
+    }
 
 
 @router.delete("/follow/{trader_id}")

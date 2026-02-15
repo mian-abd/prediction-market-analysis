@@ -27,6 +27,8 @@ interface PortfolioSummary {
   open_positions: number
   closed_positions: number
   total_realized_pnl: number
+  total_unrealized_pnl: number
+  total_pnl: number
   win_rate: number
   total_exposure: number
   by_strategy: Array<{
@@ -321,10 +323,15 @@ export default function Portfolio() {
             </p>
             <p
               className="text-[20px] font-mono font-bold"
-              style={{ color: summary.total_realized_pnl >= 0 ? 'var(--green)' : 'var(--red)' }}
+              style={{ color: (summary.total_pnl ?? summary.total_realized_pnl) >= 0 ? 'var(--green)' : 'var(--red)' }}
             >
-              ${summary.total_realized_pnl.toFixed(2)}
+              ${(summary.total_pnl ?? summary.total_realized_pnl).toFixed(2)}
             </p>
+            {summary.total_unrealized_pnl != null && summary.total_unrealized_pnl !== 0 && (
+              <p className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--text-3)' }}>
+                Unrealized: ${summary.total_unrealized_pnl.toFixed(2)}
+              </p>
+            )}
           </div>
 
           <div className="card p-4">

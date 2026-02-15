@@ -260,12 +260,29 @@ async def portfolio_summary(
     exposure_q = _apply_portfolio_filter(exposure_q, portfolio_type)
     total_exposure = (await session.execute(exposure_q)).scalar() or 0.0
 
+    # Unrealized P&L for open positions
+    open_pos_q = select(PortfolioPosition).where(PortfolioPosition.exit_time == None)  # noqa: E711
+    open_pos_q = _apply_portfolio_filter(open_pos_q, portfolio_type)
+    open_pos_result = await session.execute(open_pos_q)
+    open_positions_list = open_pos_result.scalars().all()
+
+    total_unrealized = 0.0
+    for pos in open_positions_list:
+        market = await session.get(Market, pos.market_id)
+        if market and market.price_yes is not None:
+            if pos.side == "yes":
+                total_unrealized += (market.price_yes - pos.entry_price) * pos.quantity
+            else:
+                total_unrealized += (pos.entry_price - market.price_yes) * pos.quantity
+
     return {
         "open_positions": open_count,
         "closed_positions": closed_count,
-        "total_realized_pnl": total_realized,
-        "win_rate": win_rate,
-        "total_exposure": total_exposure,
+        "total_realized_pnl": round(total_realized, 2),
+        "total_unrealized_pnl": round(total_unrealized, 2),
+        "total_pnl": round(total_realized + total_unrealized, 2),
+        "win_rate": round(win_rate, 1),
+        "total_exposure": round(total_exposure, 2),
         "by_strategy": by_strategy,
     }
 
@@ -314,77 +331,93 @@ async def get_equity_curve(
             if market and market.price_yes is not None:
                 market_prices[pos.market_id] = market.price_yes
 
-    # Build timeline with both entry and exit events
+    # Build events: entries (timeline anchors) + exits (realized P&L)
+    # NO per-position unrealized events - those create the sloped-line bug
     events = []
     for pos in positions:
         strategy = pos.strategy or "manual"
-
-        # Add entry event (always present)
         events.append({
             "timestamp": pos.entry_time,
             "strategy": strategy,
-            "pnl": 0.0,  # Entry doesn't contribute to P&L yet
+            "pnl": 0.0,
             "event_type": "entry",
-            "position_id": pos.id,
         })
-
-        # Add exit event (if closed) or current unrealized P&L (if open)
         if pos.exit_time:
             events.append({
                 "timestamp": pos.exit_time,
                 "strategy": strategy,
                 "pnl": pos.realized_pnl or 0.0,
                 "event_type": "exit",
-                "position_id": pos.id,
             })
-        else:
-            # Open position - calculate unrealized P&L
-            current_price_yes = market_prices.get(pos.market_id)
-            if current_price_yes is not None:
+
+    # Compute total unrealized as SINGLE aggregate (not per-position)
+    total_unrealized = 0.0
+    unrealized_by_strategy = defaultdict(float)
+    for pos in positions:
+        if pos.exit_time is None:
+            px = market_prices.get(pos.market_id)
+            if px is not None:
                 if pos.side == "yes":
-                    unrealized = (current_price_yes - pos.entry_price) * pos.quantity
+                    u = (px - pos.entry_price) * pos.quantity
                 else:
-                    unrealized = (pos.entry_price - current_price_yes) * pos.quantity
+                    u = (pos.entry_price - px) * pos.quantity
+                total_unrealized += u
+                unrealized_by_strategy[pos.strategy or "manual"] += u
 
-                # Add current snapshot with unrealized P&L
-                events.append({
-                    "timestamp": datetime.utcnow(),
-                    "strategy": strategy,
-                    "pnl": unrealized,
-                    "event_type": "unrealized",
-                    "position_id": pos.id,
-                })
-
-    # Sort events by timestamp
+    # Sort events chronologically
     events.sort(key=lambda e: e["timestamp"])
 
-    # Build cumulative P&L timeline
+    # Build cumulative P&L timeline (step function)
     strategy_data = defaultdict(list)
     strategy_cumulative = defaultdict(float)
     all_cumulative = 0.0
 
     for event in events:
-        if event["event_type"] == "entry":
-            continue  # Entry events don't change P&L
-
         strategy = event["strategy"]
-        pnl = event["pnl"]
-
-        strategy_cumulative[strategy] += pnl
-        all_cumulative += pnl
-
         timestamp = event["timestamp"].isoformat()
+
+        if event["event_type"] == "exit":
+            # Exit events increment cumulative P&L (step up/down)
+            strategy_cumulative[strategy] += event["pnl"]
+            all_cumulative += event["pnl"]
+
+        # Emit data point for BOTH entry and exit events
+        # Entry events anchor the timeline at current cumulative (flat step)
+        # Exit events show the new cumulative after realized P&L
         strategy_data[strategy].append({
             "timestamp": timestamp,
-            "cumulative_pnl": strategy_cumulative[strategy],
+            "cumulative_pnl": round(strategy_cumulative[strategy], 2),
         })
 
-        # Add to "all" timeline
-        if "all" not in strategy_data or strategy_data["all"][-1]["timestamp"] != timestamp:
+        # Add to "all" timeline (deduplicate same timestamp)
+        if not strategy_data.get("all") or strategy_data["all"][-1]["timestamp"] != timestamp:
             strategy_data["all"].append({
                 "timestamp": timestamp,
-                "cumulative_pnl": all_cumulative,
+                "cumulative_pnl": round(all_cumulative, 2),
             })
+        else:
+            strategy_data["all"][-1]["cumulative_pnl"] = round(all_cumulative, 2)
+
+    # Append SINGLE "now" point with unrealized P&L
+    now_iso = datetime.utcnow().isoformat()
+    for strat_name, unrealized in unrealized_by_strategy.items():
+        strategy_cumulative[strat_name] += unrealized
+        strategy_data[strat_name].append({
+            "timestamp": now_iso,
+            "cumulative_pnl": round(strategy_cumulative[strat_name], 2),
+        })
+
+    all_cumulative += total_unrealized
+    if strategy_data.get("all"):
+        strategy_data["all"].append({
+            "timestamp": now_iso,
+            "cumulative_pnl": round(all_cumulative, 2),
+        })
+    else:
+        strategy_data["all"] = [{
+            "timestamp": now_iso,
+            "cumulative_pnl": round(all_cumulative, 2),
+        }]
 
     strategies = []
     for strategy_name, points in strategy_data.items():
@@ -397,7 +430,7 @@ async def get_equity_curve(
     return {
         "data": strategies,
         "strategies": list(strategy_data.keys()),
-        "total_pnl": all_cumulative,
+        "total_pnl": round(all_cumulative, 2),
     }
 
 

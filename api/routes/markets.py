@@ -35,7 +35,7 @@ async def list_markets(
     if is_active:
         query = query.where(Market.is_active == True)  # noqa
         # Exclude effectively-resolved markets (price stuck at 0 or 1)
-        query = query.where(Market.price_yes > 0.01, Market.price_yes < 0.99)
+        query = query.where(Market.price_yes >= 0.05, Market.price_yes <= 0.95)
         # Exclude expired markets (past end_date)
         query = query.where(
             or_(Market.end_date == None, Market.end_date >= func.now())  # noqa
@@ -105,7 +105,7 @@ async def list_markets(
     count_query = select(func.count(Market.id))
     if is_active:
         count_query = count_query.where(Market.is_active == True)  # noqa
-        count_query = count_query.where(Market.price_yes > 0.01, Market.price_yes < 0.99)
+        count_query = count_query.where(Market.price_yes >= 0.05, Market.price_yes <= 0.95)
         count_query = count_query.where(
             or_(Market.end_date == None, Market.end_date >= func.now())  # noqa
         )

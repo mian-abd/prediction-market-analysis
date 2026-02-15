@@ -212,6 +212,79 @@ async def on_position_closed(
     return closed_ids
 
 
+async def seed_copy_positions(
+    follow: FollowedTrader,
+    session: AsyncSession,
+) -> list[int]:
+    """Create initial copy positions when a user follows a trader with auto_copy.
+
+    Since external traders (Polymarket leaderboard) don't trade through our system,
+    we seed positions in top liquid active markets proportional to the allocation amount.
+    This gives the follower immediate portfolio exposure.
+    """
+    if not follow.auto_copy:
+        return []
+
+    from db.models import Market
+
+    # Get top active markets by volume (well-priced, not near-resolved)
+    markets_result = await session.execute(
+        select(Market)
+        .where(
+            Market.is_active == True,  # noqa
+            Market.price_yes > 0.10,
+            Market.price_yes < 0.90,
+        )
+        .order_by(Market.volume_24h.desc().nullslast())
+        .limit(5)
+    )
+    markets = list(markets_result.scalars().all())
+
+    if not markets:
+        return []
+
+    created_ids = []
+    allocation_per_market = follow.allocation_amount / len(markets)
+
+    for market in markets:
+        # Buy the more likely side (simulates confident trader behavior)
+        side = "yes" if market.price_yes >= 0.5 else "no"
+        entry_price = market.price_yes  # Always store YES price
+
+        cost_per_share = entry_price if side == "yes" else (1.0 - entry_price)
+        quantity = allocation_per_market / max(cost_per_share, 0.01)
+
+        if follow.max_position_size:
+            max_qty = follow.max_position_size / max(cost_per_share, 0.01)
+            quantity = min(quantity, max_qty)
+
+        if quantity <= 0:
+            continue
+
+        position = PortfolioPosition(
+            user_id=follow.follower_id,
+            market_id=market.id,
+            platform_id=market.platform_id,
+            side=side,
+            entry_price=entry_price,
+            quantity=round(quantity, 2),
+            entry_time=datetime.utcnow(),
+            strategy="copy_trade",
+            portfolio_type="manual",
+            is_simulated=True,
+        )
+        session.add(position)
+        await session.flush()
+        created_ids.append(position.id)
+
+        logger.info(
+            f"Seeded copy position {position.id} for follower {follow.follower_id}: "
+            f"market {market.id} | {side} @ {entry_price:.3f} | qty={quantity:.2f}"
+        )
+
+    return created_ids
+
+
 async def log_trader_activity(
     trader_id: str,
     activity_type: str,

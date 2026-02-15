@@ -284,7 +284,7 @@ export default function EquityCurve({
             {strategyNames.map((strategy) => (
               <Line
                 key={strategy}
-                type="monotone"
+                type="stepAfter"
                 dataKey={strategy}
                 stroke={STRATEGY_COLORS[strategy] || '#8E8E93'}
                 strokeWidth={strategy === 'all' ? 3 : 2}

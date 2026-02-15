@@ -2,7 +2,11 @@
 
 import asyncio
 import logging
+import warnings
 from contextlib import asynccontextmanager
+
+# Silence sklearn deprecation warnings (force_all_finite -> ensure_all_finite)
+warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
