@@ -478,43 +478,7 @@ async def run_pipeline_loop():
 
     logger.info("Starting pipeline loop...")
 
-    # ── Initial full collection ──
-    await collect_markets()
-    await collect_prices()
-
-    # Initial matching + arb scan after data is loaded
-    try:
-        await run_market_matching()
-    except Exception as e:
-        logger.error(f"Initial matching failed: {e}")
-
-    try:
-        await scan_arbitrage()
-    except Exception as e:
-        logger.error(f"Initial arb scan failed: {e}")
-
-    # ── Initial ML scans (so signals appear immediately after deploy) ──
-    try:
-        await scan_ensemble_edges()
-    except Exception as e:
-        logger.error(f"Initial ensemble scan failed: {e}")
-
-    try:
-        await scan_elo_edges()
-    except Exception as e:
-        logger.error(f"Initial elo scan failed: {e}")
-
-    # ── Initial auto-trade (execute any signals found above) ──
-    try:
-        from execution.paper_executor import execute_paper_trades
-        async with async_session() as exec_session:
-            created = await execute_paper_trades(exec_session)
-            if created:
-                logger.info(f"Initial auto paper trades: {len(created)} positions opened")
-    except Exception as e:
-        logger.error(f"Initial paper executor error: {e}")
-
-    # ── Backfill trader profiles if empty (for Copy Trading page) ──
+    # ── Backfill trader profiles FIRST (so Copy Trading page works immediately) ──
     try:
         from sqlalchemy import select as sa_select
         from db.models import TraderProfile
@@ -575,6 +539,42 @@ async def run_pipeline_loop():
                 logger.info("Trader profiles already exist, skipping backfill")
     except Exception as e:
         logger.error(f"Trader backfill failed: {e}")
+
+    # ── Initial full collection ──
+    await collect_markets()
+    await collect_prices()
+
+    # Initial matching + arb scan after data is loaded
+    try:
+        await run_market_matching()
+    except Exception as e:
+        logger.error(f"Initial matching failed: {e}")
+
+    try:
+        await scan_arbitrage()
+    except Exception as e:
+        logger.error(f"Initial arb scan failed: {e}")
+
+    # ── Initial ML scans (so signals appear immediately after deploy) ──
+    try:
+        await scan_ensemble_edges()
+    except Exception as e:
+        logger.error(f"Initial ensemble scan failed: {e}")
+
+    try:
+        await scan_elo_edges()
+    except Exception as e:
+        logger.error(f"Initial elo scan failed: {e}")
+
+    # ── Initial auto-trade (execute any signals found above) ──
+    try:
+        from execution.paper_executor import execute_paper_trades
+        async with async_session() as exec_session:
+            created = await execute_paper_trades(exec_session)
+            if created:
+                logger.info(f"Initial auto paper trades: {len(created)} positions opened")
+    except Exception as e:
+        logger.error(f"Initial paper executor error: {e}")
 
     # ── Loop configuration ──
     price_interval = settings.price_poll_interval_sec
