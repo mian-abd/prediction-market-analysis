@@ -6,7 +6,10 @@
       "Bash(find:*)",
       "Bash(python:*)",
       "Bash(npx tsc:*)",
-      "Bash(npx vite build)"
+      "Bash(npx vite build)",
+      "Bash(curl:*)",
+      "Bash(timeout 10 tail:*)",
+      "Bash(/d/prediction-market-analysis/venv/Scripts/python.exe:*)"
     ]
   }
 }

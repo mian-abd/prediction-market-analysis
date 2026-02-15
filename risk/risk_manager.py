@@ -113,10 +113,13 @@ async def check_risk_limits(
             reason=f"Position size ${position_cost:.2f} exceeds limit ${limits['max_position_usd']:.2f}",
         )
 
-    # 2. Total exposure check (all open positions)
+    # 2. Total exposure check (all open positions for current user)
     exposure_query = (
         select(func.sum(_cost_expr()))
-        .where(PortfolioPosition.exit_time == None)  # noqa: E711
+        .where(
+            PortfolioPosition.user_id == user_id,
+            PortfolioPosition.exit_time == None,  # noqa: E711
+        )
     )
     exposure_query = _apply_portfolio_filter(exposure_query, portfolio_type)
     total_exposure = (await session.execute(exposure_query)).scalar() or 0.0
@@ -131,11 +134,12 @@ async def check_risk_limits(
             current_exposure=total_exposure,
         )
 
-    # 3. Daily P&L check (circuit breaker)
+    # 3. Daily P&L check (circuit breaker) for current user
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     pnl_query = (
         select(func.sum(PortfolioPosition.realized_pnl))
         .where(
+            PortfolioPosition.user_id == user_id,
             PortfolioPosition.exit_time != None,  # noqa: E711
             PortfolioPosition.exit_time >= today_start,
         )
@@ -159,10 +163,13 @@ async def check_risk_limits(
             circuit_breaker_active=True,
         )
 
-    # 4. Daily trade count check
+    # 4. Daily trade count check for current user
     trades_query = (
         select(func.count(PortfolioPosition.id))
-        .where(PortfolioPosition.entry_time >= today_start)
+        .where(
+            PortfolioPosition.user_id == user_id,
+            PortfolioPosition.entry_time >= today_start,
+        )
     )
     trades_query = _apply_portfolio_filter(trades_query, portfolio_type)
     daily_trades = (await session.execute(trades_query)).scalar() or 0
@@ -184,29 +191,32 @@ async def check_risk_limits(
     )
 
 
-async def get_risk_status(session: AsyncSession, portfolio_type: str | None = None) -> dict:
-    """Get current risk status for dashboard display.
+async def get_risk_status(session: AsyncSession, user_id: str = "anonymous", portfolio_type: str | None = None) -> dict:
+    """Get current risk status for dashboard display (filtered by user_id).
 
     When portfolio_type is None, returns both portfolios in a combined response.
     When specified, returns single-portfolio format (backward compatible).
     """
     if portfolio_type is None:
         # Return both portfolios
-        manual_status = await _get_single_risk_status(session, "manual")
-        auto_status = await _get_single_risk_status(session, "auto")
+        manual_status = await _get_single_risk_status(session, "manual", user_id=user_id)
+        auto_status = await _get_single_risk_status(session, "auto", user_id=user_id)
         return {"manual": manual_status, "auto": auto_status}
 
-    return await _get_single_risk_status(session, portfolio_type)
+    return await _get_single_risk_status(session, portfolio_type, user_id=user_id)
 
 
-async def _get_single_risk_status(session: AsyncSession, portfolio_type: str) -> dict:
-    """Get risk status for a single portfolio type."""
+async def _get_single_risk_status(session: AsyncSession, portfolio_type: str, user_id: str = "anonymous") -> dict:
+    """Get risk status for a single portfolio type (filtered by user_id)."""
     limits = await _get_portfolio_limits(session, portfolio_type)
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
     exposure_query = (
         select(func.sum(_cost_expr()))
-        .where(PortfolioPosition.exit_time == None)  # noqa: E711
+        .where(
+            PortfolioPosition.user_id == user_id,
+            PortfolioPosition.exit_time == None,  # noqa: E711
+        )
     )
     exposure_query = _apply_portfolio_filter(exposure_query, portfolio_type)
     total_exposure = (await session.execute(exposure_query)).scalar() or 0.0
@@ -214,6 +224,7 @@ async def _get_single_risk_status(session: AsyncSession, portfolio_type: str) ->
     pnl_query = (
         select(func.sum(PortfolioPosition.realized_pnl))
         .where(
+            PortfolioPosition.user_id == user_id,
             PortfolioPosition.exit_time != None,  # noqa: E711
             PortfolioPosition.exit_time >= today_start,
         )
@@ -223,14 +234,20 @@ async def _get_single_risk_status(session: AsyncSession, portfolio_type: str) ->
 
     trades_query = (
         select(func.count(PortfolioPosition.id))
-        .where(PortfolioPosition.entry_time >= today_start)
+        .where(
+            PortfolioPosition.user_id == user_id,
+            PortfolioPosition.entry_time >= today_start,
+        )
     )
     trades_query = _apply_portfolio_filter(trades_query, portfolio_type)
     daily_trades = (await session.execute(trades_query)).scalar() or 0
 
     open_query = (
         select(func.count(PortfolioPosition.id))
-        .where(PortfolioPosition.exit_time == None)  # noqa: E711
+        .where(
+            PortfolioPosition.user_id == user_id,
+            PortfolioPosition.exit_time == None,  # noqa: E711
+        )
     )
     open_query = _apply_portfolio_filter(open_query, portfolio_type)
     open_positions = (await session.execute(open_query)).scalar() or 0
