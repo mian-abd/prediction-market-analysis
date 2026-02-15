@@ -276,7 +276,10 @@ async def get_equity_curve(
     portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get cumulative P&L over time for equity curve visualization."""
+    """Get cumulative P&L over time for equity curve visualization.
+
+    Includes both closed positions (realized P&L) and open positions (unrealized P&L).
+    """
     from datetime import timedelta
     from collections import defaultdict
 
@@ -288,13 +291,12 @@ async def get_equity_curve(
     }
     cutoff_delta = cutoff_map[time_range]
 
-    query = select(PortfolioPosition).where(
-        PortfolioPosition.exit_time != None  # noqa: E711
-    ).order_by(PortfolioPosition.exit_time)
+    # Get ALL positions (both open and closed)
+    query = select(PortfolioPosition).order_by(PortfolioPosition.entry_time)
 
     if cutoff_delta:
         cutoff_time = datetime.utcnow() - cutoff_delta
-        query = query.where(PortfolioPosition.exit_time >= cutoff_time)
+        query = query.where(PortfolioPosition.entry_time >= cutoff_time)
 
     query = _apply_portfolio_filter(query, portfolio_type)
 
@@ -304,23 +306,80 @@ async def get_equity_curve(
     if not positions:
         return {"data": [], "strategies": [], "total_pnl": 0.0}
 
+    # Fetch current market prices for unrealized P&L
+    market_prices = {}
+    for pos in positions:
+        if pos.exit_time is None and pos.market_id not in market_prices:
+            market = await session.get(Market, pos.market_id)
+            if market and market.price_yes is not None:
+                market_prices[pos.market_id] = market.price_yes
+
+    # Build timeline with both entry and exit events
+    events = []
+    for pos in positions:
+        strategy = pos.strategy or "manual"
+
+        # Add entry event (always present)
+        events.append({
+            "timestamp": pos.entry_time,
+            "strategy": strategy,
+            "pnl": 0.0,  # Entry doesn't contribute to P&L yet
+            "event_type": "entry",
+            "position_id": pos.id,
+        })
+
+        # Add exit event (if closed) or current unrealized P&L (if open)
+        if pos.exit_time:
+            events.append({
+                "timestamp": pos.exit_time,
+                "strategy": strategy,
+                "pnl": pos.realized_pnl or 0.0,
+                "event_type": "exit",
+                "position_id": pos.id,
+            })
+        else:
+            # Open position - calculate unrealized P&L
+            current_price_yes = market_prices.get(pos.market_id)
+            if current_price_yes is not None:
+                if pos.side == "yes":
+                    unrealized = (current_price_yes - pos.entry_price) * pos.quantity
+                else:
+                    unrealized = (pos.entry_price - current_price_yes) * pos.quantity
+
+                # Add current snapshot with unrealized P&L
+                events.append({
+                    "timestamp": datetime.utcnow(),
+                    "strategy": strategy,
+                    "pnl": unrealized,
+                    "event_type": "unrealized",
+                    "position_id": pos.id,
+                })
+
+    # Sort events by timestamp
+    events.sort(key=lambda e: e["timestamp"])
+
+    # Build cumulative P&L timeline
     strategy_data = defaultdict(list)
     strategy_cumulative = defaultdict(float)
     all_cumulative = 0.0
 
-    for pos in positions:
-        strategy = pos.strategy or "manual"
-        pnl = pos.realized_pnl or 0.0
+    for event in events:
+        if event["event_type"] == "entry":
+            continue  # Entry events don't change P&L
+
+        strategy = event["strategy"]
+        pnl = event["pnl"]
 
         strategy_cumulative[strategy] += pnl
         all_cumulative += pnl
 
-        timestamp = pos.exit_time.isoformat()
+        timestamp = event["timestamp"].isoformat()
         strategy_data[strategy].append({
             "timestamp": timestamp,
             "cumulative_pnl": strategy_cumulative[strategy],
         })
 
+        # Add to "all" timeline
         if "all" not in strategy_data or strategy_data["all"][-1]["timestamp"] != timestamp:
             strategy_data["all"].append({
                 "timestamp": timestamp,
