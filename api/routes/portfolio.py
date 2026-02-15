@@ -46,11 +46,10 @@ async def list_positions(
     strategy: str | None = None,
     portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
     limit: int = Query(default=50, le=200),
-    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """List portfolio positions with optional portfolio_type filter (filtered by current user)."""
-    query = select(PortfolioPosition).where(PortfolioPosition.user_id == current_user)
+    """List portfolio positions with optional portfolio_type filter."""
+    query = select(PortfolioPosition)
 
     if status == "open":
         query = query.where(PortfolioPosition.exit_time == None)  # noqa: E711
@@ -206,37 +205,26 @@ async def close_position(
 @router.get("/portfolio/summary")
 async def portfolio_summary(
     portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
-    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Overall portfolio performance summary with optional portfolio_type filter (filtered by current user)."""
+    """Overall portfolio performance summary with optional portfolio_type filter."""
     # Open positions
-    open_q = select(func.count(PortfolioPosition.id)).where(
-        PortfolioPosition.user_id == current_user,
-        PortfolioPosition.exit_time == None,  # noqa: E711
-    )
+    open_q = select(func.count(PortfolioPosition.id)).where(PortfolioPosition.exit_time == None)  # noqa: E711
     open_q = _apply_portfolio_filter(open_q, portfolio_type)
     open_count = (await session.execute(open_q)).scalar() or 0
 
     # Closed positions
-    closed_q = select(func.count(PortfolioPosition.id)).where(
-        PortfolioPosition.user_id == current_user,
-        PortfolioPosition.exit_time != None,  # noqa: E711
-    )
+    closed_q = select(func.count(PortfolioPosition.id)).where(PortfolioPosition.exit_time != None)  # noqa: E711
     closed_q = _apply_portfolio_filter(closed_q, portfolio_type)
     closed_count = (await session.execute(closed_q)).scalar() or 0
 
     # Total realized P&L
-    pnl_q = select(func.sum(PortfolioPosition.realized_pnl)).where(
-        PortfolioPosition.user_id == current_user,
-        PortfolioPosition.exit_time != None,  # noqa: E711
-    )
+    pnl_q = select(func.sum(PortfolioPosition.realized_pnl)).where(PortfolioPosition.exit_time != None)  # noqa: E711
     pnl_q = _apply_portfolio_filter(pnl_q, portfolio_type)
     total_realized = (await session.execute(pnl_q)).scalar() or 0.0
 
     # Win rate
     win_q = select(func.count(PortfolioPosition.id)).where(
-        PortfolioPosition.user_id == current_user,
         PortfolioPosition.exit_time != None,  # noqa: E711
         PortfolioPosition.realized_pnl > 0,
     )
@@ -250,10 +238,7 @@ async def portfolio_summary(
         PortfolioPosition.strategy,
         func.count(PortfolioPosition.id),
         func.sum(PortfolioPosition.realized_pnl),
-    ).where(
-        PortfolioPosition.user_id == current_user,
-        PortfolioPosition.exit_time != None,  # noqa: E711
-    ).group_by(PortfolioPosition.strategy)
+    ).where(PortfolioPosition.exit_time != None).group_by(PortfolioPosition.strategy)  # noqa: E711
     strategy_q = _apply_portfolio_filter(strategy_q, portfolio_type)
     strategy_pnl_result = await session.execute(strategy_q)
 
@@ -271,18 +256,12 @@ async def portfolio_summary(
         (PortfolioPosition.side == "yes", PortfolioPosition.entry_price * PortfolioPosition.quantity),
         else_=(1.0 - PortfolioPosition.entry_price) * PortfolioPosition.quantity,
     )
-    exposure_q = select(func.sum(cost_expr)).where(
-        PortfolioPosition.user_id == current_user,
-        PortfolioPosition.exit_time == None,  # noqa: E711
-    )
+    exposure_q = select(func.sum(cost_expr)).where(PortfolioPosition.exit_time == None)  # noqa: E711
     exposure_q = _apply_portfolio_filter(exposure_q, portfolio_type)
     total_exposure = (await session.execute(exposure_q)).scalar() or 0.0
 
     # Unrealized P&L for open positions
-    open_pos_q = select(PortfolioPosition).where(
-        PortfolioPosition.user_id == current_user,
-        PortfolioPosition.exit_time == None,  # noqa: E711
-    )
+    open_pos_q = select(PortfolioPosition).where(PortfolioPosition.exit_time == None)  # noqa: E711
     open_pos_q = _apply_portfolio_filter(open_pos_q, portfolio_type)
     open_pos_result = await session.execute(open_pos_q)
     open_positions_list = open_pos_result.scalars().all()
@@ -334,10 +313,9 @@ async def portfolio_summary(
 async def get_equity_curve(
     time_range: str = Query(default="30d", regex="^(7d|30d|90d|all)$"),
     portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
-    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get cumulative P&L over time for equity curve visualization (filtered by current user).
+    """Get cumulative P&L over time for equity curve visualization.
 
     Includes both closed positions (realized P&L) and open positions (unrealized P&L).
     """
@@ -352,8 +330,8 @@ async def get_equity_curve(
     }
     cutoff_delta = cutoff_map[time_range]
 
-    # Get ALL positions (both open and closed) for current user
-    query = select(PortfolioPosition).where(PortfolioPosition.user_id == current_user).order_by(PortfolioPosition.entry_time)
+    # Get ALL positions (both open and closed)
+    query = select(PortfolioPosition).order_by(PortfolioPosition.entry_time)
 
     if cutoff_delta:
         cutoff_time = datetime.utcnow() - cutoff_delta
@@ -573,13 +551,11 @@ async def get_equity_curve(
 async def get_win_rate_by_strategy(
     min_trades: int = Query(default=1, ge=1),
     portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
-    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get win rate breakdown by strategy (filtered by current user)."""
+    """Get win rate breakdown by strategy."""
     query = select(PortfolioPosition).where(
-        PortfolioPosition.user_id == current_user,
-        PortfolioPosition.exit_time != None,  # noqa: E711
+        PortfolioPosition.exit_time != None  # noqa: E711
     )
     query = _apply_portfolio_filter(query, portfolio_type)
 
@@ -678,11 +654,10 @@ async def reset_portfolio(
 @router.get("/portfolio/risk-status")
 async def get_portfolio_risk_status(
     portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
-    current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get current risk limit utilization for dashboard display (filtered by current user).
+    """Get current risk limit utilization for dashboard display.
 
     When portfolio_type is omitted, returns both manual and auto risk status.
     """
-    return await get_risk_status(session, user_id=current_user, portfolio_type=portfolio_type)
+    return await get_risk_status(session, portfolio_type=portfolio_type)
