@@ -142,6 +142,186 @@ select.input {
   cursor: pointer;
 }
 
+/* ─── Quality Badges ─── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border-radius: 6px;
+}
+.badge-high { background: rgba(76,175,112,0.15); color: var(--green); }
+.badge-medium { background: rgba(196,162,77,0.15); color: var(--accent); }
+.badge-low { background: rgba(207,102,121,0.15); color: var(--red); }
+.badge-experimental {
+  background: rgba(207,102,121,0.10);
+  color: var(--red);
+  border: 1px solid rgba(207,102,121,0.20);
+}
+.badge-info { background: rgba(94,180,239,0.12); color: var(--blue); }
+
+/* ─── Signal Badges (inline on market cards) ─── */
+.signal-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 5px;
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* ─── Tab System ─── */
+.tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+  background: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+}
+.tab:hover { color: var(--text-2); }
+.tab-active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+/* ─── Filter Chips ─── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.chip:hover {
+  border-color: var(--border-hover);
+  color: var(--text);
+}
+.chip-active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ─── Price Block ─── */
+.price-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 8px 12px;
+  border-radius: 10px;
+  min-width: 72px;
+}
+.price-block-yes { background: rgba(76,175,112,0.10); }
+.price-block-no { background: rgba(207,102,121,0.10); }
+.price-block-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.7;
+}
+.price-block-value {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+/* ─── Progress Bar ─── */
+.progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+/* ─── Freshness Indicator ─── */
+.freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.freshness-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.freshness-fresh .freshness-dot { background: var(--green); }
+.freshness-ok .freshness-dot { background: var(--accent); }
+.freshness-stale .freshness-dot { background: var(--red); }
+
+/* ─── Correlation Bar ─── */
+.corr-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.corr-bar-track {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255,255,255,0.06);
+}
+.corr-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+/* ─── Chart Container ─── */
+.chart-tf-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.chart-tf-btn:hover { color: var(--text-2); background: rgba(255,255,255,0.04); }
+.chart-tf-active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
 /* ─── Animation ─── */
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(8px); }
@@ -149,11 +329,27 @@ select.input {
 }
 .fade-up { animation: fade-up 0.35s ease-out forwards; }
 
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.fade-in { animation: fade-in 0.25s ease-out forwards; }
+
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
 .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+@keyframes shimmer {
+  0% { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+.shimmer {
+  background: linear-gradient(90deg, var(--card) 0%, var(--card-hover) 50%, var(--card) 100%);
+  background-size: 200px 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
 
 /* ─── Utility: Hide scrollbar ─── */
 .scrollbar-hide {
@@ -162,4 +358,64 @@ select.input {
 }
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+/* ─── Responsive ─── */
+
+/* Desktop: show sidebar, hide mobile header */
+.sidebar-desktop { display: flex; }
+.sidebar-mobile { display: none; }
+.mobile-header { display: none; }
+.mobile-overlay { display: none; }
+.main-content { padding-top: 0; }
+
+/* Mobile: hide sidebar, show mobile header + drawer */
+@media (max-width: 768px) {
+  .sidebar-desktop { display: none !important; }
+
+  .mobile-header {
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 40;
+    height: 52px;
+    padding: 0 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .main-content {
+    padding-top: 52px;
+  }
+
+  .mobile-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    background: rgba(0, 0, 0, 0.6);
+    animation: fade-in 0.2s ease-out;
+  }
+
+  .sidebar-mobile {
+    display: flex;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 260px;
+    z-index: 50;
+    background: var(--bg);
+    border-right: 1px solid var(--border);
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+  }
+
+  .sidebar-mobile-open {
+    transform: translateX(0);
+  }
 }

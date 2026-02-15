@@ -116,7 +116,10 @@ async def backfill_market_history(
 
 
 async def backfill_all_markets(limit: int = 1000, days: int = 30):
-    """Backfill price history for top N resolved markets by volume.
+    """Backfill price history for pipeline-tracked resolved markets.
+
+    This ensures backfilled historical data aligns with markets the pipeline
+    is actively collecting live data for, fixing the coverage gap issue.
 
     Args:
         limit: Maximum number of markets to backfill (default 1000)
@@ -126,21 +129,44 @@ async def backfill_all_markets(limit: int = 1000, days: int = 30):
 
     # Query markets first (separate session)
     async with async_session() as query_session:
+        # STEP 1: Get markets pipeline is already tracking (has recent price snapshots)
+        logger.info("Finding pipeline-tracked markets...")
+        tracked_ids_result = await query_session.execute(
+            select(PriceSnapshot.market_id.distinct())
+            .where(PriceSnapshot.timestamp >= datetime.utcnow() - timedelta(days=30))
+        )
+        tracked_ids = set(row[0] for row in tracked_ids_result)
+        logger.info(f"Found {len(tracked_ids)} pipeline-tracked markets (last 30 days)")
+
+        # STEP 2: Find resolved markets from that tracked set
+        logger.info("Filtering to resolved markets with token IDs...")
         result = await query_session.execute(
             select(Market)
             .where(
-                Market.resolution_value.isnot(None),  # Only resolved markets
-                Market.token_id_yes.isnot(None),  # Must have token_id
+                Market.id.in_(tracked_ids),  # Only markets we're already tracking
+                Market.resolution_value.isnot(None),  # That have resolved
+                Market.token_id_yes.isnot(None),  # With token IDs for API
             )
-            .order_by(Market.volume_total.desc())
+            .order_by(Market.volume_total.desc())  # Prioritize high-volume
             .limit(limit)
         )
         markets = result.scalars().all()
 
-    logger.info(f"Found {len(markets)} resolved markets to backfill")
-    logger.info(f"Backfilling last {days} days of history (hourly)")
+    logger.info("=" * 60)
+    logger.info("ALIGNMENT SUMMARY:")
+    logger.info(f"Pipeline-tracked markets (last 30d): {len(tracked_ids)}")
+    logger.info(f"Resolved + tracked + has token_id: {len(markets)}")
+    logger.info(f"Will backfill: {len(markets)} markets")
+    logger.info(f"Days per market: {days} days (hourly snapshots)")
+    logger.info(f"Expected snapshots: ~{len(markets) * days * 24:,}")
+    logger.info("=" * 60)
+    logger.info("")
+    logger.info("Starting backfill...")
 
-    # Process markets sequentially (to respect rate limits)
+    # Process markets in parallel batches (to respect rate limits while maximizing throughput)
+    BATCH_SIZE = 10  # Process 10 markets concurrently
+    SLEEP_PER_BATCH = 2.0  # 2 seconds for 10 requests = 5 req/sec average
+
     results = {
         "success": 0,
         "no_history": 0,
@@ -150,31 +176,40 @@ async def backfill_all_markets(limit: int = 1000, days: int = 30):
         "total_snapshots": 0,
     }
 
-    for i, market in enumerate(markets):
-        if i > 0 and i % 100 == 0:
+    # Process in batches
+    for batch_start in range(0, len(markets), BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, len(markets))
+        batch = markets[batch_start:batch_end]
+
+        if batch_start > 0 and batch_start % 100 == 0:
             logger.info(
-                f"Progress: {i}/{len(markets)} markets processed "
+                f"Progress: {batch_start}/{len(markets)} markets processed "
                 f"({results['success']} successful, {results['total_snapshots']} snapshots added)"
             )
 
-        # Create fresh session for each market (isolation from IntegrityError rollbacks)
-        async with async_session() as session:
-            result = await backfill_market_history(market, session, days=days)
+        # Process batch in parallel
+        async def process_market(market):
+            async with async_session() as session:
+                return await backfill_market_history(market, session, days=days)
 
-        if result["error"] is None:
-            results["success"] += 1
-            results["total_snapshots"] += result["snapshots_added"]
-        elif result["error"] == "no_history":
-            results["no_history"] += 1
-        elif result["error"] == "no_snapshots_in_window":
-            results["no_snapshots_in_window"] += 1
-        elif result["error"] == "already_exists":
-            results["already_exists"] += 1
-        else:
-            results["errors"] += 1
+        batch_results = await asyncio.gather(*[process_market(m) for m in batch])
 
-        # Rate limiting: ~1 request per second (conservative)
-        await asyncio.sleep(1.0)
+        # Aggregate results
+        for result in batch_results:
+            if result["error"] is None:
+                results["success"] += 1
+                results["total_snapshots"] += result["snapshots_added"]
+            elif result["error"] == "no_history":
+                results["no_history"] += 1
+            elif result["error"] == "no_snapshots_in_window":
+                results["no_snapshots_in_window"] += 1
+            elif result["error"] == "already_exists":
+                results["already_exists"] += 1
+            else:
+                results["errors"] += 1
+
+        # Rate limiting: 2 seconds per batch of 10 = ~5 req/sec average
+        await asyncio.sleep(SLEEP_PER_BATCH)
 
     # Final summary
     logger.info("=" * 60)

@@ -40,9 +40,11 @@ class FeeCalculator:
         no_price: float,
         platform: str = "polymarket",
         quantity: float = 1.0,
+        slippage_pct: float = 0.01,
     ) -> dict:
         """Calculate fees for single-market rebalancing arb.
         Buy YES + NO, guaranteed $1 payout.
+        Includes slippage estimate (default 1%).
         """
         entry_cost = (yes_price + no_price) * quantity
         payout = 1.0 * quantity
@@ -57,7 +59,10 @@ class FeeCalculator:
         else:
             fee = 0.0
 
-        net_profit = gross_profit - fee
+        # Slippage: estimated cost of executing at worse price than quoted
+        slippage = slippage_pct * entry_cost
+        total_fees = fee + slippage
+        net_profit = gross_profit - total_fees
         net_pct = (net_profit / entry_cost * 100) if entry_cost > 0 else 0
 
         return {
@@ -66,6 +71,8 @@ class FeeCalculator:
             "gross_profit": gross_profit,
             "gross_pct": (gross_profit / entry_cost * 100) if entry_cost > 0 else 0,
             "fees": fee,
+            "slippage": slippage,
+            "total_fees": total_fees,
             "net_profit": net_profit,
             "net_pct": net_pct,
             "profitable": net_profit > 0,
@@ -78,10 +85,12 @@ class FeeCalculator:
         platform_buy: str,
         platform_sell: str,
         quantity: float = 1.0,
+        slippage_pct: float = 0.01,
     ) -> dict:
         """Calculate fees for cross-platform arb.
         Buy YES on cheap platform, buy NO on expensive platform.
         One side guaranteed to pay $1.
+        Includes slippage estimate (default 1%).
         """
         entry_cost = (price_buy + price_sell_complement) * quantity
         payout = 1.0 * quantity
@@ -102,7 +111,11 @@ class FeeCalculator:
         elif platform_sell == "kalshi":
             fee_sell = FeeCalculator.kalshi_fee(quantity, price_sell_complement)
 
-        total_fees = fee_buy + fee_sell
+        # Slippage on both legs
+        slippage = slippage_pct * entry_cost
+        # In cross-platform arb, only ONE side wins. The winning side pays 2% fee.
+        # Use max (worst-case fee) since we don't know which side wins at entry time.
+        total_fees = max(fee_buy, fee_sell) + slippage
         net_profit = gross_profit - total_fees
         net_pct = (net_profit / entry_cost * 100) if entry_cost > 0 else 0
 
@@ -113,6 +126,7 @@ class FeeCalculator:
             "gross_pct": (gross_profit / entry_cost * 100) if entry_cost > 0 else 0,
             "fee_buy": fee_buy,
             "fee_sell": fee_sell,
+            "slippage": slippage,
             "total_fees": total_fees,
             "net_profit": net_profit,
             "net_pct": net_pct,

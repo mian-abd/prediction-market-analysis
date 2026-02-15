@@ -1,0 +1,134 @@
+"""Auto-close lifecycle for auto-trading positions.
+
+Only touches positions where portfolio_type == "auto" AND exit_time IS NULL.
+Manual/copy positions are never modified.
+
+Close conditions (checked in order):
+1. Market resolved -> close at resolution value (1.0 or 0.0)
+2. Signal expired -> close at current market price (if close_on_signal_expiry=True)
+3. Stop loss hit -> close at current market price
+"""
+
+import logging
+from datetime import datetime
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from db.models import (
+    PortfolioPosition, Market, AutoTradingConfig,
+    EnsembleEdgeSignal, EloEdgeSignal,
+)
+
+logger = logging.getLogger(__name__)
+
+
+async def auto_close_positions(session: AsyncSession) -> list[int]:
+    """Check all open auto positions for close conditions. Returns closed IDs."""
+    # Load configs for stop-loss and signal-expiry settings
+    configs = {}
+    config_rows = (await session.execute(select(AutoTradingConfig))).scalars().all()
+    for c in config_rows:
+        configs[c.strategy] = c
+
+    # Get all open auto positions
+    result = await session.execute(
+        select(PortfolioPosition)
+        .where(
+            PortfolioPosition.portfolio_type == "auto",
+            PortfolioPosition.exit_time == None,  # noqa: E711
+        )
+    )
+    positions = result.scalars().all()
+
+    if not positions:
+        return []
+
+    closed_ids = []
+
+    for pos in positions:
+        market = await session.get(Market, pos.market_id)
+        if not market:
+            continue
+
+        # Determine which config applies
+        strategy_key = "ensemble" if pos.strategy == "auto_ensemble" else "elo"
+        config = configs.get(strategy_key)
+
+        exit_price = None
+        close_reason = None
+
+        # 1. Market resolved
+        if market.is_resolved and market.resolution_value is not None:
+            exit_price = market.resolution_value
+            close_reason = "market_resolved"
+
+        # 2. Signal expired (only if config says so)
+        elif config and config.close_on_signal_expiry:
+            has_active_signal = await _has_active_signal(session, pos.market_id, pos.strategy)
+            if not has_active_signal:
+                if market.price_yes is not None:
+                    exit_price = market.price_yes
+                    close_reason = "signal_expired"
+
+        # 3. Stop loss
+        if exit_price is None and config and config.stop_loss_pct > 0:
+            if market.price_yes is not None:
+                # Calculate unrealized P&L
+                if pos.side == "yes":
+                    unrealized = (market.price_yes - pos.entry_price) * pos.quantity
+                    position_cost = pos.entry_price * pos.quantity
+                else:
+                    unrealized = (pos.entry_price - market.price_yes) * pos.quantity
+                    position_cost = (1.0 - pos.entry_price) * pos.quantity
+
+                if position_cost > 0 and unrealized / position_cost < -config.stop_loss_pct:
+                    exit_price = market.price_yes
+                    close_reason = "stop_loss"
+
+        # Close the position
+        if exit_price is not None:
+            pos.exit_price = exit_price
+            pos.exit_time = datetime.utcnow()
+            if pos.side == "yes":
+                pos.realized_pnl = (exit_price - pos.entry_price) * pos.quantity
+            else:
+                pos.realized_pnl = (pos.entry_price - exit_price) * pos.quantity
+
+            closed_ids.append(pos.id)
+            logger.info(
+                f"Auto-closed position {pos.id} ({close_reason}): "
+                f"market {pos.market_id} | {pos.side} | P&L=${pos.realized_pnl:.2f}"
+            )
+
+    if closed_ids:
+        await session.commit()
+        logger.info(f"Auto-closer: {len(closed_ids)} positions closed")
+
+    return closed_ids
+
+
+async def _has_active_signal(session: AsyncSession, market_id: int, strategy: str) -> bool:
+    """Check if there's still an active (non-expired) signal for this market."""
+    if strategy == "auto_ensemble":
+        result = await session.execute(
+            select(EnsembleEdgeSignal.id)
+            .where(
+                EnsembleEdgeSignal.market_id == market_id,
+                EnsembleEdgeSignal.expired_at == None,  # noqa: E711
+            )
+            .limit(1)
+        )
+    elif strategy == "auto_elo":
+        result = await session.execute(
+            select(EloEdgeSignal.id)
+            .where(
+                EloEdgeSignal.market_id == market_id,
+                EloEdgeSignal.expired_at == None,  # noqa: E711
+            )
+            .limit(1)
+        )
+    else:
+        return True  # Unknown strategy — don't close
+
+    return result.scalar_one_or_none() is not None

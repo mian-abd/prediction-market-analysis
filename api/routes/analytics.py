@@ -17,7 +17,7 @@ router = APIRouter(tags=["analytics"])
 async def get_market_correlations(
     category: str | None = None,
     min_correlation: float = Query(0.3, ge=-1.0, le=1.0),
-    lookback_days: int = Query(7, ge=1, le=90),
+    lookback_days: int = Query(7, ge=1, le=365),
     session: AsyncSession = Depends(get_session),
 ):
     """Compute price correlations between markets.
@@ -39,7 +39,7 @@ async def get_market_correlations(
             )
         )
 
-    result = await session.execute(query.limit(50))  # Limit to 50 markets for performance
+    result = await session.execute(query.limit(20))  # Limit to 20 markets (N^2 correlation is expensive)
     markets = result.scalars().all()
 
     if len(markets) < 2:

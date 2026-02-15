@@ -58,7 +58,7 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
             select(Market).where(
                 Market.is_resolved == True,
                 Market.resolution_value != None,
-                Market.price_yes != None,
+                # Removed price_yes != None filter: backfilled snapshots provide as_of prices
             ).order_by(Market.resolved_at.asc())  # Temporal ordering
         )
         markets = list(result.scalars().all())

@@ -33,6 +33,7 @@ interface WinRateData {
 
 interface WinRateChartProps {
   minTrades?: number
+  portfolioType?: 'all' | 'manual' | 'auto'
 }
 
 // Color based on win rate
@@ -42,14 +43,15 @@ const getWinRateColor = (winRate: number): string => {
   return '#CF6679' // Red (poor)
 }
 
-export default function WinRateChart({ minTrades = 1 }: WinRateChartProps) {
+export default function WinRateChart({ minTrades = 1, portfolioType = 'all' }: WinRateChartProps) {
   const [data, setData] = useState<WinRateData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const fetchWinRate = async () => {
     try {
-      const response = await apiClient.get(`/portfolio/win-rate?min_trades=${minTrades}`)
+      const ptParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
+      const response = await apiClient.get(`/portfolio/win-rate?min_trades=${minTrades}${ptParam}`)
       setData(response.data)
       setError(null)
     } catch (err: any) {
@@ -62,7 +64,7 @@ export default function WinRateChart({ minTrades = 1 }: WinRateChartProps) {
 
   useEffect(() => {
     fetchWinRate()
-  }, [minTrades])
+  }, [minTrades, portfolioType])
 
   if (loading) {
     return (

@@ -20,7 +20,7 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from 'recharts'
-import { Loader2, AlertCircle, TrendingUp, TrendingDown, BookOpen } from 'lucide-react'
+import { Loader2, TrendingUp, TrendingDown, BookOpen } from 'lucide-react'
 import apiClient from '../../api/client'
 import EmptyState from '../EmptyState'
 
@@ -95,12 +95,11 @@ export default function OrderbookDepth({
 
   if (error || !data) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 gap-2">
-        <AlertCircle className="h-5 w-5" style={{ color: 'var(--text-3)' }} />
-        <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>
-          {error || 'No orderbook data'}
-        </p>
-      </div>
+      <EmptyState
+        icon={BookOpen}
+        title={error || 'No orderbook data'}
+        message="Orderbook snapshots are collected periodically for Polymarket markets. Data may not be available for all markets yet."
+      />
     )
   }
 

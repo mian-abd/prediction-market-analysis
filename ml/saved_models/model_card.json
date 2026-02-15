@@ -1,25 +1,25 @@
 {
-  "trained_at": "2026-02-14T15:02:43.853020",
-  "n_total_resolved": 23600,
-  "n_usable": 3638,
-  "n_train": 2910,
-  "n_test": 728,
-  "class_balance_yes_pct": 17.8,
+  "trained_at": "2026-02-14T17:09:03.893764",
+  "n_total_resolved": 24638,
+  "n_usable": 4341,
+  "n_train": 3472,
+  "n_test": 869,
+  "class_balance_yes_pct": 31.1,
   "temporal_split_date": "2026-02-13",
   "feature_names": [
     "price_yes",
+    "price_distance_from_50",
     "log_open_interest",
-    "time_to_resolution_hrs"
+    "time_to_resolution_hrs",
+    "return_1h",
+    "volatility_20",
+    "zscore_24h"
   ],
   "features_dropped": [
-    "price_bucket (near-constant, 20 unique/2910)",
-    "price_distance_from_50 (near-constant, 116 unique/2910)",
-    "calibration_bias (near-constant, 111 unique/2910)",
-    "category_encoded (near-constant, 6 unique/2910)",
-    "is_weekend (near-constant, 2 unique/2910)",
-    "return_1h (near-constant, 55 unique/2910)",
-    "volatility_20 (near-constant, 83 unique/2910)",
-    "zscore_24h (near-constant, 99 unique/2910)",
+    "price_bucket (near-constant, 20 unique/3472)",
+    "calibration_bias (near-constant, 169 unique/3472)",
+    "category_encoded (near-constant, 9 unique/3472)",
+    "is_weekend (near-constant, 2 unique/3472)",
     "obi_level1 (zero variance)",
     "obi_weighted_5 (zero variance)",
     "bid_ask_spread_abs (zero variance)",
@@ -36,51 +36,59 @@
   ],
   "models_excluded": [],
   "oof_brier": {
-    "calibration": 0.0846,
-    "xgboost": 0.0743,
-    "lightgbm": 0.0695
+    "calibration": 0.1194,
+    "xgboost": 0.0586,
+    "lightgbm": 0.0591
   },
-  "baseline_brier": 0.0937,
-  "naive_baseline_brier": 0.1462,
-  "calibration_brier": 0.0805,
-  "ensemble_brier": 0.0788,
-  "post_calibrated_brier": 0.0844,
-  "ensemble_auc": 0.8822,
-  "ensemble_logloss": 0.298,
-  "optimal_threshold": 0.233,
+  "baseline_brier": 0.0843,
+  "naive_baseline_brier": 0.2143,
+  "calibration_brier": 0.0892,
+  "ensemble_brier": 0.0665,
+  "post_calibrated_brier": 0.0706,
+  "ensemble_auc": 0.9284,
+  "ensemble_logloss": 0.2581,
+  "optimal_threshold": 0.269,
   "ablation": {
-    "calibration_only": 0.0805,
-    "cal_plus_xgb": 0.0787,
-    "cal_plus_lgb": 0.0779,
-    "full_ensemble": 0.0788
+    "calibration_only": 0.0892,
+    "cal_plus_xgb": 0.0728,
+    "cal_plus_lgb": 0.0706,
+    "full_ensemble": 0.0665
   },
   "profit_simulation": {
-    "ungated_pnl": 42.31,
-    "ungated_trades": 576,
-    "ungated_win_rate": 0.865,
-    "gated_pnl": 42.37,
-    "gated_trades": 487,
-    "gated_win_rate": 0.85,
+    "ungated_pnl": 54.7895,
+    "ungated_trades": 616,
+    "ungated_win_rate": 0.873,
+    "gated_pnl": 52.8195,
+    "gated_trades": 525,
+    "gated_win_rate": 0.857,
     "min_net_edge": 0.03
   },
   "price_distribution": {
-    "pct_near_0": 0.228,
-    "pct_near_1": 0.06
+    "pct_near_0": 0.191,
+    "pct_near_1": 0.082
   },
   "leakage_warnings": [
     "orderbook_snapshots: filtered to as_of timestamp (fixed as of 2026-02-14)",
     "volume_features: correlation check not performed",
-    "price_distribution: 28.8% near-extremes (inflates metrics, real-world harder)",
-    "survivorship_bias: 3638/23600 (15.4%) of resolved markets used (volume>0 filter)"
+    "price_distribution: 27.3% near-extremes (inflates metrics, real-world harder)",
+    "survivorship_bias: 4341/24638 (17.6%) of resolved markets used (volume>0 filter)"
   ],
   "xgb_feature_importance": {
-    "log_open_interest": 0.510221004486084,
-    "price_yes": 0.4154757857322693,
-    "time_to_resolution_hrs": 0.07430323958396912
+    "log_open_interest": 0.49377962946891785,
+    "volatility_20": 0.24494880437850952,
+    "price_yes": 0.19983941316604614,
+    "time_to_resolution_hrs": 0.03160925209522247,
+    "price_distance_from_50": 0.029822930693626404,
+    "return_1h": 0.0,
+    "zscore_24h": 0.0
   },
   "lgb_feature_importance": {
-    "log_open_interest": 240,
-    "time_to_resolution_hrs": 95,
-    "price_yes": 75
+    "log_open_interest": 167,
+    "price_yes": 105,
+    "time_to_resolution_hrs": 65,
+    "price_distance_from_50": 45,
+    "volatility_20": 10,
+    "return_1h": 0,
+    "zscore_24h": 0
   }
 }

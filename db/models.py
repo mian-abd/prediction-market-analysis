@@ -271,12 +271,14 @@ class PortfolioPosition(Base):
     exit_time = Column(DateTime)
     realized_pnl = Column(Float)
     strategy = Column(String(50))
+    portfolio_type = Column(String(10), nullable=False, default="manual", server_default="manual")
     is_simulated = Column(Boolean, default=True)
 
     __table_args__ = (
         Index("ix_position_market", "market_id"),
-        Index("ix_position_user_time", "user_id", "entry_time"),  # For user portfolio queries
-        Index("ix_position_user_market", "user_id", "market_id"),  # For user+market filtering
+        Index("ix_position_user_time", "user_id", "entry_time"),
+        Index("ix_position_user_market", "user_id", "market_id"),
+        Index("ix_position_portfolio_type", "portfolio_type"),
     )
 
 
@@ -292,6 +294,36 @@ class SystemMetric(Base):
     __table_args__ = (
         Index("ix_metric_name_time", "metric_name", "timestamp"),
     )
+
+
+class AutoTradingConfig(Base):
+    """Per-strategy auto-trading configuration."""
+    __tablename__ = "auto_trading_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy = Column(String(50), unique=True, nullable=False)  # "ensemble" | "elo"
+    is_enabled = Column(Boolean, default=False)
+
+    # Signal filters
+    min_quality_tier = Column(String(10), default="high")
+    min_confidence = Column(Float, default=0.7)
+    min_net_ev = Column(Float, default=0.05)
+
+    # Sizing
+    bankroll = Column(Float, default=1000.0)
+    max_kelly_fraction = Column(Float, default=0.02)
+
+    # Per-portfolio risk limits
+    max_position_usd = Column(Float, default=100.0)
+    max_total_exposure_usd = Column(Float, default=500.0)
+    max_loss_per_day_usd = Column(Float, default=25.0)
+    max_daily_trades = Column(Integer, default=20)
+
+    # Auto-close
+    stop_loss_pct = Column(Float, default=0.15)
+    close_on_signal_expiry = Column(Boolean, default=True)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ============================================================================

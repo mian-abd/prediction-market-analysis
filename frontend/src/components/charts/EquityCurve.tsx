@@ -45,6 +45,7 @@ interface EquityCurveProps {
   timeRange?: '7d' | '30d' | '90d' | 'all'
   showDrawdown?: boolean
   autoRefresh?: boolean
+  portfolioType?: 'all' | 'manual' | 'auto'
 }
 
 const STRATEGY_COLORS: Record<string, string> = {
@@ -59,6 +60,7 @@ export default function EquityCurve({
   timeRange = '30d',
   showDrawdown: _showDrawdown = false,
   autoRefresh = false,
+  portfolioType = 'all',
 }: EquityCurveProps) {
   const [data, setData] = useState<EquityCurveData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -66,7 +68,8 @@ export default function EquityCurve({
 
   const fetchEquityCurve = async () => {
     try {
-      const response = await apiClient.get(`/portfolio/equity-curve?time_range=${timeRange}`)
+      const ptParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
+      const response = await apiClient.get(`/portfolio/equity-curve?time_range=${timeRange}${ptParam}`)
       setData(response.data)
       setError(null)
     } catch (err: any) {
@@ -84,7 +87,7 @@ export default function EquityCurve({
       const interval = setInterval(fetchEquityCurve, 60_000) // Refresh every 60 seconds
       return () => clearInterval(interval)
     }
-  }, [timeRange, autoRefresh])
+  }, [timeRange, autoRefresh, portfolioType])
 
   if (loading) {
     return (

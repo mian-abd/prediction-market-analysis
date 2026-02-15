@@ -41,15 +41,32 @@ export default function SentimentGauge({
     setError(null)
 
     try {
-      // Fetch market data
+      // Fetch market data (includes price_history with up to 100 recent snapshots)
       const marketResponse = await apiClient.get(`/markets/${marketId}`)
       const market = marketResponse.data
 
-      // Fetch price history for momentum calculation
-      const priceHistoryResponse = await apiClient.get(
-        `/markets/${marketId}/price-history?interval=1h&limit=24`
-      )
-      const priceHistory = priceHistoryResponse.data.data || []
+      // Use market detail's built-in price_history (raw snapshots) as primary source
+      // Falls back to OHLC endpoint if needed
+      let priceHistory: any[] = []
+      const rawHistory = market.price_history || []
+
+      if (rawHistory.length >= 2) {
+        // Use raw snapshots directly - more data points available
+        priceHistory = rawHistory.map((p: any) => ({
+          close: p.price_yes,
+          volume: p.volume || 0,
+        }))
+      } else {
+        // Fallback: fetch OHLC with short interval for maximum data points
+        try {
+          const priceHistoryResponse = await apiClient.get(
+            `/markets/${marketId}/price-history?interval=5m&limit=100`
+          )
+          priceHistory = priceHistoryResponse.data.data || []
+        } catch {
+          // Price history might not be available
+        }
+      }
 
       // Fetch orderbook for OBI
       let obi = 0
@@ -60,22 +77,25 @@ export default function SentimentGauge({
         // Orderbook may not be available for all markets
       }
 
-      // Calculate price momentum (24h price change)
+      // Calculate price momentum (price change over available history)
       const currentPrice = market.price_yes || 0.5
       let priceMomentum = 0
       let priceChangePercent = 0
       if (priceHistory.length >= 2) {
         const oldestPrice = priceHistory[0].close
-        const priceChange = currentPrice - oldestPrice
-        priceMomentum = Math.max(-1, Math.min(1, priceChange * 10)) // Scale to [-1, 1] for sentiment
-        priceChangePercent = oldestPrice > 0 ? (currentPrice - oldestPrice) / oldestPrice : 0
+        if (oldestPrice > 0 && oldestPrice !== currentPrice) {
+          const priceChange = currentPrice - oldestPrice
+          priceMomentum = Math.max(-1, Math.min(1, priceChange * 10)) // Scale to [-1, 1]
+          priceChangePercent = (currentPrice - oldestPrice) / oldestPrice
+        }
       }
 
-      // Calculate volume trend (recent vs older)
+      // Calculate volume trend (recent half vs older half)
       let volumeTrend = 0
-      if (priceHistory.length >= 12) {
-        const recentVolume = priceHistory.slice(-6).reduce((sum: number, c: any) => sum + (c.volume || 0), 0)
-        const olderVolume = priceHistory.slice(0, 6).reduce((sum: number, c: any) => sum + (c.volume || 0), 0)
+      if (priceHistory.length >= 4) {
+        const midpoint = Math.floor(priceHistory.length / 2)
+        const recentVolume = priceHistory.slice(midpoint).reduce((sum: number, c: any) => sum + (c.volume || 0), 0)
+        const olderVolume = priceHistory.slice(0, midpoint).reduce((sum: number, c: any) => sum + (c.volume || 0), 0)
         if (olderVolume > 0) {
           const volumeChange = (recentVolume - olderVolume) / olderVolume
           volumeTrend = Math.max(-1, Math.min(1, volumeChange))
@@ -103,6 +123,8 @@ export default function SentimentGauge({
     } catch (err: any) {
       setError('Failed to calculate sentiment')
       console.error(err)
+    } finally {
+      setLoading(false)
     }
   }
 

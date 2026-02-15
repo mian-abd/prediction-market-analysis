@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Market, EloEdgeSignal
 from ml.models.elo_sports import Glicko2Engine
+from ml.strategies.ensemble_edge_detector import compute_kelly, POLYMARKET_FEE_RATE
 from data_pipeline.transformers.sports_matchup_parser import (
     parse_matchup,
     fuzzy_match_player,
@@ -120,22 +121,23 @@ async def scan_for_edges(
             elo_prob_yes = 1.0 - elo_prob_a
 
         # Calculate edge (fee-aware)
+        # Polymarket charges 2% on winnings only when you win
         raw_edge = abs(elo_prob_yes - market_price)
-        fee_cost = (market.taker_fee_bps or 0) / 10000.0 + SLIPPAGE_BUFFER
-        net_edge = raw_edge - fee_cost
+        direction = "buy_yes" if elo_prob_yes > market_price else "buy_no"
+        extra_fee = (market.taker_fee_bps or 0) / 10000.0
+
+        if direction == "buy_yes":
+            fee_cost = elo_prob_yes * POLYMARKET_FEE_RATE * (1 - market_price) + SLIPPAGE_BUFFER + extra_fee * (1 - market_price)
+            net_edge = elo_prob_yes * (1 - market_price) - (1 - elo_prob_yes) * market_price - fee_cost
+        else:
+            fee_cost = (1 - elo_prob_yes) * POLYMARKET_FEE_RATE * market_price + SLIPPAGE_BUFFER + extra_fee * market_price
+            net_edge = (1 - elo_prob_yes) * market_price - elo_prob_yes * (1 - market_price) - fee_cost
 
         if net_edge < min_net_edge:
             continue
 
-        # Kelly criterion sizing: f* = edge / (1 - market_price)
-        # For binary outcomes where odds are implied by market price
-        if elo_prob_yes > market_price:
-            # Buy Yes
-            kelly = net_edge / max(0.01, 1.0 - market_price)
-        else:
-            # Buy No (short Yes)
-            kelly = net_edge / max(0.01, market_price)
-        kelly = min(kelly, MAX_KELLY)
+        # Kelly criterion sizing — reuse canonical implementation
+        kelly = compute_kelly(direction, elo_prob_yes, market_price, fee_cost)
 
         # Check if we already have an active signal for this market
         existing = await session.execute(

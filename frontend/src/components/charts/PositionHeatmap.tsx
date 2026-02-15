@@ -38,7 +38,11 @@ interface TreemapNode {
   [key: string]: unknown
 }
 
-export default function PositionHeatmap() {
+interface PositionHeatmapProps {
+  portfolioType?: 'all' | 'manual' | 'auto'
+}
+
+export default function PositionHeatmap({ portfolioType = 'all' }: PositionHeatmapProps) {
   const [data, setData] = useState<TreemapNode[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -48,7 +52,8 @@ export default function PositionHeatmap() {
     setError(null)
 
     try {
-      const response = await apiClient.get('/portfolio/positions?status=open&limit=100')
+      const ptParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
+      const response = await apiClient.get(`/portfolio/positions?status=open&limit=100${ptParam}`)
       const positions = response.data.positions || []
 
       if (positions.length === 0) {
@@ -97,7 +102,7 @@ export default function PositionHeatmap() {
     // Auto-refresh every 15 seconds
     const interval = setInterval(fetchPositions, 15_000)
     return () => clearInterval(interval)
-  }, [])
+  }, [portfolioType])
 
   if (loading) {
     return (
@@ -141,18 +146,19 @@ export default function PositionHeatmap() {
   // Custom content renderer for treemap cells
   const CustomizedContent = (props: any) => {
     const { x, y, width, height, name, pnl_pct } = props
+    const safePnl = pnl_pct ?? 0
 
-    if (width < 40 || height < 40) {
-      // Too small to render text
+    if (!width || !height || width < 40 || height < 40) {
+      // Too small to render text or missing dimensions
       return (
         <g>
           <rect
-            x={x}
-            y={y}
-            width={width}
-            height={height}
+            x={x ?? 0}
+            y={y ?? 0}
+            width={width ?? 0}
+            height={height ?? 0}
             style={{
-              fill: getColor(pnl_pct),
+              fill: getColor(safePnl),
               stroke: 'var(--bg)',
               strokeWidth: 2,
             }}
@@ -169,7 +175,7 @@ export default function PositionHeatmap() {
           width={width}
           height={height}
           style={{
-            fill: getColor(pnl_pct),
+            fill: getColor(safePnl),
             stroke: 'var(--bg)',
             strokeWidth: 2,
           }}
@@ -182,7 +188,7 @@ export default function PositionHeatmap() {
           fontSize="11"
           fontWeight="500"
         >
-          {name}
+          {name ?? ''}
         </text>
         <text
           x={x + width / 2}
@@ -192,8 +198,8 @@ export default function PositionHeatmap() {
           fontSize="14"
           fontWeight="bold"
         >
-          {pnl_pct > 0 ? '+' : ''}
-          {pnl_pct.toFixed(1)}%
+          {safePnl > 0 ? '+' : ''}
+          {safePnl.toFixed(1)}%
         </text>
       </g>
     )

@@ -12,6 +12,7 @@ import {
   BarChart3,
 } from 'lucide-react'
 import apiClient from '../api/client'
+import SignalAccuracyChart from '../components/charts/SignalAccuracyChart'
 
 interface MispricedMarket {
   market_id: number
@@ -34,17 +35,20 @@ interface AccuracyData {
     n_test: number
     class_balance_yes_pct: number
     baseline_brier: number
-    logistic_brier: number
     calibration_brier: number
-    xgboost_brier: number
-    lightgbm_brier: number
     ensemble_brier: number
     ensemble_auc: number
+    temporal_split_date?: string
+    oof_brier?: {
+      calibration: number
+      xgboost: number
+      lightgbm: number
+    }
     xgb_feature_importance: Record<string, number>
     lgb_feature_importance: Record<string, number>
   }
   weights: Record<string, number>
-  models: Record<string, {
+  models?: Record<string, {
     name: string
     type: string
     brier_score: number | null
@@ -56,6 +60,21 @@ interface AccuracyData {
   test_samples: number
   total_resolved: number
   usable_samples: number
+  profit_simulation?: {
+    gated_pnl: number
+    gated_win_rate: number
+    gated_trades: number
+    ungated_pnl: number
+    ungated_trades: number
+    ungated_win_rate: number
+    min_net_edge: number
+  }
+  ablation?: {
+    calibration_only: number
+    cal_plus_xgb: number
+    cal_plus_lgb: number
+    full_ensemble: number
+  }
   error?: string
 }
 
@@ -116,10 +135,10 @@ export default function MLModels() {
   const overCount = markets.filter((m) => m.direction === 'overpriced').length
   const underCount = markets.filter((m) => m.direction === 'underpriced').length
   const avgEdge = markets.length > 0
-    ? markets.reduce((s, m) => s + m.edge_estimate, 0) / markets.length * 100
+    ? markets.reduce((s, m) => s + (m.edge_estimate || 0), 0) / markets.length * 100
     : 0
 
-  const brierImprovement = accuracy?.trained && accuracy.metrics
+  const brierImprovement = accuracy?.trained && accuracy.metrics?.ensemble_brier && accuracy.metrics?.baseline_brier
     ? ((1 - accuracy.metrics.ensemble_brier / accuracy.metrics.baseline_brier) * 100)
     : null
 
@@ -172,8 +191,8 @@ export default function MLModels() {
           <div className="grid grid-cols-3 gap-3">
             {[
               { label: 'Type', value: 'Isotonic' },
-              { label: 'Brier Score', value: accuracy?.models?.calibration?.brier_score?.toFixed(4) ?? '+6pp bias', color: 'var(--accent)' },
-              { label: 'Weight', value: accuracy?.weights?.calibration ? `${(accuracy.weights.calibration * 100).toFixed(0)}%` : '100%', color: 'var(--blue)' },
+              { label: 'Brier Score', value: (accuracy?.models?.calibration?.brier_score != null ? accuracy.models.calibration.brier_score.toFixed(4) : (accuracy?.metrics?.calibration_brier != null ? accuracy.metrics.calibration_brier.toFixed(4) : 'N/A')), color: 'var(--accent)' },
+              { label: 'Weight', value: accuracy?.weights?.calibration != null ? `${(accuracy.weights.calibration * 100).toFixed(0)}%` : 'N/A', color: 'var(--blue)' },
             ].map((s) => (
               <div key={s.label} className="text-center py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)' }}>
                 <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>{s.label}</p>
@@ -204,12 +223,12 @@ export default function MLModels() {
               {accuracy?.trained ? 'Active' : 'Not Trained'}
             </span>
           </div>
-          {accuracy?.trained ? (
+          {accuracy?.trained && accuracy.metrics ? (
             <div className="grid grid-cols-3 gap-3">
               {[
-                { label: 'Ensemble Brier', value: accuracy.metrics.ensemble_brier.toFixed(4), color: 'var(--accent)' },
-                { label: 'AUC-ROC', value: accuracy.metrics.ensemble_auc.toFixed(3), color: 'var(--green)' },
-                { label: 'Training Set', value: `${accuracy.metrics.n_usable}`, color: 'var(--text)' },
+                { label: 'Ensemble Brier', value: accuracy.metrics.ensemble_brier?.toFixed(4) ?? 'N/A', color: 'var(--accent)' },
+                { label: 'AUC-ROC', value: accuracy.metrics.ensemble_auc?.toFixed(3) ?? 'N/A', color: 'var(--green)' },
+                { label: 'Training Set', value: `${accuracy.metrics.n_usable ?? 0}`, color: 'var(--text)' },
               ].map((s) => (
                 <div key={s.label} className="text-center py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)' }}>
                   <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>{s.label}</p>
@@ -249,12 +268,14 @@ export default function MLModels() {
           <div className="space-y-3">
             {[
               { name: 'Market Baseline', score: accuracy.metrics.baseline_brier, color: 'var(--text-3)' },
-              { name: 'Logistic Regression', score: accuracy.metrics.logistic_brier, color: 'var(--text-2)' },
-              { name: 'Calibration (Isotonic)', score: accuracy.metrics.calibration_brier, color: 'var(--blue)' },
-              { name: 'XGBoost', score: accuracy.metrics.xgboost_brier, color: '#F59E0B' },
-              { name: 'LightGBM', score: accuracy.metrics.lightgbm_brier, color: '#8B5CF6' },
-              { name: 'Ensemble', score: accuracy.metrics.ensemble_brier, color: 'var(--accent)' },
-            ].map((model) => {
+              ...(accuracy.metrics.oof_brier ? [
+                { name: 'Calibration (OOF)', score: accuracy.metrics.oof_brier.calibration, color: 'var(--blue)' },
+                { name: 'XGBoost (OOF)', score: accuracy.metrics.oof_brier.xgboost, color: '#F59E0B' },
+                { name: 'LightGBM (OOF)', score: accuracy.metrics.oof_brier.lightgbm, color: '#8B5CF6' },
+              ] : []),
+              { name: 'Calibration (Test)', score: accuracy.metrics.calibration_brier, color: 'var(--blue)' },
+              { name: 'Ensemble (Test)', score: accuracy.metrics.ensemble_brier, color: 'var(--accent)' },
+            ].filter(m => m.score !== undefined).map((model) => {
               const maxBrier = accuracy.metrics.baseline_brier || 0.25
               const pct = Math.min(100, (model.score / maxBrier) * 100)
               return (
@@ -336,6 +357,108 @@ export default function MLModels() {
           )}
         </div>
       )}
+
+      {/* Training Methodology + Profit Simulation */}
+      {accuracy?.trained && accuracy.metrics && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Training Methodology */}
+          <div className="card p-6">
+            <p className="text-[14px] font-semibold mb-4" style={{ color: 'var(--text)' }}>
+              Training Methodology
+            </p>
+            <div className="space-y-3">
+              {[
+                { label: 'Temporal Split', value: accuracy.metrics?.temporal_split_date || 'Yes', icon: '⏱' },
+                { label: 'Walk-Forward CV', value: 'Stratified K-Fold', icon: '🔄' },
+                { label: 'Significance Gating', value: 'Wilcoxon signed-rank', icon: '📊' },
+                { label: 'Total Resolved', value: `${(accuracy.metrics.n_total_resolved ?? 0).toLocaleString()} markets`, icon: '📈' },
+                { label: 'Usable (volume>0)', value: `${(accuracy.metrics.n_usable ?? 0).toLocaleString()} (${((accuracy.metrics.n_usable ?? 0) / Math.max(accuracy.metrics.n_total_resolved ?? 1, 1) * 100).toFixed(1)}%)`, icon: '✅' },
+                { label: 'Train / Test', value: `${accuracy.metrics.n_train ?? 0} / ${accuracy.metrics.n_test ?? 0}`, icon: '📋' },
+                { label: 'Class Balance', value: `${(accuracy.metrics.class_balance_yes_pct ?? 0).toFixed(1)}% YES`, icon: '⚖' },
+              ].map((item) => (
+                <div key={item.label} className="flex items-center justify-between py-1.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                  <span className="text-[12px]" style={{ color: 'var(--text-2)' }}>
+                    {item.icon} {item.label}
+                  </span>
+                  <span className="text-[12px] font-mono font-medium" style={{ color: 'var(--text)' }}>
+                    {item.value}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Profit Simulation */}
+          {accuracy.profit_simulation && (
+            <div className="card p-6">
+              <p className="text-[14px] font-semibold mb-4" style={{ color: 'var(--text)' }}>
+                Profit Simulation (Test Set)
+              </p>
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                {[
+                  { label: 'Total P&L', value: `$${(accuracy.profit_simulation as any).gated_pnl?.toFixed(1) ?? '0'}`, color: 'var(--green)' },
+                  { label: 'Win Rate', value: `${(((accuracy.profit_simulation as any).gated_win_rate ?? 0) * 100).toFixed(1)}%`, color: 'var(--accent)' },
+                  { label: 'Trades', value: `${(accuracy.profit_simulation as any).gated_trades ?? 0}`, color: 'var(--text)' },
+                  { label: 'Min Edge', value: `${((accuracy.profit_simulation as any).min_net_edge ?? 0.03) * 100}%`, color: 'var(--text-2)' },
+                ].map((s) => (
+                  <div key={s.label} className="text-center py-3 rounded-xl" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                    <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>{s.label}</p>
+                    <p className="text-[18px] font-bold" style={{ color: s.color }}>{s.value}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                <p className="text-[10px]" style={{ color: 'var(--text-3)' }}>
+                  Simulated using Kelly-sized paper trades on the held-out test set.
+                  Quality-gated: only markets passing volume, liquidity, and price range filters.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Ablation Study */}
+      {accuracy?.trained && (accuracy as any).ablation && (
+        <div className="card p-6">
+          <p className="text-[14px] font-semibold mb-4" style={{ color: 'var(--text)' }}>
+            Ablation Study (Brier Score)
+          </p>
+          <p className="text-[11px] mb-3" style={{ color: 'var(--text-3)' }}>
+            Does every model component help? Lower is better.
+          </p>
+          <div className="space-y-2">
+            {[
+              { name: 'Calibration Only', score: (accuracy as any).ablation.calibration_only, color: 'var(--blue)' },
+              { name: 'Cal + XGBoost', score: (accuracy as any).ablation.cal_plus_xgb, color: '#F59E0B' },
+              { name: 'Cal + LightGBM', score: (accuracy as any).ablation.cal_plus_lgb, color: '#8B5CF6' },
+              { name: 'Full Ensemble', score: (accuracy as any).ablation.full_ensemble, color: 'var(--accent)' },
+            ].filter(m => m.score != null).map((model) => {
+              const maxBrier = (accuracy as any).ablation.calibration_only || 0.1
+              const pct = Math.min(100, (model.score / maxBrier) * 100)
+              return (
+                <div key={model.name} className="flex items-center gap-3">
+                  <p className="text-[11px] w-32 text-right flex-shrink-0" style={{ color: 'var(--text-2)' }}>
+                    {model.name}
+                  </p>
+                  <div className="flex-1 h-4 rounded-lg overflow-hidden" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                    <div
+                      className="h-full rounded-lg transition-all duration-500"
+                      style={{ width: `${pct}%`, background: model.color, opacity: 0.7 }}
+                    />
+                  </div>
+                  <p className="text-[11px] font-mono w-14 text-right flex-shrink-0" style={{ color: model.color }}>
+                    {model.score.toFixed(4)}
+                  </p>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Signal Accuracy (Backtest) */}
+      <SignalAccuracyChart />
 
       {/* Filters */}
       <div className="flex items-center gap-4 flex-wrap">

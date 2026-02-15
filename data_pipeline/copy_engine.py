@@ -57,15 +57,19 @@ async def on_position_opened(
             copy_ratio = follow.copy_percentage
             copied_quantity = position.quantity * copy_ratio
 
-            # Apply max position size limit
+            # Apply max position size limit (side-aware)
+            cost_per_share = position.entry_price if position.side == "yes" else (1.0 - position.entry_price)
             if follow.max_position_size:
-                max_qty_by_size = follow.max_position_size / position.entry_price
+                max_qty_by_size = follow.max_position_size / max(cost_per_share, 0.01)
                 copied_quantity = min(copied_quantity, max_qty_by_size)
 
-            # Check allocation budget
-            position_cost = copied_quantity * position.entry_price
+            # Check allocation budget (side-aware cost)
+            if position.side == "yes":
+                position_cost = copied_quantity * position.entry_price
+            else:
+                position_cost = copied_quantity * (1.0 - position.entry_price)
             if position_cost > follow.allocation_amount:
-                copied_quantity = follow.allocation_amount / position.entry_price
+                copied_quantity = follow.allocation_amount / max(cost_per_share, 0.01)
 
             if copied_quantity <= 0:
                 logger.debug(f"Skipping copy for {follow.follower_id}: insufficient allocation")
@@ -81,6 +85,7 @@ async def on_position_opened(
                 quantity=copied_quantity,
                 entry_time=datetime.utcnow(),
                 strategy="copy_trade",
+                portfolio_type="manual",
                 is_simulated=True,
             )
             session.add(copied_position)
@@ -168,9 +173,15 @@ async def on_position_closed(
             # Close the copied position at the same exit price
             copied_pos.exit_price = position.exit_price
             copied_pos.exit_time = datetime.utcnow()
-            copied_pos.realized_pnl = (
-                (position.exit_price - copied_pos.entry_price) * copied_pos.quantity
-            )
+            if copied_pos.side == "yes":
+                copied_pos.realized_pnl = (
+                    (position.exit_price - copied_pos.entry_price) * copied_pos.quantity
+                )
+            else:
+                # NO positions profit when price drops
+                copied_pos.realized_pnl = (
+                    (copied_pos.entry_price - position.exit_price) * copied_pos.quantity
+                )
 
             closed_ids.append(copied_pos.id)
 

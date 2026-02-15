@@ -2,15 +2,17 @@
  * Portfolio Page
  *
  * Paper trading dashboard with:
+ * - Portfolio type tabs (All / Manual & Copy / Auto Trading)
  * - Equity curve showing cumulative P&L
- * - Open positions table
+ * - Open positions table with portfolio badges
  * - Closed positions history
  * - Performance metrics
+ * - Auto-trading control panel (when Auto tab selected)
  */
 
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Briefcase, AlertCircle } from 'lucide-react'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import { Briefcase, AlertCircle, Bot, X, Plus, Loader2 } from 'lucide-react'
 import apiClient from '../api/client'
 import ErrorState from '../components/ErrorState'
 import { TableSkeleton, Skeleton } from '../components/LoadingSkeleton'
@@ -19,6 +21,7 @@ import DrawdownChart from '../components/charts/DrawdownChart'
 import WinRateChart from '../components/charts/WinRateChart'
 import PositionHeatmap from '../components/charts/PositionHeatmap'
 import PerformanceAttribution from '../components/charts/PerformanceAttribution'
+import AutoTradingPanel from '../components/AutoTradingPanel'
 
 interface PortfolioSummary {
   open_positions: number
@@ -48,17 +51,77 @@ interface Position {
   unrealized_pnl: number | null
   current_price: number | null
   strategy: string
+  portfolio_type: string
 }
 
+type PortfolioType = 'all' | 'manual' | 'auto'
+
 export default function Portfolio() {
+  const [portfolioType, setPortfolioType] = useState<PortfolioType>('all')
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d' | 'all'>('30d')
   const [positionStatus, setPositionStatus] = useState<'open' | 'closed' | 'all'>('open')
+  const [showOpenForm, setShowOpenForm] = useState(false)
+  const [closingId, setClosingId] = useState<number | null>(null)
+
+  // Open position form state
+  const [formMarketId, setFormMarketId] = useState('')
+  const [formSide, setFormSide] = useState<'yes' | 'no'>('yes')
+  const [formEntryPrice, setFormEntryPrice] = useState('')
+  const [formQuantity, setFormQuantity] = useState('')
+  const [formStrategy, setFormStrategy] = useState('manual')
+
+  const queryClient = useQueryClient()
+
+  const invalidatePortfolio = () => {
+    queryClient.invalidateQueries({ queryKey: ['portfolio-summary'] })
+    queryClient.invalidateQueries({ queryKey: ['portfolio-positions'] })
+  }
+
+  // Open position mutation
+  const openMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post('/portfolio/positions', {
+        market_id: parseInt(formMarketId),
+        side: formSide,
+        entry_price: parseFloat(formEntryPrice),
+        quantity: parseFloat(formQuantity),
+        strategy: formStrategy,
+      })
+      if (res.data.error) throw new Error(res.data.error)
+      return res.data
+    },
+    onSuccess: () => {
+      invalidatePortfolio()
+      setShowOpenForm(false)
+      setFormMarketId('')
+      setFormEntryPrice('')
+      setFormQuantity('')
+    },
+  })
+
+  // Close position mutation
+  const closeMutation = useMutation({
+    mutationFn: async ({ positionId, exitPrice }: { positionId: number; exitPrice: number }) => {
+      const res = await apiClient.post(`/portfolio/positions/${positionId}/close`, {
+        exit_price: exitPrice,
+      })
+      if (res.data.error) throw new Error(res.data.error)
+      return res.data
+    },
+    onSuccess: () => {
+      invalidatePortfolio()
+      setClosingId(null)
+    },
+  })
+
+  const portfolioParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
+  const summaryParam = portfolioType !== 'all' ? `?portfolio_type=${portfolioType}` : ''
 
   // Fetch portfolio summary
   const { data: summary, isLoading: summaryLoading, error: summaryError, refetch: refetchSummary } = useQuery<PortfolioSummary>({
-    queryKey: ['portfolio-summary'],
+    queryKey: ['portfolio-summary', portfolioType],
     queryFn: async () => {
-      const response = await apiClient.get('/portfolio/summary')
+      const response = await apiClient.get(`/portfolio/summary${summaryParam}`)
       return response.data
     },
     refetchInterval: 15_000,
@@ -66,9 +129,9 @@ export default function Portfolio() {
 
   // Fetch positions
   const { data: positionsData, isLoading: positionsLoading } = useQuery<{ positions: Position[] }>({
-    queryKey: ['portfolio-positions', positionStatus],
+    queryKey: ['portfolio-positions', positionStatus, portfolioType],
     queryFn: async () => {
-      const response = await apiClient.get(`/portfolio/positions?status=${positionStatus}`)
+      const response = await apiClient.get(`/portfolio/positions?status=${positionStatus}${portfolioParam}`)
       return response.data
     },
     refetchInterval: 15_000,
@@ -106,7 +169,139 @@ export default function Portfolio() {
             </p>
           </div>
         </div>
+        <button
+          onClick={() => setShowOpenForm(!showOpenForm)}
+          className="btn flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium"
+        >
+          {showOpenForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+          {showOpenForm ? 'Cancel' : 'Open Position'}
+        </button>
       </div>
+
+      {/* Open Position Form */}
+      {showOpenForm && (
+        <div className="card p-5">
+          <h3 className="text-[14px] font-semibold mb-4" style={{ color: 'var(--text)' }}>
+            Open Paper Position
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div>
+              <label className="text-[10px] uppercase block mb-1" style={{ color: 'var(--text-3)' }}>
+                Market ID
+              </label>
+              <input
+                type="number"
+                value={formMarketId}
+                onChange={(e) => setFormMarketId(e.target.value)}
+                placeholder="e.g. 42"
+                className="input w-full px-3 py-2 rounded-lg text-[12px]"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase block mb-1" style={{ color: 'var(--text-3)' }}>
+                Side
+              </label>
+              <div className="flex gap-2">
+                {(['yes', 'no'] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setFormSide(s)}
+                    className={`flex-1 px-3 py-2 rounded-lg text-[12px] font-medium uppercase transition-colors ${
+                      formSide === s ? 'btn' : 'btn-ghost'
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] uppercase block mb-1" style={{ color: 'var(--text-3)' }}>
+                Entry Price
+              </label>
+              <input
+                type="number"
+                step="0.001"
+                min="0"
+                max="1"
+                value={formEntryPrice}
+                onChange={(e) => setFormEntryPrice(e.target.value)}
+                placeholder="0.650"
+                className="input w-full px-3 py-2 rounded-lg text-[12px]"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase block mb-1" style={{ color: 'var(--text-3)' }}>
+                Quantity
+              </label>
+              <input
+                type="number"
+                min="1"
+                value={formQuantity}
+                onChange={(e) => setFormQuantity(e.target.value)}
+                placeholder="100"
+                className="input w-full px-3 py-2 rounded-lg text-[12px]"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase block mb-1" style={{ color: 'var(--text-3)' }}>
+                Strategy
+              </label>
+              <select
+                value={formStrategy}
+                onChange={(e) => setFormStrategy(e.target.value)}
+                className="input w-full px-3 py-2 rounded-lg text-[12px]"
+              >
+                <option value="manual">Manual</option>
+                <option value="single_market_arb">Single Market Arb</option>
+                <option value="cross_platform_arb">Cross Platform Arb</option>
+                <option value="calibration">Calibration</option>
+              </select>
+            </div>
+          </div>
+          {openMutation.error && (
+            <p className="text-[12px] mt-2" style={{ color: 'var(--red)' }}>
+              {(openMutation.error as Error).message}
+            </p>
+          )}
+          <div className="flex justify-end mt-4">
+            <button
+              onClick={() => openMutation.mutate()}
+              disabled={openMutation.isPending || !formMarketId || !formEntryPrice || !formQuantity}
+              className="btn px-5 py-2 rounded-lg text-[12px] font-medium disabled:opacity-40"
+            >
+              {openMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                'Submit Order'
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Portfolio Type Tabs */}
+      <div className="flex items-center gap-2">
+        {([
+          { key: 'all' as const, label: 'All' },
+          { key: 'manual' as const, label: 'Manual & Copy' },
+          { key: 'auto' as const, label: 'Auto Trading', icon: Bot },
+        ]).map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setPortfolioType(key)}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium transition-colors ${
+              portfolioType === key ? 'btn' : 'btn-ghost'
+            }`}
+          >
+            {Icon && <Icon className="h-3.5 w-3.5" />}
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Auto Trading Panel (only when Auto tab selected) */}
+      {portfolioType === 'auto' && <AutoTradingPanel />}
 
       {/* Summary stats */}
       {summaryLoading ? (
@@ -190,7 +385,7 @@ export default function Portfolio() {
             ))}
           </div>
         </div>
-        <EquityCurve timeRange={timeRange} showDrawdown={false} autoRefresh={true} />
+        <EquityCurve timeRange={timeRange} showDrawdown={false} autoRefresh={true} portfolioType={portfolioType} />
       </div>
 
       {/* Drawdown Chart */}
@@ -198,7 +393,7 @@ export default function Portfolio() {
         <h2 className="text-[16px] font-semibold mb-5" style={{ color: 'var(--text)' }}>
           Drawdown Analysis
         </h2>
-        <DrawdownChart timeRange={timeRange} />
+        <DrawdownChart timeRange={timeRange} portfolioType={portfolioType} />
       </div>
 
       {/* Win Rate by Strategy */}
@@ -206,7 +401,7 @@ export default function Portfolio() {
         <h2 className="text-[16px] font-semibold mb-5" style={{ color: 'var(--text)' }}>
           Win Rate by Strategy
         </h2>
-        <WinRateChart minTrades={1} />
+        <WinRateChart minTrades={1} portfolioType={portfolioType} />
       </div>
 
       {/* Position Heatmap */}
@@ -214,7 +409,7 @@ export default function Portfolio() {
         <h2 className="text-[16px] font-semibold mb-5" style={{ color: 'var(--text)' }}>
           Position Heatmap
         </h2>
-        <PositionHeatmap />
+        <PositionHeatmap portfolioType={portfolioType} />
       </div>
 
       {/* Positions table */}
@@ -239,7 +434,7 @@ export default function Portfolio() {
         </div>
 
         {positionsLoading ? (
-          <TableSkeleton rows={5} columns={7} />
+          <TableSkeleton rows={5} columns={8} />
         ) : positions.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-40 gap-2">
             <AlertCircle className="h-5 w-5" style={{ color: 'var(--text-3)' }} />
@@ -254,6 +449,9 @@ export default function Portfolio() {
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
                   <th className="text-left py-2 px-3" style={{ color: 'var(--text-3)' }}>
                     Market
+                  </th>
+                  <th className="text-left py-2 px-3" style={{ color: 'var(--text-3)' }}>
+                    Type
                   </th>
                   <th className="text-left py-2 px-3" style={{ color: 'var(--text-3)' }}>
                     Side
@@ -273,12 +471,17 @@ export default function Portfolio() {
                   <th className="text-left py-2 px-3" style={{ color: 'var(--text-3)' }}>
                     Strategy
                   </th>
+                  <th className="text-center py-2 px-3" style={{ color: 'var(--text-3)' }}>
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {positions.map((pos) => {
                   const pnl = pos.realized_pnl ?? pos.unrealized_pnl ?? 0
                   const isProfitable = pnl >= 0
+                  const isAuto = pos.portfolio_type === 'auto'
+                  const isCopy = pos.strategy === 'copy_trade'
 
                   return (
                     <tr
@@ -293,6 +496,25 @@ export default function Portfolio() {
                         <p className="text-[10px] uppercase mt-0.5" style={{ color: 'var(--text-3)' }}>
                           {pos.platform}
                         </p>
+                      </td>
+                      <td className="py-3 px-3">
+                        <span
+                          className="px-2 py-1 rounded text-[10px] font-semibold uppercase"
+                          style={{
+                            background: isAuto
+                              ? 'rgba(196,162,77,0.15)'
+                              : isCopy
+                                ? 'rgba(99,102,241,0.15)'
+                                : 'rgba(255,255,255,0.06)',
+                            color: isAuto
+                              ? 'var(--accent)'
+                              : isCopy
+                                ? '#818CF8'
+                                : 'var(--text-3)',
+                          }}
+                        >
+                          {isAuto ? 'AUTO' : isCopy ? 'COPY' : 'MANUAL'}
+                        </span>
                       </td>
                       <td className="py-3 px-3">
                         <span
@@ -321,8 +543,38 @@ export default function Portfolio() {
                       </td>
                       <td className="py-3 px-3">
                         <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-                          {pos.strategy.replace('_', ' ')}
+                          {pos.strategy.replace(/_/g, ' ')}
                         </span>
+                      </td>
+                      <td className="py-3 px-3 text-center">
+                        {pos.exit_time === null ? (
+                          closingId === pos.id ? (
+                            <div className="flex items-center gap-1 justify-center">
+                              <Loader2 className="h-3 w-3 animate-spin" style={{ color: 'var(--text-3)' }} />
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setClosingId(pos.id)
+                                closeMutation.mutate({
+                                  positionId: pos.id,
+                                  exitPrice: pos.current_price ?? pos.entry_price,
+                                })
+                              }}
+                              className="px-2.5 py-1 rounded text-[10px] font-semibold uppercase transition-colors hover:opacity-80"
+                              style={{
+                                background: 'rgba(207,102,121,0.15)',
+                                color: 'var(--red)',
+                              }}
+                            >
+                              Close
+                            </button>
+                          )
+                        ) : (
+                          <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>
+                            Closed
+                          </span>
+                        )}
                       </td>
                     </tr>
                   )
@@ -338,7 +590,7 @@ export default function Portfolio() {
         <h2 className="text-[16px] font-semibold mb-5" style={{ color: 'var(--text)' }}>
           Performance Attribution
         </h2>
-        <PerformanceAttribution />
+        <PerformanceAttribution portfolioType={portfolioType} />
       </div>
     </div>
   )

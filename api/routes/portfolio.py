@@ -1,15 +1,17 @@
 """Portfolio and paper trading endpoints.
-Supports simulated positions for strategy backtesting on prop accounts."""
+Supports simulated positions for strategy backtesting on prop accounts.
+Supports portfolio_type filtering: 'manual' (manual + copy) vs 'auto' (ensemble + elo)."""
 
 from datetime import datetime
 from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_session
 from db.models import PortfolioPosition, Market, Platform
 from data_pipeline.copy_engine import on_position_opened, on_position_closed
+from risk.risk_manager import check_risk_limits, get_risk_status
 
 router = APIRouter(tags=["portfolio"])
 
@@ -31,14 +33,22 @@ class ClosePositionRequest(BaseModel):
     exit_price: float
 
 
+def _apply_portfolio_filter(query, portfolio_type: str | None):
+    """Add portfolio_type WHERE clause if specified."""
+    if portfolio_type is not None:
+        return query.where(PortfolioPosition.portfolio_type == portfolio_type)
+    return query
+
+
 @router.get("/portfolio/positions")
 async def list_positions(
     status: str = Query(default="open", regex="^(open|closed|all)$"),
     strategy: str | None = None,
+    portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
     limit: int = Query(default=50, le=200),
     session: AsyncSession = Depends(get_session),
 ):
-    """List portfolio positions."""
+    """List portfolio positions with optional portfolio_type filter."""
     query = select(PortfolioPosition)
 
     if status == "open":
@@ -49,6 +59,7 @@ async def list_positions(
     if strategy:
         query = query.where(PortfolioPosition.strategy == strategy)
 
+    query = _apply_portfolio_filter(query, portfolio_type)
     query = query.order_by(PortfolioPosition.entry_time.desc()).limit(limit)
 
     result = await session.execute(query)
@@ -67,14 +78,13 @@ async def list_positions(
         unrealized_pnl = None
 
         if market and pos.exit_time is None:
-            # Calculate unrealized P&L for open positions
-            if pos.side == "yes":
-                current_price = market.price_yes
-            else:
-                current_price = market.price_no
+            current_price = market.price_yes if pos.side == "yes" else market.price_no
 
-            if current_price is not None:
-                unrealized_pnl = (current_price - pos.entry_price) * pos.quantity
+            if market.price_yes is not None:
+                if pos.side == "yes":
+                    unrealized_pnl = (market.price_yes - pos.entry_price) * pos.quantity
+                else:
+                    unrealized_pnl = (pos.entry_price - market.price_yes) * pos.quantity
 
         enriched.append({
             "id": pos.id,
@@ -91,6 +101,7 @@ async def list_positions(
             "unrealized_pnl": unrealized_pnl,
             "current_price": current_price,
             "strategy": pos.strategy,
+            "portfolio_type": pos.portfolio_type,
             "is_simulated": pos.is_simulated,
         })
 
@@ -103,10 +114,26 @@ async def open_position(
     current_user: str = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Open a new paper trading position."""
+    """Open a new paper trading position (always manual portfolio)."""
     market = await session.get(Market, req.market_id)
     if not market:
         return {"error": "Market not found"}
+
+    # Side-aware position cost
+    if req.side == "yes":
+        position_cost = req.entry_price * req.quantity
+    else:
+        position_cost = (1.0 - req.entry_price) * req.quantity
+
+    risk_check = await check_risk_limits(session, position_cost, current_user, portfolio_type="manual")
+    if not risk_check.allowed:
+        return {"error": risk_check.reason, "risk_check": {
+            "allowed": False,
+            "current_exposure": risk_check.current_exposure,
+            "daily_pnl": risk_check.daily_pnl,
+            "daily_trades": risk_check.daily_trades,
+            "circuit_breaker_active": risk_check.circuit_breaker_active,
+        }}
 
     position = PortfolioPosition(
         market_id=req.market_id,
@@ -117,6 +144,7 @@ async def open_position(
         quantity=req.quantity,
         entry_time=datetime.utcnow(),
         strategy=req.strategy,
+        portfolio_type="manual",
         is_simulated=True,
     )
     session.add(position)
@@ -155,7 +183,10 @@ async def close_position(
 
     position.exit_price = req.exit_price
     position.exit_time = datetime.utcnow()
-    position.realized_pnl = (req.exit_price - position.entry_price) * position.quantity
+    if position.side == "yes":
+        position.realized_pnl = (req.exit_price - position.entry_price) * position.quantity
+    else:
+        position.realized_pnl = (position.entry_price - req.exit_price) * position.quantity
 
     # Auto-close copied positions
     closed_ids = await on_position_closed(position, session)
@@ -173,48 +204,43 @@ async def close_position(
 
 @router.get("/portfolio/summary")
 async def portfolio_summary(
+    portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Overall portfolio performance summary."""
+    """Overall portfolio performance summary with optional portfolio_type filter."""
     # Open positions
-    open_count = (await session.execute(
-        select(func.count(PortfolioPosition.id))
-        .where(PortfolioPosition.exit_time == None)  # noqa: E711
-    )).scalar() or 0
+    open_q = select(func.count(PortfolioPosition.id)).where(PortfolioPosition.exit_time == None)  # noqa: E711
+    open_q = _apply_portfolio_filter(open_q, portfolio_type)
+    open_count = (await session.execute(open_q)).scalar() or 0
 
     # Closed positions
-    closed_count = (await session.execute(
-        select(func.count(PortfolioPosition.id))
-        .where(PortfolioPosition.exit_time != None)  # noqa: E711
-    )).scalar() or 0
+    closed_q = select(func.count(PortfolioPosition.id)).where(PortfolioPosition.exit_time != None)  # noqa: E711
+    closed_q = _apply_portfolio_filter(closed_q, portfolio_type)
+    closed_count = (await session.execute(closed_q)).scalar() or 0
 
     # Total realized P&L
-    total_realized = (await session.execute(
-        select(func.sum(PortfolioPosition.realized_pnl))
-        .where(PortfolioPosition.exit_time != None)  # noqa: E711
-    )).scalar() or 0.0
+    pnl_q = select(func.sum(PortfolioPosition.realized_pnl)).where(PortfolioPosition.exit_time != None)  # noqa: E711
+    pnl_q = _apply_portfolio_filter(pnl_q, portfolio_type)
+    total_realized = (await session.execute(pnl_q)).scalar() or 0.0
 
     # Win rate
-    winning = (await session.execute(
-        select(func.count(PortfolioPosition.id))
-        .where(
-            PortfolioPosition.exit_time != None,  # noqa: E711
-            PortfolioPosition.realized_pnl > 0,
-        )
-    )).scalar() or 0
+    win_q = select(func.count(PortfolioPosition.id)).where(
+        PortfolioPosition.exit_time != None,  # noqa: E711
+        PortfolioPosition.realized_pnl > 0,
+    )
+    win_q = _apply_portfolio_filter(win_q, portfolio_type)
+    winning = (await session.execute(win_q)).scalar() or 0
 
     win_rate = (winning / closed_count * 100) if closed_count > 0 else 0.0
 
     # P&L by strategy
-    strategy_pnl_result = await session.execute(
-        select(
-            PortfolioPosition.strategy,
-            func.count(PortfolioPosition.id),
-            func.sum(PortfolioPosition.realized_pnl),
-        )
-        .where(PortfolioPosition.exit_time != None)  # noqa: E711
-        .group_by(PortfolioPosition.strategy)
-    )
+    strategy_q = select(
+        PortfolioPosition.strategy,
+        func.count(PortfolioPosition.id),
+        func.sum(PortfolioPosition.realized_pnl),
+    ).where(PortfolioPosition.exit_time != None).group_by(PortfolioPosition.strategy)  # noqa: E711
+    strategy_q = _apply_portfolio_filter(strategy_q, portfolio_type)
+    strategy_pnl_result = await session.execute(strategy_q)
 
     by_strategy = [
         {
@@ -225,11 +251,14 @@ async def portfolio_summary(
         for row in strategy_pnl_result.all()
     ]
 
-    # Total exposure (open positions)
-    total_exposure = (await session.execute(
-        select(func.sum(PortfolioPosition.entry_price * PortfolioPosition.quantity))
-        .where(PortfolioPosition.exit_time == None)  # noqa: E711
-    )).scalar() or 0.0
+    # Total exposure
+    cost_expr = case(
+        (PortfolioPosition.side == "yes", PortfolioPosition.entry_price * PortfolioPosition.quantity),
+        else_=(1.0 - PortfolioPosition.entry_price) * PortfolioPosition.quantity,
+    )
+    exposure_q = select(func.sum(cost_expr)).where(PortfolioPosition.exit_time == None)  # noqa: E711
+    exposure_q = _apply_portfolio_filter(exposure_q, portfolio_type)
+    total_exposure = (await session.execute(exposure_q)).scalar() or 0.0
 
     return {
         "open_positions": open_count,
@@ -244,16 +273,13 @@ async def portfolio_summary(
 @router.get("/portfolio/equity-curve")
 async def get_equity_curve(
     time_range: str = Query(default="30d", regex="^(7d|30d|90d|all)$"),
+    portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get cumulative P&L over time for equity curve visualization.
-
-    Returns time series data with cumulative P&L by strategy.
-    """
+    """Get cumulative P&L over time for equity curve visualization."""
     from datetime import timedelta
     from collections import defaultdict
 
-    # Determine cutoff date
     cutoff_map = {
         "7d": timedelta(days=7),
         "30d": timedelta(days=30),
@@ -270,14 +296,14 @@ async def get_equity_curve(
         cutoff_time = datetime.utcnow() - cutoff_delta
         query = query.where(PortfolioPosition.exit_time >= cutoff_time)
 
+    query = _apply_portfolio_filter(query, portfolio_type)
+
     result = await session.execute(query)
     positions = result.scalars().all()
 
     if not positions:
         return {"data": [], "strategies": [], "total_pnl": 0.0}
 
-    # Build time series with cumulative P&L
-    # Group by strategy
     strategy_data = defaultdict(list)
     strategy_cumulative = defaultdict(float)
     all_cumulative = 0.0
@@ -286,25 +312,21 @@ async def get_equity_curve(
         strategy = pos.strategy or "manual"
         pnl = pos.realized_pnl or 0.0
 
-        # Update cumulative P&L
         strategy_cumulative[strategy] += pnl
         all_cumulative += pnl
 
-        # Record data point
         timestamp = pos.exit_time.isoformat()
         strategy_data[strategy].append({
             "timestamp": timestamp,
             "cumulative_pnl": strategy_cumulative[strategy],
         })
 
-        # Also record for "all" strategy
         if "all" not in strategy_data or strategy_data["all"][-1]["timestamp"] != timestamp:
             strategy_data["all"].append({
                 "timestamp": timestamp,
                 "cumulative_pnl": all_cumulative,
             })
 
-    # Build response
     strategies = []
     for strategy_name, points in strategy_data.items():
         strategies.append({
@@ -323,24 +345,21 @@ async def get_equity_curve(
 @router.get("/portfolio/win-rate")
 async def get_win_rate_by_strategy(
     min_trades: int = Query(default=1, ge=1),
+    portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get win rate breakdown by strategy.
-
-    Returns win rate, trade count, avg profit, max loss per strategy.
-    """
-    # Get all closed positions
-    result = await session.execute(
-        select(PortfolioPosition).where(
-            PortfolioPosition.exit_time != None  # noqa: E711
-        )
+    """Get win rate breakdown by strategy."""
+    query = select(PortfolioPosition).where(
+        PortfolioPosition.exit_time != None  # noqa: E711
     )
+    query = _apply_portfolio_filter(query, portfolio_type)
+
+    result = await session.execute(query)
     positions = result.scalars().all()
 
     if not positions:
         return {"strategies": [], "overall_win_rate": 0.0}
 
-    # Group by strategy
     from collections import defaultdict
 
     strategy_stats = defaultdict(lambda: {
@@ -367,14 +386,13 @@ async def get_win_rate_by_strategy(
             stats["losses"] += 1
             stats["losing_pnl"].append(pnl)
 
-    # Calculate metrics
     strategies = []
     total_wins = 0
     total_trades = 0
 
     for strategy_name, stats in strategy_stats.items():
         if stats["total_trades"] < min_trades:
-            continue  # Skip strategies with too few trades
+            continue
 
         win_rate = (stats["wins"] / stats["total_trades"] * 100) if stats["total_trades"] > 0 else 0.0
         avg_win = sum(stats["winning_pnl"]) / len(stats["winning_pnl"]) if stats["winning_pnl"] else 0.0
@@ -396,7 +414,6 @@ async def get_win_rate_by_strategy(
         total_wins += stats["wins"]
         total_trades += stats["total_trades"]
 
-    # Overall win rate
     overall_win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0.0
 
     return {
@@ -404,3 +421,38 @@ async def get_win_rate_by_strategy(
         "overall_win_rate": overall_win_rate,
         "total_trades": total_trades,
     }
+
+
+@router.delete("/portfolio/reset")
+async def reset_portfolio(
+    session: AsyncSession = Depends(get_session),
+):
+    """Reset portfolio by deleting ALL positions (all users, open and closed).
+
+    WARNING: This is destructive and cannot be undone.
+    """
+    result = await session.execute(select(PortfolioPosition))
+    positions = result.scalars().all()
+
+    count = len(positions)
+    for pos in positions:
+        await session.delete(pos)
+
+    await session.commit()
+
+    return {
+        "deleted_count": count,
+        "message": f"Portfolio reset complete. Deleted {count} positions.",
+    }
+
+
+@router.get("/portfolio/risk-status")
+async def get_portfolio_risk_status(
+    portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get current risk limit utilization for dashboard display.
+
+    When portfolio_type is omitted, returns both manual and auto risk status.
+    """
+    return await get_risk_status(session, portfolio_type=portfolio_type)

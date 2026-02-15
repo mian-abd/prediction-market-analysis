@@ -75,7 +75,58 @@ ENSEMBLE_FEATURE_NAMES: list[str] = [
     # "volume_to_liquidity_ratio",
 ]
 
-N_FEATURES = len(ENSEMBLE_FEATURE_NAMES)  # 25 (was 28, removed 3 redundant)
+N_FEATURES = len(ENSEMBLE_FEATURE_NAMES)  # 19 (volume features excluded 2026-02-14)
+
+# Feature quality metadata — "real" = derived from live market data,
+# "proxy" = synthetic approximation from snapshot-level data
+FEATURE_QUALITY: dict[str, str] = {
+    "price_yes": "real",
+    "price_bucket": "real",
+    "price_distance_from_50": "real",
+    "log_open_interest": "real",
+    "calibration_bias": "real",
+    "time_to_resolution_hrs": "real",
+    "category_encoded": "real",
+    "is_weekend": "real",
+    "return_1h": "proxy",       # defaults to 0 when <2 snapshots
+    "volatility_20": "proxy",   # defaults to 0 when <2 snapshots
+    "zscore_24h": "proxy",      # defaults to 0 when <2 snapshots
+    "obi_level1": "proxy",      # defaults to 0 when no orderbook
+    "obi_weighted_5": "proxy",
+    "bid_ask_spread_abs": "proxy",
+    "bid_ask_spread_rel": "proxy",
+    "depth_ratio": "proxy",     # defaults to 1.0 when no orderbook
+    "bid_depth_usd": "proxy",
+    "ask_depth_usd": "proxy",
+    "vwap_deviation": "proxy",
+}
+
+
+def get_feature_quality_summary(features: dict[str, float] | None = None) -> dict:
+    """Summarize feature quality for API responses."""
+    total = len(FEATURE_QUALITY)
+    real = sum(1 for v in FEATURE_QUALITY.values() if v == "real")
+    proxy = total - real
+
+    result = {
+        "total_features": total,
+        "real_features": real,
+        "proxy_features": proxy,
+        "real_pct": round(real / total * 100, 1),
+    }
+
+    # If features provided, count how many proxy features are at defaults
+    if features:
+        proxy_at_default = 0
+        for name, quality in FEATURE_QUALITY.items():
+            if quality == "proxy" and name in features:
+                val = features[name]
+                if val == 0.0 or (name == "depth_ratio" and val == 1.0):
+                    proxy_at_default += 1
+        result["proxy_at_default"] = proxy_at_default
+        result["features_with_real_data"] = real + (proxy - proxy_at_default)
+
+    return result
 
 
 def extract_features_from_market(

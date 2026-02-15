@@ -131,6 +131,81 @@ async def get_all_strategy_signals(
         }
 
 
+@router.get("/strategies/signal-performance")
+async def get_signal_performance():
+    """Get historical signal performance time-series.
+
+    Returns daily aggregates of signals generated, correct predictions,
+    and cumulative P&L for the signal accuracy chart.
+    """
+    from collections import defaultdict
+
+    async with async_session() as session:
+        # Score any newly resolved signals first
+        try:
+            from ml.evaluation.resolution_scorer import score_resolved_signals
+            await score_resolved_signals(session)
+        except Exception as e:
+            pass  # Non-critical, continue with existing scores
+
+        # Get all scored ensemble signals
+        result = await session.execute(
+            select(EnsembleEdgeSignal)
+            .where(EnsembleEdgeSignal.was_correct != None)  # noqa
+            .order_by(EnsembleEdgeSignal.detected_at)
+        )
+        signals = result.scalars().all()
+
+        if not signals:
+            return {"data": [], "summary": {"total_scored": 0}}
+
+        # Aggregate by date
+        daily = defaultdict(lambda: {
+            "signals_generated": 0,
+            "signals_correct": 0,
+            "pnl": 0.0,
+        })
+
+        cumulative_pnl = 0.0
+        for s in signals:
+            date_key = s.detected_at.strftime("%Y-%m-%d") if s.detected_at else "unknown"
+            daily[date_key]["signals_generated"] += 1
+            if s.was_correct:
+                daily[date_key]["signals_correct"] += 1
+            daily[date_key]["pnl"] += (s.actual_pnl or 0.0) * 100  # per $100 notional
+
+        # Build time series
+        data = []
+        cumulative_pnl = 0.0
+        total_correct = 0
+        total_generated = 0
+        for date_key in sorted(daily.keys()):
+            d = daily[date_key]
+            cumulative_pnl += d["pnl"]
+            total_correct += d["signals_correct"]
+            total_generated += d["signals_generated"]
+            data.append({
+                "date": date_key,
+                "signals_generated": d["signals_generated"],
+                "signals_correct": d["signals_correct"],
+                "daily_pnl": round(d["pnl"], 2),
+                "cumulative_pnl": round(cumulative_pnl, 2),
+                "cumulative_hit_rate": round(
+                    total_correct / total_generated, 4
+                ) if total_generated > 0 else 0,
+            })
+
+        return {
+            "data": data,
+            "summary": {
+                "total_scored": len(signals),
+                "total_correct": total_correct,
+                "hit_rate": round(total_correct / len(signals), 4) if signals else 0,
+                "cumulative_pnl": round(cumulative_pnl, 2),
+            },
+        }
+
+
 @router.get("/strategies/ensemble-edges")
 async def get_ensemble_edges(
     limit: int = Query(default=50, le=200),

@@ -1,18 +1,16 @@
 /**
  * Cross-Platform Correlation Matrix
  *
- * Shows price correlations between markets in a heatmap.
- * Use cases:
- * - Find related markets for hedging
- * - Identify anomalies (high correlation + price divergence)
- * - Discover market clusters
+ * Shows price correlations between markets in a ranked pair list.
+ * Uses React Query for proper caching and deduplication.
  */
 
-import { useEffect, useState } from 'react'
-import { Loader2, Network } from 'lucide-react'
+import { Network } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
 import apiClient from '../../api/client'
 import EmptyState from '../EmptyState'
 import ErrorState from '../ErrorState'
+import { Skeleton } from '../LoadingSkeleton'
 
 interface CorrelationPair {
   market_a_id: number
@@ -49,15 +47,9 @@ export default function CorrelationMatrix({
   minCorrelation = 0.3,
   lookbackDays = 7,
 }: CorrelationMatrixProps) {
-  const [data, setData] = useState<CorrelationData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  const fetchCorrelations = async () => {
-    setLoading(true)
-    setError(null)
-
-    try {
+  const { data, isLoading, error, refetch } = useQuery<CorrelationData>({
+    queryKey: ['correlations', category, minCorrelation, lookbackDays],
+    queryFn: async () => {
       const params = new URLSearchParams({
         min_correlation: minCorrelation.toString(),
         lookback_days: lookbackDays.toString(),
@@ -65,25 +57,30 @@ export default function CorrelationMatrix({
       if (category) {
         params.append('category', category)
       }
-
       const response = await apiClient.get(`/analytics/correlations?${params}`)
-      setData(response.data)
-    } catch (err: any) {
-      setError('Failed to load correlations')
-      console.error(err)
-    } finally {
-      setLoading(false)
-    }
-  }
+      return response.data
+    },
+    staleTime: 120_000, // Cache for 2 minutes (expensive query)
+    retry: 1,
+  })
 
-  useEffect(() => {
-    fetchCorrelations()
-  }, [category, minCorrelation, lookbackDays])
-
-  if (loading) {
+  if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-96">
-        <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--text-3)' }} />
+      <div className="space-y-3">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: 'var(--card)' }}>
+            <Skeleton className="h-10 w-16" />
+            <div className="flex-1 space-y-1">
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-3 w-1/4" />
+            </div>
+            <Skeleton className="h-4 w-4" />
+            <div className="flex-1 space-y-1">
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-3 w-1/4" />
+            </div>
+          </div>
+        ))}
       </div>
     )
   }
@@ -92,8 +89,8 @@ export default function CorrelationMatrix({
     return (
       <ErrorState
         title="Failed to load correlations"
-        message={error || 'Could not compute market correlations.'}
-        onRetry={fetchCorrelations}
+        message="The correlation computation timed out. Try selecting a specific category to reduce the dataset."
+        onRetry={() => refetch()}
         showBackendHint={false}
       />
     )
@@ -109,18 +106,16 @@ export default function CorrelationMatrix({
     )
   }
 
-  // Get color based on correlation value
   const getCorrelationColor = (corr: number): string => {
-    if (corr > 0.7) return '#4CAF70' // Strong positive (green)
-    if (corr > 0.4) return '#A3D97A' // Moderate positive (light green)
-    if (corr > 0) return '#E8F5E9' // Weak positive (very light green)
-    if (corr > -0.4) return '#FFEBEE' // Weak negative (very light red)
-    if (corr > -0.7) return '#EF9A9A' // Moderate negative (light red)
-    return '#CF6679' // Strong negative (red)
+    if (corr > 0.7) return '#4CAF70'
+    if (corr > 0.4) return '#A3D97A'
+    if (corr > 0) return '#E8F5E9'
+    if (corr > -0.4) return '#FFEBEE'
+    if (corr > -0.7) return '#EF9A9A'
+    return '#CF6679'
   }
 
   const getTextColor = (corr: number): string => {
-    // Use dark text for light backgrounds
     if (corr >= -0.4 && corr <= 0.4) return '#1A1A1C'
     return '#FFFFFF'
   }
@@ -207,22 +202,9 @@ export default function CorrelationMatrix({
               </div>
 
               {/* Arrow */}
-              <div className="flex-shrink-0">
-                <svg
-                  width="20"
-                  height="20"
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    d="M7 14L13 10L7 6"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    style={{ color: 'var(--text-3)' }}
-                  />
+              <div className="flex-shrink-0" style={{ color: 'var(--text-3)' }}>
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                  <path d="M7 4L13 10L7 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </div>
 

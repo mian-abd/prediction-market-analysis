@@ -30,7 +30,11 @@ interface WaterfallItem {
   type: 'start' | 'positive' | 'negative' | 'end'
 }
 
-export default function PerformanceAttribution() {
+interface PerformanceAttributionProps {
+  portfolioType?: 'all' | 'manual' | 'auto'
+}
+
+export default function PerformanceAttribution({ portfolioType = 'all' }: PerformanceAttributionProps) {
   const [data, setData] = useState<WaterfallItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -41,7 +45,8 @@ export default function PerformanceAttribution() {
 
     try {
       // Fetch portfolio summary with strategy breakdown
-      const response = await apiClient.get('/portfolio/summary')
+      const ptParam = portfolioType !== 'all' ? `?portfolio_type=${portfolioType}` : ''
+      const response = await apiClient.get(`/portfolio/summary${ptParam}`)
       const summary = response.data
 
       const startingCapital = 1000 // Assume $1000 starting capital
@@ -103,7 +108,7 @@ export default function PerformanceAttribution() {
 
   useEffect(() => {
     fetchPerformance()
-  }, [])
+  }, [portfolioType])
 
   if (loading) {
     return (

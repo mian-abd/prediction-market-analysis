@@ -33,9 +33,10 @@ interface DrawdownPoint {
 
 interface DrawdownChartProps {
   timeRange?: '7d' | '30d' | '90d' | 'all'
+  portfolioType?: 'all' | 'manual' | 'auto'
 }
 
-export default function DrawdownChart({ timeRange = '30d' }: DrawdownChartProps) {
+export default function DrawdownChart({ timeRange = '30d', portfolioType = 'all' }: DrawdownChartProps) {
   const [data, setData] = useState<DrawdownPoint[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -47,7 +48,8 @@ export default function DrawdownChart({ timeRange = '30d' }: DrawdownChartProps)
 
     try {
       // Fetch equity curve data
-      const response = await apiClient.get(`/portfolio/equity-curve?time_range=${timeRange}`)
+      const ptParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
+      const response = await apiClient.get(`/portfolio/equity-curve?time_range=${timeRange}${ptParam}`)
       const equityCurveData = response.data
 
       if (!equityCurveData.data || equityCurveData.data.length === 0) {
@@ -108,7 +110,7 @@ export default function DrawdownChart({ timeRange = '30d' }: DrawdownChartProps)
 
   useEffect(() => {
     fetchDrawdownData()
-  }, [timeRange])
+  }, [timeRange, portfolioType])
 
   if (loading) {
     return (

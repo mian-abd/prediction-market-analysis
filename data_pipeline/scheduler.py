@@ -169,25 +169,66 @@ async def collect_markets():
 
 
 async def collect_prices():
-    """Snapshot current prices for all active markets."""
+    """Snapshot current FRESH prices for all active markets from CLOB API."""
     async with async_session() as session:
-        markets = await get_active_markets(session, limit=500)
-        count = 0
-        for market in markets:
-            if market.price_yes is not None:
-                try:
-                    await insert_price_snapshots(
-                        session,
-                        market_id=market.id,
-                        price_yes=market.price_yes,
-                        price_no=market.price_no or (1.0 - market.price_yes),
-                        volume=market.volume_24h or 0,
-                    )
-                    count += 1
-                except Exception as e:
-                    logger.warning(f"Price snapshot failed for market {market.id}: {e}")
+        markets = await get_active_markets(session, platform_name="polymarket", limit=2000)
 
-    logger.info(f"Collected {count} price snapshots")
+        # Build batch request for fresh prices
+        params_list = []
+        market_lookup = {}
+        for market in markets:
+            if market.token_id_yes:
+                params_list.append({"token_id": market.token_id_yes, "side": "buy"})
+                market_lookup[market.token_id_yes] = market
+
+        if not params_list:
+            logger.warning("No markets with token_id_yes for price fetch")
+            return
+
+        # Fetch fresh prices in batches (100 per request)
+        count = 0
+        batch_size = 100
+
+        for i in range(0, len(params_list), batch_size):
+            batch = params_list[i:i+batch_size]
+            try:
+                # CLOB returns dict: { "token_id": { "BUY": "0.55", "SELL": "0.54" }, ... }
+                prices_dict = await polymarket_clob.fetch_prices_batch(batch)
+
+                for token_id, sides in prices_dict.items():
+                    # Use BUY price for YES side
+                    buy_price_str = sides.get("BUY")
+                    if not buy_price_str:
+                        continue
+
+                    market = market_lookup.get(token_id)
+                    if not market:
+                        continue
+
+                    try:
+                        price_yes = float(buy_price_str)
+                        price_no = 1.0 - price_yes
+
+                        # Update market table with fresh price
+                        market.price_yes = price_yes
+                        market.price_no = price_no
+
+                        await insert_price_snapshots(
+                            session, market_id=market.id,
+                            price_yes=price_yes, price_no=price_no,
+                            volume=market.volume_24h or 0,
+                        )
+                        count += 1
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Price parse failed for {token_id}: {e}")
+
+            except Exception as e:
+                logger.warning(f"Batch price fetch failed (batch {i//batch_size}): {e}")
+
+        if count > 0:
+            await session.commit()
+
+    logger.info(f"Collected {count} FRESH price snapshots from CLOB API")
 
 
 # ── Orderbook Collection ─────────────────────────────────────────────
@@ -196,7 +237,7 @@ async def collect_orderbooks():
     """Collect CLOB orderbook snapshots for top Polymarket markets by volume."""
     logger.info("Starting orderbook collection...")
     async with async_session() as session:
-        markets = await get_active_markets(session, platform_name="polymarket", limit=50)
+        markets = await get_active_markets(session, platform_name="polymarket", limit=200)
         count = 0
 
         for market in markets:
@@ -304,8 +345,8 @@ async def scan_ensemble_edges():
             return
 
         async with async_session() as session:
-            # Expire old signals (>30 min)
-            cutoff = datetime.utcnow() - timedelta(minutes=30)
+            # Expire old signals (>4 hrs for longer position hold times)
+            cutoff = datetime.utcnow() - timedelta(hours=4)
             from sqlalchemy import update as sa_update
             await session.execute(
                 sa_update(EnsembleEdgeSignal)
@@ -317,12 +358,12 @@ async def scan_ensemble_edges():
             )
             await session.commit()
 
-            # Query top 500 liquid active markets
+            # Query top 2000 liquid active markets (scan all active)
             markets = (await session.execute(
                 select(Market)
                 .where(Market.is_active == True, Market.price_yes != None)  # noqa
                 .order_by(Market.volume_24h.desc())
-                .limit(500)
+                .limit(2000)
             )).scalars().all()
 
             edges_found = 0
@@ -414,6 +455,8 @@ async def run_pipeline_loop():
     cycles_per_trader_refresh = max(1, 1800 // price_interval)  # Every ~30 min
     cycles_per_elo_scan = max(1, settings.elo_scan_interval_sec // price_interval)  # Every ~10 min
     cycles_per_ensemble_scan = max(1, 900 // price_interval)  # Every ~15 min
+    cycles_per_auto_trade = max(1, 900 // price_interval)  # Every ~15 min (independent of scans)
+    cycles_per_resolution_score = max(1, 1800 // price_interval)  # Every ~30 min
 
     cycle = 0
 
@@ -455,12 +498,46 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Ensemble edge scan error: {e}")
 
+        # ── Auto-trade + auto-close every ~15 min (independent cycle) ──
+        if cycle % cycles_per_auto_trade == 0:
+            try:
+                from execution.paper_executor import execute_paper_trades
+                async with async_session() as exec_session:
+                    created = await execute_paper_trades(exec_session)
+                    if created:
+                        logger.info(f"Auto paper trades: {len(created)} positions opened")
+            except Exception as e:
+                logger.error(f"Paper executor error: {e}")
+
+            try:
+                from execution.auto_closer import auto_close_positions
+                async with async_session() as close_session:
+                    closed = await auto_close_positions(close_session)
+                    if closed:
+                        logger.info(f"Auto-closed {len(closed)} positions")
+            except Exception as e:
+                logger.error(f"Auto-closer error: {e}")
+
         # ── Trader stats refresh every ~30 min ──
         if cycle % cycles_per_trader_refresh == 0:
             try:
                 await refresh_trader_stats()
             except Exception as e:
                 logger.error(f"Trader stats refresh error: {e}")
+
+        # ── Score resolved signals every ~30 min ──
+        if cycle % cycles_per_resolution_score == 0:
+            try:
+                from ml.evaluation.resolution_scorer import score_resolved_signals
+                async with async_session() as score_session:
+                    result = await score_resolved_signals(score_session)
+                    if result["scored_ensemble"] or result["scored_elo"]:
+                        logger.info(
+                            f"Resolution scoring: {result['scored_ensemble']} ensemble, "
+                            f"{result['scored_elo']} Elo signals scored"
+                        )
+            except Exception as e:
+                logger.error(f"Resolution scoring failed: {e}")
 
         # ── Full market refresh + deactivate expired + re-match every ~1 hr ──
         if cycle % cycles_per_market_refresh == 0:

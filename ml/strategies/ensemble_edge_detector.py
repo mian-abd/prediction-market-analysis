@@ -24,9 +24,11 @@ MAX_PRICE = 0.98            # Tradeable range upper bound
 # --- Edge Thresholds ---
 MIN_NET_EDGE = 0.03         # 3% minimum net edge after fees
 SLIPPAGE_BUFFER = 0.01      # 1% slippage estimate
+POLYMARKET_FEE_RATE = 0.02  # 2% on net winnings (only charged when winning)
 MAX_KELLY = 0.02            # Maximum Kelly fraction (2%)
 KELLY_FRACTION = 0.25       # Fractional Kelly multiplier (safety)
 MIN_CONFIDENCE = 0.5        # Minimum confidence score
+MAX_CREDIBLE_EDGE = 0.15    # 15% — edges above this are likely noise/leakage
 
 
 @dataclass
@@ -99,21 +101,33 @@ def compute_directional_ev(
 ) -> tuple[str | None, float, float]:
     """Compute directional expected value for both sides.
 
-    Returns (direction, net_ev, fee_cost)
-    """
-    fee_cost = (taker_fee_bps / 10000) + SLIPPAGE_BUFFER
+    Polymarket charges 2% on NET WINNINGS only when you win (0% if you lose).
+    Expected fee = win_probability * fee_rate * winnings_per_share.
 
-    # EV of buying YES at price q when true prob is p
-    ev_yes = ensemble_prob - market_price - fee_cost
-    # EV of buying NO
-    ev_no = market_price - ensemble_prob - fee_cost  # = (1-p) - (1-q) - fees
+    Returns (direction, net_ev, fee_cost) where fee_cost is for the chosen direction.
+    """
+    p = ensemble_prob    # true probability of YES
+    q = market_price     # market YES price
+    extra_fee = (taker_fee_bps / 10000)  # additional platform fees (usually 0)
+
+    # Buy YES: pay q, receive 1 if YES. Winnings = (1-q). Fee only if win.
+    # EV = p * (1-q) * (1 - fee_rate) - (1-p) * q - slippage - extra_fee*(1-q)
+    fee_yes = p * POLYMARKET_FEE_RATE * (1 - q) + SLIPPAGE_BUFFER + extra_fee * (1 - q)
+    ev_yes = p * (1 - q) - (1 - p) * q - fee_yes
+    # Simplified: ev_yes = p - q - fee_yes (algebraically equivalent)
+
+    # Buy NO: pay (1-q), receive 1 if NO. Winnings = q. Fee only if win.
+    fee_no = (1 - p) * POLYMARKET_FEE_RATE * q + SLIPPAGE_BUFFER + extra_fee * q
+    ev_no = (1 - p) * q - p * (1 - q) - fee_no
+    # Simplified: ev_no = q - p - fee_no (algebraically equivalent)
 
     if ev_yes > ev_no and ev_yes > 0:
-        return "buy_yes", ev_yes, fee_cost
+        return "buy_yes", ev_yes, fee_yes
     elif ev_no > 0:
-        return "buy_no", ev_no, fee_cost
+        return "buy_no", ev_no, fee_no
     else:
-        return None, 0.0, fee_cost
+        # Return the higher (less negative) fee for the best direction
+        return None, 0.0, fee_yes if ev_yes >= ev_no else fee_no
 
 
 def compute_kelly(
@@ -122,23 +136,33 @@ def compute_kelly(
     market_price: float,
     fee_cost: float,
 ) -> float:
-    """Compute fractional Kelly criterion for position sizing."""
+    """Compute fractional Kelly criterion for position sizing.
+
+    Kelly for binary bet with asymmetric fees (fee only on winning):
+      Buy YES: f* = EV / (1 - q) where EV already accounts for expected fees
+      Buy NO:  f* = EV / q where EV already accounts for expected fees
+
+    fee_cost is the expected fee for this direction (already probability-weighted).
+    """
     if direction is None:
         return 0.0
 
-    if direction == "buy_yes":
-        # f* = (p - q - fees) / (1 - q) for buying YES
-        kelly_raw = (ensemble_prob - market_price - fee_cost) / max(0.01, 1 - market_price)
-    else:
-        # f* = (q - p - fees) / q for buying NO
-        kelly_raw = (market_price - ensemble_prob - fee_cost) / max(0.01, market_price)
+    p = ensemble_prob
+    q = market_price
 
-    # Apply fractional Kelly for safety: cap raw Kelly FIRST, then apply fraction
-    # This allows position size to scale with edge magnitude (up to 8% raw → 2% fractional)
-    # BEFORE (BUG): min(kelly_raw * 0.25, 0.02) → always caps at 2% for edge >8%
-    # AFTER (FIX): min(kelly_raw, 0.08) * 0.25 → scales from 0-2% as edge grows 0-8%
-    kelly_capped = min(kelly_raw, MAX_KELLY / KELLY_FRACTION)  # Cap raw Kelly at 8%
-    return max(0.0, kelly_capped * KELLY_FRACTION)  # Apply 0.25× → 2% max
+    if direction == "buy_yes":
+        # Net EV per dollar of winnings = (p - q - fee_cost)
+        # Kelly = net_ev / max_loss_fraction = (p - q - fee_cost) / (1 - q)
+        # But fee_cost is now probability-weighted, so use the cleaner form:
+        ev = p * (1 - q) - (1 - p) * q - fee_cost
+        kelly_raw = ev / max(0.01, 1 - q)
+    else:
+        ev = (1 - p) * q - p * (1 - q) - fee_cost
+        kelly_raw = ev / max(0.01, q)
+
+    # Fractional Kelly: cap raw at 8%, then multiply by 0.25 → 2% max
+    kelly_capped = min(kelly_raw, MAX_KELLY / KELLY_FRACTION)
+    return max(0.0, kelly_capped * KELLY_FRACTION)
 
 
 def compute_confidence(
@@ -192,8 +216,14 @@ def compute_confidence(
     return round(max(0.0, min(1.0, confidence)), 3)
 
 
-def classify_quality_tier(net_ev: float, confidence: float) -> str:
-    """Classify edge into quality tier."""
+def classify_quality_tier(net_ev: float, confidence: float, raw_edge: float = 0.0) -> str:
+    """Classify edge into quality tier.
+
+    Edges exceeding MAX_CREDIBLE_EDGE are downgraded to "speculative" —
+    25%+ edges on liquid markets are almost certainly noise or leakage.
+    """
+    if raw_edge > MAX_CREDIBLE_EDGE:
+        return "speculative"
     if net_ev >= 0.05 and confidence >= 0.7:
         return "high"
     elif net_ev >= 0.03 and confidence >= 0.4:
@@ -234,7 +264,14 @@ def detect_edge(
         net_ev=net_ev,
     )
 
-    quality_tier = classify_quality_tier(net_ev, confidence)
+    raw_edge = abs(ensemble_prob - market_price)
+    quality_tier = classify_quality_tier(net_ev, confidence, raw_edge)
+
+    # Warn on extreme edges
+    if quality_tier == "speculative" and gate.passes:
+        gate.reasons.append(
+            f"edge {raw_edge:.1%} exceeds credibility threshold {MAX_CREDIBLE_EDGE:.0%}"
+        )
 
     return EdgeSignal(
         market_id=market.id,

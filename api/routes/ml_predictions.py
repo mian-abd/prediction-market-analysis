@@ -44,6 +44,60 @@ def get_ensemble_model():
     return _ensemble_model
 
 
+# --- Static routes MUST be defined before /predictions/{market_id} ---
+# FastAPI matches routes in order; {market_id} would catch "accuracy" etc.
+
+@router.get("/predictions/accuracy/backtest")
+async def get_signal_backtest(
+    session: AsyncSession = Depends(get_session),
+):
+    """Backtest: compare our past signals against actual market resolutions.
+
+    Returns hit rate, Brier score, simulated P&L, and breakdowns by direction/tier.
+    """
+    from ml.evaluation.signal_tracker import compute_signal_accuracy
+    return await compute_signal_accuracy(session)
+
+
+@router.get("/predictions/accuracy")
+async def get_model_accuracy():
+    """Get model performance metrics from training."""
+    try:
+        ensemble = get_ensemble_model()
+        metrics = ensemble.metrics
+        weights = ensemble.weights
+
+        return {
+            "trained": bool(metrics),
+            "metrics": metrics,
+            "weights": weights,
+            "models_included": metrics.get("models_included", []),
+            "models_excluded": metrics.get("models_excluded", []),
+            "methodology": {
+                "temporal_split": True,
+                "walk_forward_cv": True,
+                "significance_gated": True,
+                "split_date": metrics.get("temporal_split_date"),
+            },
+            "baseline_brier": metrics.get("baseline_brier"),
+            "naive_baseline_brier": metrics.get("naive_baseline_brier"),
+            "ensemble_brier": metrics.get("post_calibrated_brier") or metrics.get("ensemble_brier"),
+            "ensemble_auc": metrics.get("ensemble_auc"),
+            "ablation": metrics.get("ablation"),
+            "profit_simulation": metrics.get("profit_simulation"),
+            "training_samples": metrics.get("n_train"),
+            "test_samples": metrics.get("n_test"),
+            "features_used": len(metrics.get("feature_names", [])),
+            "features_dropped": len(metrics.get("features_dropped", [])),
+        }
+    except Exception as e:
+        return {
+            "trained": False,
+            "error": str(e),
+            "hint": "Run: python scripts/train_ensemble.py",
+        }
+
+
 @router.get("/predictions/{market_id}")
 async def get_prediction(
     market_id: int,
@@ -266,45 +320,6 @@ async def top_edges(
     # Sort by net EV descending
     results.sort(key=lambda x: x["net_ev_pct"], reverse=True)
     return {"edges": results[:limit], "total_scanned": len(markets)}
-
-
-@router.get("/predictions/accuracy")
-async def get_model_accuracy():
-    """Get model performance metrics from training."""
-    try:
-        ensemble = get_ensemble_model()
-        metrics = ensemble.metrics
-        weights = ensemble.weights
-
-        return {
-            "trained": bool(metrics),
-            "metrics": metrics,
-            "weights": weights,
-            "models_included": metrics.get("models_included", []),
-            "models_excluded": metrics.get("models_excluded", []),
-            "methodology": {
-                "temporal_split": True,
-                "walk_forward_cv": True,
-                "significance_gated": True,
-                "split_date": metrics.get("temporal_split_date"),
-            },
-            "baseline_brier": metrics.get("baseline_brier"),
-            "naive_baseline_brier": metrics.get("naive_baseline_brier"),
-            "ensemble_brier": metrics.get("post_calibrated_brier") or metrics.get("ensemble_brier"),
-            "ensemble_auc": metrics.get("ensemble_auc"),
-            "ablation": metrics.get("ablation"),
-            "profit_simulation": metrics.get("profit_simulation"),
-            "training_samples": metrics.get("n_train"),
-            "test_samples": metrics.get("n_test"),
-            "features_used": len(metrics.get("feature_names", [])),
-            "features_dropped": len(metrics.get("features_dropped", [])),
-        }
-    except Exception as e:
-        return {
-            "trained": False,
-            "error": str(e),
-            "hint": "Run: python scripts/train_ensemble.py",
-        }
 
 
 @router.get("/calibration/curve")
