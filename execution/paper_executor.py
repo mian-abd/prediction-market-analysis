@@ -78,18 +78,41 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
     min_idx = tier_hierarchy.index(config.min_quality_tier) if config.min_quality_tier in tier_hierarchy else 0
     accepted_tiers = tier_hierarchy[min_idx:]
 
+    from sqlalchemy import func as sql_func, case
+    from db.models import Market as MarketModel
+
+    # Bias toward markets ending soon (for demo):
+    # Calculate days until close, boost EV score for near-term markets
+    now = datetime.utcnow()
+
     result = await session.execute(
-        select(EnsembleEdgeSignal)
+        select(EnsembleEdgeSignal, MarketModel)
+        .join(MarketModel, EnsembleEdgeSignal.market_id == MarketModel.id)
         .where(
             EnsembleEdgeSignal.expired_at == None,  # noqa
             EnsembleEdgeSignal.quality_tier.in_(accepted_tiers),
             EnsembleEdgeSignal.confidence >= config.min_confidence,
             EnsembleEdgeSignal.net_ev >= config.min_net_ev,
         )
-        .order_by(EnsembleEdgeSignal.net_ev.desc())
-        .limit(10)
+        .limit(50)  # Get more candidates for sorting
     )
-    signals = result.scalars().all()
+    signal_market_pairs = result.all()
+
+    # Sort by urgency: prioritize markets ending in next 7 days
+    def urgency_score(signal, market):
+        base_ev = signal.net_ev
+        if market.end_date:
+            days_until = (market.end_date - now).days
+            if days_until < 7:
+                # Boost EV by 2x for markets ending within a week
+                return base_ev * 2.0
+            elif days_until < 30:
+                # Boost EV by 1.5x for markets ending within a month
+                return base_ev * 1.5
+        return base_ev
+
+    sorted_pairs = sorted(signal_market_pairs, key=lambda p: urgency_score(p[0], p[1]), reverse=True)
+    signals = [pair[0] for pair in sorted_pairs[:10]]  # Take top 10
 
     if not signals:
         return []

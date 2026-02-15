@@ -45,7 +45,7 @@ export default function PerformanceAttribution({ portfolioType = 'all' }: Perfor
 
     try {
       // Fetch portfolio summary with strategy breakdown
-      const ptParam = portfolioType !== 'all' ? `?portfolio_type=${portfolioType}` : ''
+      const ptParam = (portfolioType && portfolioType !== 'all') ? `?portfolio_type=${portfolioType}` : ''
       const response = await apiClient.get(`/portfolio/summary${ptParam}`)
       const summary = response.data
 

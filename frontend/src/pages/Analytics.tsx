@@ -45,7 +45,7 @@ export default function Analytics() {
   const [lookbackDays, setLookbackDays] = useState(7)
 
   // Pre-fetch data for graph mode (CorrelationMatrix fetches its own)
-  const { data: graphData, isLoading: graphLoading } = useQuery<CorrelationData>({
+  const { data: graphData, isLoading: graphLoading, isFetching: graphFetching } = useQuery<CorrelationData>({
     queryKey: ['correlations-graph', category, minCorrelation, lookbackDays],
     queryFn: async () => {
       const params = new URLSearchParams({
@@ -57,7 +57,7 @@ export default function Analytics() {
       return response.data
     },
     enabled: viewMode === 'graph',
-    staleTime: 120_000,
+    staleTime: 0, // Don't cache - always refetch when params change
     retry: 1,
   })
 
@@ -187,7 +187,7 @@ export default function Analytics() {
           />
         </div>
       ) : (
-        <div className="card overflow-hidden" style={{ minHeight: '500px' }}>
+        <div className="card overflow-hidden relative" style={{ minHeight: '500px' }}>
           {graphLoading ? (
             <div className="flex items-center justify-center h-[500px]">
               <div className="text-center space-y-3">
@@ -197,7 +197,17 @@ export default function Analytics() {
               </div>
             </div>
           ) : graphData && graphData.markets.length >= 2 ? (
-            <CorrelationGraph data={graphData} />
+            <>
+              {graphFetching && (
+                <div className="absolute inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-10">
+                  <div className="flex items-center gap-2 px-4 py-2 rounded-lg" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
+                    <div className="animate-spin h-4 w-4 border-2 border-accent border-t-transparent rounded-full" style={{ borderTopColor: 'transparent', borderRightColor: '#C4A24D', borderBottomColor: '#C4A24D', borderLeftColor: '#C4A24D' }} />
+                    <span className="text-[12px] font-medium" style={{ color: 'var(--text)' }}>Recomputing...</span>
+                  </div>
+                </div>
+              )}
+              <CorrelationGraph data={graphData} />
+            </>
           ) : (
             <div className="flex flex-col items-center justify-center h-[500px] gap-3">
               <Network className="h-6 w-6" style={{ color: 'var(--text-3)' }} />

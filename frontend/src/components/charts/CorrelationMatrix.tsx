@@ -47,7 +47,7 @@ export default function CorrelationMatrix({
   minCorrelation = 0.3,
   lookbackDays = 7,
 }: CorrelationMatrixProps) {
-  const { data, isLoading, error, refetch } = useQuery<CorrelationData>({
+  const { data, isLoading, error, refetch, isFetching } = useQuery<CorrelationData>({
     queryKey: ['correlations', category, minCorrelation, lookbackDays],
     queryFn: async () => {
       const params = new URLSearchParams({
@@ -60,7 +60,7 @@ export default function CorrelationMatrix({
       const response = await apiClient.get(`/analytics/correlations?${params}`)
       return response.data
     },
-    staleTime: 120_000, // Cache for 2 minutes (expensive query)
+    staleTime: 0, // Don't cache - always refetch when params change
     retry: 1,
   })
 
@@ -121,7 +121,17 @@ export default function CorrelationMatrix({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {/* Refetching overlay */}
+      {isFetching && !isLoading && (
+        <div className="absolute inset-0 bg-black/30 backdrop-blur-sm rounded-xl flex items-center justify-center z-10">
+          <div className="flex items-center gap-2 px-4 py-2 rounded-lg" style={{ background: 'var(--card)', border: '1px solid var(--border)' }}>
+            <div className="animate-spin h-4 w-4 border-2 border-accent border-t-transparent rounded-full" />
+            <span className="text-[12px] font-medium" style={{ color: 'var(--text)' }}>Recomputing...</span>
+          </div>
+        </div>
+      )}
+
       {/* Stats header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">

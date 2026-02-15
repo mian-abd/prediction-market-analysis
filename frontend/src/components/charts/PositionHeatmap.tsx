@@ -52,7 +52,7 @@ export default function PositionHeatmap({ portfolioType = 'all' }: PositionHeatm
     setError(null)
 
     try {
-      const ptParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
+      const ptParam = (portfolioType && portfolioType !== 'all') ? `&portfolio_type=${portfolioType}` : ''
       const response = await apiClient.get(`/portfolio/positions?status=open&limit=100${ptParam}`)
       const positions = response.data.positions || []
 
@@ -75,7 +75,7 @@ export default function PositionHeatmap({ portfolioType = 'all' }: PositionHeatm
         const daysHeld = Math.floor((now.getTime() - entryDate.getTime()) / (1000 * 60 * 60 * 24))
 
         return {
-          name: pos.question.slice(0, 40) + (pos.question.length > 40 ? '...' : ''),
+          name: pos.question.slice(0, 30) + (pos.question.length > 30 ? '...' : ''),
           size: notionalValue,
           pnl_pct: unrealizedPnlPct,
           position: {
@@ -148,8 +148,8 @@ export default function PositionHeatmap({ portfolioType = 'all' }: PositionHeatm
     const { x, y, width, height, name, pnl_pct } = props
     const safePnl = pnl_pct ?? 0
 
-    if (!width || !height || width < 40 || height < 40) {
-      // Too small to render text or missing dimensions
+    if (!width || !height || width < 60 || height < 50) {
+      // Too small to render text or missing dimensions - just show color
       return (
         <g>
           <rect
@@ -167,6 +167,10 @@ export default function PositionHeatmap({ portfolioType = 'all' }: PositionHeatm
       )
     }
 
+    // Calculate max chars that fit based on width (rough estimate: 7px per char at 11px font)
+    const maxChars = Math.floor(width / 7)
+    const displayName = name && name.length > maxChars ? name.slice(0, maxChars - 3) + '...' : (name ?? '')
+
     return (
       <g>
         <rect
@@ -180,22 +184,28 @@ export default function PositionHeatmap({ portfolioType = 'all' }: PositionHeatm
             strokeWidth: 2,
           }}
         />
+        {/* Market name - clip to cell bounds */}
+        <clipPath id={`clip-${x}-${y}`}>
+          <rect x={x + 4} y={y + 4} width={width - 8} height={height / 2 - 4} />
+        </clipPath>
         <text
           x={x + width / 2}
           y={y + height / 2 - 8}
           textAnchor="middle"
           fill="#FFF"
-          fontSize="11"
+          fontSize="10"
           fontWeight="500"
+          clipPath={`url(#clip-${x}-${y})`}
         >
-          {name ?? ''}
+          {displayName}
         </text>
+        {/* P&L percentage */}
         <text
           x={x + width / 2}
-          y={y + height / 2 + 8}
+          y={y + height / 2 + 12}
           textAnchor="middle"
           fill="#FFF"
-          fontSize="14"
+          fontSize="13"
           fontWeight="bold"
         >
           {safePnl > 0 ? '+' : ''}

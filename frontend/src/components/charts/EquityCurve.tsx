@@ -68,7 +68,8 @@ export default function EquityCurve({
 
   const fetchEquityCurve = async () => {
     try {
-      const ptParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
+      // Don't send portfolio_type param when 'all' is selected (API doesn't accept 'all')
+      const ptParam = (portfolioType && portfolioType !== 'all') ? `&portfolio_type=${portfolioType}` : ''
       const response = await apiClient.get(`/portfolio/equity-curve?time_range=${timeRange}${ptParam}`)
       setData(response.data)
       setError(null)

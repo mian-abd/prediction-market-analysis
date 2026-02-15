@@ -50,7 +50,7 @@ export default function WinRateChart({ minTrades = 1, portfolioType = 'all' }: W
 
   const fetchWinRate = async () => {
     try {
-      const ptParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
+      const ptParam = (portfolioType && portfolioType !== 'all') ? `&portfolio_type=${portfolioType}` : ''
       const response = await apiClient.get(`/portfolio/win-rate?min_trades=${minTrades}${ptParam}`)
       setData(response.data)
       setError(null)

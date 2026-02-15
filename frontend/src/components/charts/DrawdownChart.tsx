@@ -47,8 +47,8 @@ export default function DrawdownChart({ timeRange = '30d', portfolioType = 'all'
     setError(null)
 
     try {
-      // Fetch equity curve data
-      const ptParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
+      // Fetch equity curve data (don't send portfolio_type='all', API doesn't accept it)
+      const ptParam = (portfolioType && portfolioType !== 'all') ? `&portfolio_type=${portfolioType}` : ''
       const response = await apiClient.get(`/portfolio/equity-curve?time_range=${timeRange}${ptParam}`)
       const equityCurveData = response.data
 

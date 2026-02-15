@@ -71,6 +71,9 @@ export default function Portfolio() {
   const [formEntryPrice, setFormEntryPrice] = useState('')
   const [formQuantity, setFormQuantity] = useState('')
   const [formStrategy, setFormStrategy] = useState('manual')
+  const [marketSearch, setMarketSearch] = useState('')
+  const [showMarketDropdown, setShowMarketDropdown] = useState(false)
+  const [selectedMarket, setSelectedMarket] = useState<{ id: number; question: string; platform: string; price_yes: number } | null>(null)
 
   const queryClient = useQueryClient()
 
@@ -98,6 +101,8 @@ export default function Portfolio() {
       setFormMarketId('')
       setFormEntryPrice('')
       setFormQuantity('')
+      setSelectedMarket(null)
+      setMarketSearch('')
     },
   })
 
@@ -116,8 +121,20 @@ export default function Portfolio() {
     },
   })
 
-  const portfolioParam = portfolioType !== 'all' ? `&portfolio_type=${portfolioType}` : ''
-  const summaryParam = portfolioType !== 'all' ? `?portfolio_type=${portfolioType}` : ''
+  const portfolioParam = (portfolioType && portfolioType !== 'all') ? `&portfolio_type=${portfolioType}` : ''
+  const summaryParam = (portfolioType && portfolioType !== 'all') ? `?portfolio_type=${portfolioType}` : ''
+
+  // Fetch markets for position opening selector
+  const { data: marketsData } = useQuery<{ markets: Array<{ id: number; question: string; platform: string; price_yes: number }> }>({
+    queryKey: ['markets-search', marketSearch],
+    queryFn: async () => {
+      const searchParam = marketSearch ? `&search=${encodeURIComponent(marketSearch)}` : ''
+      const response = await apiClient.get(`/markets?limit=20${searchParam}`)
+      return response.data
+    },
+    enabled: showMarketDropdown && marketSearch.length >= 2,
+    staleTime: 30_000,
+  })
 
   // Fetch portfolio summary
   const { data: summary, isLoading: summaryLoading, error: summaryError, refetch: refetchSummary } = useQuery<PortfolioSummary>({
@@ -186,19 +203,70 @@ export default function Portfolio() {
           <h3 className="text-[14px] font-semibold mb-4" style={{ color: 'var(--text)' }}>
             Open Paper Position
           </h3>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+            <div className="relative md:col-span-2">
               <label className="text-[10px] uppercase block mb-1" style={{ color: 'var(--text-3)' }}>
-                Market ID
+                Select Market
               </label>
               <input
-                type="number"
-                value={formMarketId}
-                onChange={(e) => setFormMarketId(e.target.value)}
-                placeholder="e.g. 42"
+                type="text"
+                value={selectedMarket ? selectedMarket.question : marketSearch}
+                onChange={(e) => {
+                  setMarketSearch(e.target.value)
+                  setSelectedMarket(null)
+                  setFormMarketId('')
+                  setShowMarketDropdown(true)
+                }}
+                onFocus={() => setShowMarketDropdown(true)}
+                placeholder="Search markets..."
                 className="input w-full px-3 py-2 rounded-lg text-[12px]"
               />
+              {showMarketDropdown && marketSearch.length >= 2 && marketsData && marketsData.markets.length > 0 && (
+                <div
+                  className="absolute z-10 w-full mt-1 rounded-lg overflow-hidden shadow-lg"
+                  style={{ background: 'var(--card)', border: '1px solid var(--border)', maxHeight: '300px', overflowY: 'auto' }}
+                >
+                  {marketsData.markets.map((market) => (
+                    <button
+                      key={market.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedMarket(market)
+                        setFormMarketId(market.id.toString())
+                        setFormEntryPrice(market.price_yes.toFixed(3))
+                        setShowMarketDropdown(false)
+                        setMarketSearch('')
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-white/5 transition-colors border-b border-white/5 last:border-0"
+                    >
+                      <p className="text-[12px] font-medium" style={{ color: 'var(--text)' }}>
+                        {market.question}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>
+                          {market.platform}
+                        </span>
+                        <span className="text-[10px]" style={{ color: 'var(--accent)' }}>
+                          Current: {(market.price_yes * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {selectedMarket && (
+                <div className="mt-2 p-2 rounded-lg" style={{ background: 'rgba(196, 162, 77, 0.1)', border: '1px solid var(--accent)' }}>
+                  <p className="text-[11px] font-medium" style={{ color: 'var(--text)' }}>
+                    {selectedMarket.question}
+                  </p>
+                  <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-3)' }}>
+                    {selectedMarket.platform} • ID: {selectedMarket.id} • Current: {(selectedMarket.price_yes * 100).toFixed(1)}%
+                  </p>
+                </div>
+              )}
             </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div>
               <label className="text-[10px] uppercase block mb-1" style={{ color: 'var(--text-3)' }}>
                 Side
