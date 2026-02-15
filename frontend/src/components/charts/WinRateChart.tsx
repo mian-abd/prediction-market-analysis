@@ -124,7 +124,7 @@ export default function WinRateChart({ minTrades = 1, portfolioType = 'all' }: W
               className="text-[32px] font-mono font-bold"
               style={{ color: getWinRateColor(data.overall_win_rate) }}
             >
-              {data.overall_win_rate.toFixed(1)}%
+              {(data.overall_win_rate ?? 0).toFixed(1)}%
             </p>
           </div>
           <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
@@ -146,7 +146,7 @@ export default function WinRateChart({ minTrades = 1, portfolioType = 'all' }: W
               innerRadius={60}
               outerRadius={90}
               paddingAngle={2}
-              label={(props: any) => `${props.name}: ${props.win_rate.toFixed(0)}%`}
+              label={(props: any) => `${props.name}: ${(props.win_rate ?? 0).toFixed(0)}%`}
               labelLine={{ stroke: 'rgba(255,255,255,0.3)', strokeWidth: 1 }}
             >
               {pieData.map((entry, index) => (
@@ -173,7 +173,7 @@ export default function WinRateChart({ minTrades = 1, portfolioType = 'all' }: W
                   <div key={name} className="space-y-1">
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Win Rate:</span>
-                      <span className="font-semibold">{payload.win_rate.toFixed(1)}%</span>
+                      <span className="font-semibold">{(payload.win_rate ?? 0).toFixed(1)}%</span>
                     </div>
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Trades:</span>
@@ -187,11 +187,11 @@ export default function WinRateChart({ minTrades = 1, portfolioType = 'all' }: W
                     </div>
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Avg Win:</span>
-                      <span style={{ color: 'var(--green)' }}>${payload.avg_win.toFixed(2)}</span>
+                      <span style={{ color: 'var(--green)' }}>${(payload.avg_win ?? 0).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Avg Loss:</span>
-                      <span style={{ color: 'var(--red)' }}>${payload.avg_loss.toFixed(2)}</span>
+                      <span style={{ color: 'var(--red)' }}>${(payload.avg_loss ?? 0).toFixed(2)}</span>
                     </div>
                   </div>,
                 ]
@@ -230,7 +230,7 @@ export default function WinRateChart({ minTrades = 1, portfolioType = 'all' }: W
                 className="text-[13px] font-mono font-semibold"
                 style={{ color: getWinRateColor(strategy.win_rate) }}
               >
-                {strategy.win_rate.toFixed(1)}%
+                {(strategy.win_rate ?? 0).toFixed(1)}%
               </span>
             </div>
           </div>

@@ -199,7 +199,7 @@ export default function PerformanceAttribution({ portfolioType = 'all' }: Perfor
               Starting
             </p>
             <p className="text-[16px] font-mono font-semibold" style={{ color: 'var(--text)' }}>
-              ${data[0]?.value.toFixed(2)}
+              ${(data[0]?.value ?? 0).toFixed(2)}
             </p>
           </div>
           <div>
@@ -207,7 +207,7 @@ export default function PerformanceAttribution({ portfolioType = 'all' }: Perfor
               Ending
             </p>
             <p className="text-[16px] font-mono font-semibold" style={{ color: 'var(--accent)' }}>
-              ${data[data.length - 1]?.cumulative.toFixed(2)}
+              ${(data[data.length - 1]?.cumulative ?? 0).toFixed(2)}
             </p>
           </div>
           <div>
@@ -223,7 +223,7 @@ export default function PerformanceAttribution({ portfolioType = 'all' }: Perfor
                     : 'var(--red)',
               }}
             >
-              ${(data[data.length - 1]?.cumulative - data[0]?.value).toFixed(2)}
+              ${((data[data.length - 1]?.cumulative ?? 0) - (data[0]?.value ?? 0)).toFixed(2)}
             </p>
           </div>
         </div>
@@ -262,7 +262,7 @@ export default function PerformanceAttribution({ portfolioType = 'all' }: Perfor
             <YAxis
               stroke="rgba(255,255,255,0.06)"
               tick={{ fill: '#48484A', fontSize: 11 }}
-              tickFormatter={(value) => `$${value.toFixed(0)}`}
+              tickFormatter={(value) => `$${Number(value || 0).toFixed(0)}`}
             />
 
             <Tooltip
@@ -281,12 +281,12 @@ export default function PerformanceAttribution({ portfolioType = 'all' }: Perfor
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Change:</span>
                       <span className="font-mono font-semibold">
-                        ${payload.value >= 0 ? '+' : ''}${payload.value.toFixed(2)}
+                        ${(payload.value ?? 0) >= 0 ? '+' : ''}${(payload.value ?? 0).toFixed(2)}
                       </span>
                     </div>
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Cumulative:</span>
-                      <span className="font-mono">${payload.cumulative.toFixed(2)}</span>
+                      <span className="font-mono">${(payload.cumulative ?? 0).toFixed(2)}</span>
                     </div>
                   </div>,
                 ]

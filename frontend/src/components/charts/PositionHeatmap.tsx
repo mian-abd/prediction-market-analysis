@@ -279,24 +279,24 @@ export default function PositionHeatmap({ portfolioType = 'all' }: PositionHeatm
                     </div>
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Entry:</span>
-                      <span className="font-mono">{pos.entry_price.toFixed(3)}</span>
+                      <span className="font-mono">{(pos.entry_price ?? 0).toFixed(3)}</span>
                     </div>
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Current:</span>
-                      <span className="font-mono">{(pos.current_price || 0).toFixed(3)}</span>
+                      <span className="font-mono">{(pos.current_price ?? 0).toFixed(3)}</span>
                     </div>
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Notional:</span>
-                      <span className="font-mono">${pos.notional_value.toFixed(2)}</span>
+                      <span className="font-mono">${(pos.notional_value ?? 0).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between gap-4">
                       <span style={{ color: 'var(--text-3)' }}>Unrealized P&L:</span>
                       <span
                         className="font-mono font-semibold"
-                        style={{ color: pos.unrealized_pnl >= 0 ? 'var(--green)' : 'var(--red)' }}
+                        style={{ color: (pos.unrealized_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}
                       >
-                        ${(pos.unrealized_pnl || 0).toFixed(2)} ({pos.unrealized_pnl_pct >= 0 ? '+' : ''}
-                        {pos.unrealized_pnl_pct.toFixed(1)}%)
+                        ${(pos.unrealized_pnl ?? 0).toFixed(2)} ({(pos.unrealized_pnl_pct ?? 0) >= 0 ? '+' : ''}
+                        {(pos.unrealized_pnl_pct ?? 0).toFixed(1)}%)
                       </span>
                     </div>
                     <div className="flex justify-between gap-4">

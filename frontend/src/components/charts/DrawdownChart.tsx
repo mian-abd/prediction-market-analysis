@@ -176,7 +176,7 @@ export default function DrawdownChart({ timeRange = '30d', portfolioType = 'all'
               Current Drawdown
             </p>
             <p className="text-[18px] font-mono font-semibold" style={{ color: 'var(--text)' }}>
-              {data[data.length - 1]?.drawdown_pct.toFixed(2)}%
+              {(data[data.length - 1]?.drawdown_pct ?? 0).toFixed(2)}%
             </p>
           </div>
         </div>
@@ -209,7 +209,7 @@ export default function DrawdownChart({ timeRange = '30d', portfolioType = 'all'
             <YAxis
               stroke="rgba(255,255,255,0.06)"
               tick={{ fill: '#48484A', fontSize: 11 }}
-              tickFormatter={(value) => `${value.toFixed(0)}%`}
+              tickFormatter={(value) => `${Number(value || 0).toFixed(0)}%`}
               domain={[maxDrawdown * 1.1, 0]} // Always show 0 at top
             />
 
