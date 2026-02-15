@@ -457,59 +457,8 @@ async def get_trader_activity(
             })
         return feed
 
-    # Generate estimated activity from trader profile
-    from datetime import timedelta
-    import random
-
-    trader_result = await session.execute(
-        select(TraderProfile).where(TraderProfile.user_id == trader_id)
-    )
-    trader = trader_result.scalar_one_or_none()
-
-    if not trader or trader.total_trades == 0:
-        return []
-
-    # Get some random active markets to reference
-    markets_result = await session.execute(
-        select(Market)
-        .where(Market.is_active == True)
-        .order_by(func.random())
-        .limit(min(limit, 20))
-    )
-    markets = list(markets_result.scalars().all())
-
-    if not markets:
-        return []
-
-    # Generate recent activity (last N hours)
-    feed = []
-    now = datetime.utcnow()
-    win_rate = trader.win_rate / 100 if trader.win_rate else 0.5
-
-    for i in range(min(limit, len(markets))):
-        market = markets[i]
-        hours_ago = i * (24 // limit) if limit > 0 else 0
-        timestamp = now - timedelta(hours=hours_ago)
-
-        # Randomly choose activity type
-        activity_types = [
-            ("position_opened", f"Opened {random.choice(['YES', 'NO'])} position"),
-            ("position_closed", f"Closed position • {'+' if random.random() < win_rate else '-'}${random.randint(10, 500)} P&L"),
-        ]
-        activity_type, description = random.choice(activity_types)
-
-        feed.append({
-            "id": f"est_{trader_id}_{i}",
-            "type": activity_type,
-            "data": {
-                "market_id": market.id,
-                "description": description,
-            },
-            "market_name": market.question,
-            "created_at": timestamp.isoformat(),
-        })
-
-    return feed
+    # No real activity — return empty instead of fabricating data
+    return []
 
 
 @router.get("/traders/{trader_id}/positions")
@@ -558,78 +507,8 @@ async def get_trader_positions(
             })
         return {"positions": items, "count": len(items)}
 
-    # Generate estimated positions from trader profile
-    from datetime import timedelta
-    import random
-
-    trader_result = await session.execute(
-        select(TraderProfile).where(TraderProfile.user_id == trader_id)
-    )
-    trader = trader_result.scalar_one_or_none()
-
-    if not trader or trader.total_trades == 0:
-        return {"positions": [], "count": 0}
-
-    # Get random active markets
-    markets_result = await session.execute(
-        select(Market)
-        .where(Market.is_active == True)
-        .order_by(func.random())
-        .limit(min(limit, 20))
-    )
-    markets = list(markets_result.scalars().all())
-
-    if not markets:
-        return {"positions": [], "count": 0}
-
-    items = []
-    now = datetime.utcnow()
-    win_rate = trader.win_rate / 100 if trader.win_rate else 0.5
-    avg_duration_hrs = trader.avg_trade_duration_hrs if trader.avg_trade_duration_hrs else 24
-
-    for i in range(min(limit, len(markets))):
-        market = markets[i]
-        days_ago = i * (30 // limit) if limit > 0 else i
-        entry_time = now - timedelta(days=days_ago, hours=random.randint(0, 23))
-
-        # Determine if closed or open based on status filter
-        is_closed = (status == "closed" or
-                     (status == "all" and random.random() < 0.7))  # 70% closed in "all" view
-
-        side = random.choice(["yes", "no"])
-        entry_price = random.uniform(0.3, 0.7)
-        quantity = random.randint(10, 200)
-
-        if is_closed:
-            exit_time = entry_time + timedelta(hours=avg_duration_hrs * random.uniform(0.5, 1.5))
-            is_win = random.random() < win_rate
-            exit_price = entry_price + random.uniform(0.05, 0.2) if is_win else entry_price - random.uniform(0.05, 0.15)
-            exit_price = max(0.01, min(0.99, exit_price))
-
-            if side == "yes":
-                realized_pnl = (exit_price - entry_price) * quantity
-            else:
-                realized_pnl = (entry_price - exit_price) * quantity
-        else:
-            exit_time = None
-            exit_price = None
-            realized_pnl = None
-
-        items.append({
-            "id": f"est_{trader_id}_{i}",
-            "market_id": market.id,
-            "market_name": market.question,
-            "side": side,
-            "entry_price": round(entry_price, 3),
-            "quantity": quantity,
-            "entry_time": entry_time.isoformat(),
-            "exit_price": round(exit_price, 3) if exit_price else None,
-            "exit_time": exit_time.isoformat() if exit_time else None,
-            "realized_pnl": round(realized_pnl, 2) if realized_pnl is not None else None,
-            "strategy": "manual",
-        })
-
-    return {"positions": items, "count": len(items)}
+    # No real positions — return empty instead of fabricating data
+    return {"positions": [], "count": 0}
 
 
 @router.get("/traders/{trader_id}/equity-curve")
@@ -666,60 +545,8 @@ async def get_trader_equity_curve(
             })
         return {"data": data, "total_pnl": cumulative}
 
-    # Generate estimated equity curve from trader profile stats
-    from datetime import timedelta
-    import random
-
-    trader_result = await session.execute(
-        select(TraderProfile).where(TraderProfile.user_id == trader_id)
-    )
-    trader = trader_result.scalar_one_or_none()
-
-    if not trader or trader.total_trades == 0:
-        return {"data": [], "total_pnl": 0}
-
-    # Generate realistic-looking equity curve
-    total_pnl = trader.total_pnl
-    total_trades = min(trader.total_trades, 365)  # Limit to 1 year of daily points
-    win_rate = trader.win_rate / 100 if trader.win_rate else 0.5
-
-    # Generate timestamps (last N days)
-    end_time = datetime.utcnow()
-    start_time = end_time - timedelta(days=total_trades)
-
-    data = []
-    cumulative = 0.0
-    pnl_per_trade = total_pnl / total_trades if total_trades > 0 else 0
-
-    for i in range(total_trades):
-        # Simulate win/loss based on win rate
-        is_win = random.random() < win_rate
-        if is_win:
-            # Winning trades are positive, avg = pnl_per_trade adjusted for win rate
-            trade_pnl = abs(pnl_per_trade) / win_rate if win_rate > 0 else pnl_per_trade
-        else:
-            # Losing trades are negative
-            loss_rate = 1 - win_rate if win_rate < 1 else 0.5
-            trade_pnl = -abs(pnl_per_trade) * (win_rate / loss_rate) if loss_rate > 0 else -abs(pnl_per_trade)
-
-        # Add some randomness (±30%)
-        trade_pnl *= random.uniform(0.7, 1.3)
-        cumulative += trade_pnl
-
-        timestamp = start_time + timedelta(days=i)
-        data.append({
-            "timestamp": timestamp.isoformat(),
-            "pnl": trade_pnl,
-            "cumulative_pnl": cumulative,
-        })
-
-    # Ensure final cumulative matches total_pnl
-    if data:
-        adjustment = total_pnl - cumulative
-        data[-1]["cumulative_pnl"] = total_pnl
-        data[-1]["pnl"] += adjustment
-
-    return {"data": data, "total_pnl": total_pnl}
+    # No real positions — return empty instead of fabricating data
+    return {"data": [], "total_pnl": 0}
 
 
 @router.get("/traders/{trader_id}/drawdown")
@@ -795,88 +622,5 @@ async def get_trader_drawdown(
             "max_drawdown": max_dd,
         }
 
-    # Generate estimated data from trader profile
-    from datetime import timedelta
-    import random
-
-    trader_result = await session.execute(
-        select(TraderProfile).where(TraderProfile.user_id == trader_id)
-    )
-    trader = trader_result.scalar_one_or_none()
-
-    if not trader or trader.total_trades == 0:
-        return {"drawdown": [], "pnl_distribution": [], "max_drawdown": 0}
-
-    # Generate equity curve first (same logic as equity-curve endpoint)
-    total_pnl = trader.total_pnl
-    max_drawdown_val = trader.max_drawdown if trader.max_drawdown else -abs(total_pnl * 0.15)
-    total_trades = min(trader.total_trades, 365)
-    win_rate = trader.win_rate / 100 if trader.win_rate else 0.5
-
-    end_time = datetime.utcnow()
-    start_time = end_time - timedelta(days=total_trades)
-
-    cumulative = 0.0
-    peak = 0.0
-    drawdown_data = []
-    pnl_values = []
-    pnl_per_trade = total_pnl / total_trades if total_trades > 0 else 0
-
-    for i in range(total_trades):
-        is_win = random.random() < win_rate
-        if is_win:
-            trade_pnl = abs(pnl_per_trade) / win_rate if win_rate > 0 else pnl_per_trade
-        else:
-            loss_rate = 1 - win_rate if win_rate < 1 else 0.5
-            trade_pnl = -abs(pnl_per_trade) * (win_rate / loss_rate) if loss_rate > 0 else -abs(pnl_per_trade)
-
-        trade_pnl *= random.uniform(0.7, 1.3)
-        pnl_values.append(trade_pnl)
-        cumulative += trade_pnl
-        peak = max(peak, cumulative)
-        dd = cumulative - peak
-
-        # Ensure max drawdown constraint
-        if dd < max_drawdown_val:
-            dd = max_drawdown_val
-            cumulative = peak + dd
-
-        timestamp = start_time + timedelta(days=i)
-        drawdown_data.append({
-            "timestamp": timestamp.isoformat(),
-            "drawdown": dd,
-            "cumulative_pnl": cumulative,
-            "peak": peak,
-        })
-
-    # P&L distribution
-    if pnl_values:
-        min_pnl = min(pnl_values)
-        max_pnl = max(pnl_values)
-        bucket_count = 20
-        range_size = (max_pnl - min_pnl) if max_pnl != min_pnl else 1
-        bucket_size = range_size / bucket_count
-
-        buckets = [0] * bucket_count
-        for v in pnl_values:
-            idx = min(int((v - min_pnl) / bucket_size), bucket_count - 1)
-            buckets[idx] += 1
-
-        pnl_distribution = [
-            {
-                "range_start": min_pnl + i * bucket_size,
-                "range_end": min_pnl + (i + 1) * bucket_size,
-                "count": buckets[i],
-            }
-            for i in range(bucket_count)
-        ]
-    else:
-        pnl_distribution = []
-
-    max_dd = min(d["drawdown"] for d in drawdown_data) if drawdown_data else max_drawdown_val
-
-    return {
-        "drawdown": drawdown_data,
-        "pnl_distribution": pnl_distribution,
-        "max_drawdown": max_dd,
-    }
+    # No real positions — return empty instead of fabricating data
+    return {"drawdown": [], "pnl_distribution": [], "max_drawdown": 0}

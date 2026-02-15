@@ -602,6 +602,18 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Paper executor error: {e}")
 
+            # Copy trading sync (same cadence as auto-trading)
+            try:
+                from data_pipeline.copy_engine import sync_copy_positions
+                async with async_session() as copy_session:
+                    result = await sync_copy_positions(copy_session)
+                    if result["opened"] or result["closed"]:
+                        logger.info(
+                            f"Copy sync: {result['opened']} opened, {result['closed']} closed"
+                        )
+            except Exception as e:
+                logger.error(f"Copy sync error: {e}")
+
         # ── Trader stats refresh every ~30 min ──
         if cycle % cycles_per_trader_refresh == 0:
             try:
