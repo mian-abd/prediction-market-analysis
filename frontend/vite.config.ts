@@ -6,7 +6,11 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      '/api': 'http://localhost:8000'
+      '/api': {
+        target: process.env.VITE_API_URL || 'https://prediction-market-analysis-production-e6fa.up.railway.app',
+        changeOrigin: true,
+        secure: true,
+      }
     }
   },
   build: {

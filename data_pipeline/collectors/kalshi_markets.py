@@ -1,6 +1,7 @@
 """Kalshi REST API client - markets, orderbooks, trades.
 Public endpoints don't require authentication."""
 
+import asyncio
 import httpx
 import logging
 from datetime import datetime
@@ -11,6 +12,9 @@ from data_pipeline.category_normalizer import normalize_category
 logger = logging.getLogger(__name__)
 
 BASE_URL = settings.kalshi_api_url
+
+# Rate limit: ~2 requests/sec to avoid 429s
+KALSHI_RATE_LIMIT_DELAY = 0.5
 
 
 async def fetch_markets(
@@ -59,6 +63,9 @@ async def fetch_all_active_markets(max_markets: int = 2000) -> list[dict]:
 
             if not cursor:
                 break
+
+            # Rate limit to avoid 429 Too Many Requests
+            await asyncio.sleep(KALSHI_RATE_LIMIT_DELAY)
 
     logger.info(f"Total Kalshi markets fetched: {len(all_markets)}")
     return all_markets

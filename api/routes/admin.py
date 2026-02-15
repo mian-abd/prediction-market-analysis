@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import update, text
+from sqlalchemy import update, text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_session
@@ -41,7 +41,6 @@ async def reset_auto_portfolio(session: AsyncSession = Depends(get_session)):
         for pos in positions:
             pos_id, market_id, side, entry_price, quantity, price_yes = pos
 
-            # Calculate realized P&L
             if side == 'yes':
                 realized_pnl = (price_yes - entry_price) * quantity
             else:
@@ -89,58 +88,95 @@ async def reset_auto_portfolio(session: AsyncSession = Depends(get_session)):
     except Exception as e:
         await session.rollback()
         logger.error(f"Portfolio reset failed: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}
 
 
-@router.post("/update-risk-params")
-async def update_risk_params(session: AsyncSession = Depends(get_session)):
-    """Update risk parameters for demo (wider stops, lower confidence).
+@router.post("/init-auto-trading")
+async def init_auto_trading(session: AsyncSession = Depends(get_session)):
+    """Initialize auto-trading configs if they don't exist.
 
-    Changes:
-    - Stop-loss: 15% → 25%
-    - Min confidence: 0.7 → 0.5
-    - Min quality tier: 'high' → 'medium'
+    Creates default ensemble and elo configs with demo-optimized parameters.
+    Safe to call multiple times (idempotent).
     """
     try:
+        created = []
+
+        # Check if ensemble config exists
         result = await session.execute(
-            update(AutoTradingConfig)
-            .where(AutoTradingConfig.strategy == 'ensemble')
-            .values(
-                stop_loss_pct=0.25,
-                min_confidence=0.5,
-                min_quality_tier='medium',
-                close_on_signal_expiry=True
-            )
+            select(AutoTradingConfig).where(AutoTradingConfig.strategy == "ensemble")
         )
+        ensemble_config = result.scalar_one_or_none()
+
+        if not ensemble_config:
+            ensemble_config = AutoTradingConfig(
+                strategy="ensemble",
+                is_enabled=True,
+                bankroll=1000.0,
+                min_confidence=0.5,
+                min_net_ev=0.05,
+                max_kelly_fraction=0.02,
+                stop_loss_pct=0.25,
+                min_quality_tier="medium",
+                close_on_signal_expiry=True,
+            )
+            session.add(ensemble_config)
+            created.append("ensemble")
+            logger.info("Created ensemble auto-trading config")
+        else:
+            # Update existing to demo-optimized values
+            ensemble_config.is_enabled = True
+            ensemble_config.min_confidence = 0.5
+            ensemble_config.stop_loss_pct = 0.25
+            ensemble_config.min_quality_tier = "medium"
+            created.append("ensemble (updated)")
+
+        # Check if elo config exists
+        result = await session.execute(
+            select(AutoTradingConfig).where(AutoTradingConfig.strategy == "elo")
+        )
+        elo_config = result.scalar_one_or_none()
+
+        if not elo_config:
+            elo_config = AutoTradingConfig(
+                strategy="elo",
+                is_enabled=False,
+                bankroll=500.0,
+                min_confidence=0.5,
+                min_net_ev=0.03,
+                max_kelly_fraction=0.02,
+                stop_loss_pct=0.15,
+                min_quality_tier="medium",
+                close_on_signal_expiry=True,
+            )
+            session.add(elo_config)
+            created.append("elo")
+            logger.info("Created elo auto-trading config")
 
         await session.commit()
 
-        # Verify
-        verify_result = await session.execute(
-            text("SELECT stop_loss_pct, min_confidence, min_quality_tier FROM auto_trading_configs WHERE strategy = 'ensemble'")
-        )
-        config = verify_result.fetchone()
-
-        logger.info(f"Risk params updated: stop_loss={config[0]}, min_confidence={config[1]}, quality_tier={config[2]}")
+        # Return current state
+        all_configs = await session.execute(select(AutoTradingConfig))
+        configs = all_configs.scalars().all()
 
         return {
             "success": True,
-            "updated_rows": result.rowcount,
-            "new_config": {
-                "stop_loss_pct": config[0],
-                "min_confidence": config[1],
-                "min_quality_tier": config[2]
-            },
-            "message": "Risk parameters updated successfully"
+            "created_or_updated": created,
+            "configs": [
+                {
+                    "strategy": c.strategy,
+                    "is_enabled": c.is_enabled,
+                    "bankroll": c.bankroll,
+                    "min_confidence": c.min_confidence,
+                    "min_net_ev": c.min_net_ev,
+                    "max_kelly_fraction": c.max_kelly_fraction,
+                    "stop_loss_pct": c.stop_loss_pct,
+                    "min_quality_tier": c.min_quality_tier,
+                }
+                for c in configs
+            ]
         }
 
     except Exception as e:
         await session.rollback()
-        logger.error(f"Risk params update failed: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        logger.error(f"Init auto-trading failed: {e}")
+        return {"success": False, "error": str(e)}
