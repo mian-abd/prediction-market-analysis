@@ -6,7 +6,6 @@ import {
   Clock,
   AlertTriangle,
   CheckCircle2,
-  AlertCircle,
   Activity,
 } from 'lucide-react'
 import apiClient from '../api/client'
@@ -22,17 +21,21 @@ interface SystemStats {
   last_data_fetch: string | null
 }
 
-interface ModelCard {
-  trained_at: string
-  n_usable: number
-  n_total_resolved: number
-  feature_names: string[]
-  features_dropped: string[]
-  ensemble_brier: number
-  baseline_brier: number
-  ensemble_auc: number
-  leakage_warnings: string[]
-  price_distribution: { pct_near_0: number; pct_near_1: number }
+interface ModelAccuracy {
+  trained: boolean
+  metrics?: {
+    trained_at: string
+    n_usable: number
+    n_total_resolved: number
+    feature_names: string[]
+    features_dropped: string[]
+    ensemble_brier: number
+    baseline_brier: number
+    ensemble_auc: number
+    ensemble_logloss: number
+    models_included: string[]
+  }
+  error?: string
 }
 
 function ProgressBar({ value, max, color }: { value: number; max: number; color: string }) {
@@ -60,13 +63,11 @@ export default function SystemHealth() {
     refetchInterval: 30_000,
   })
 
-  const { data: _modelCard } = useQuery<ModelCard | null>({
-    queryKey: ['model-card'],
-    queryFn: async () => {
-      // Model card loaded from system stats in future
-      return null
-    },
-    retry: false,
+  const { data: modelAccuracy } = useQuery<ModelAccuracy>({
+    queryKey: ['model-accuracy'],
+    queryFn: async () => (await apiClient.get('/predictions/accuracy')).data,
+    refetchInterval: 60_000,
+    retry: 1,
   })
 
   if (statsError) {
@@ -177,24 +178,44 @@ export default function SystemHealth() {
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <span className="text-[13px] font-medium" style={{ color: 'var(--text)' }}>ML Ensemble</span>
-                <span className="badge badge-experimental">Experimental</span>
+                {modelAccuracy?.trained ? (
+                  <span className="badge badge-high">Active</span>
+                ) : (
+                  <span className="badge badge-experimental">Not Trained</span>
+                )}
               </div>
-              <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>7 features active</span>
+              {modelAccuracy?.metrics?.feature_names && (
+                <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+                  {modelAccuracy.metrics.feature_names.length} features active
+                </span>
+              )}
             </div>
-            <div className="grid grid-cols-3 gap-4 mt-2">
-              <div>
-                <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Brier</p>
-                <p className="text-[14px] font-bold" style={{ color: 'var(--text)' }}>0.0665</p>
+            {modelAccuracy?.metrics ? (
+              <div className="grid grid-cols-3 gap-4 mt-2">
+                <div>
+                  <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Brier</p>
+                  <p className="text-[14px] font-bold" style={{ color: 'var(--text)' }}>
+                    {modelAccuracy.metrics.ensemble_brier.toFixed(4)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>vs Baseline</p>
+                  <p className="text-[14px] font-bold" style={{ color: 'var(--green)' }}>
+                    +{((1 - modelAccuracy.metrics.ensemble_brier / modelAccuracy.metrics.baseline_brier) * 100).toFixed(1)}%
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>AUC</p>
+                  <p className="text-[14px] font-bold" style={{ color: 'var(--text)' }}>
+                    {modelAccuracy.metrics.ensemble_auc.toFixed(3)}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>vs Baseline</p>
-                <p className="text-[14px] font-bold" style={{ color: 'var(--green)' }}>+21.1%</p>
-              </div>
-              <div>
-                <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>AUC</p>
-                <p className="text-[14px] font-bold" style={{ color: 'var(--text)' }}>0.928</p>
-              </div>
-            </div>
+            ) : (
+              <p className="text-[12px] mt-1" style={{ color: 'var(--text-3)' }}>
+                {modelAccuracy?.error || 'Loading model metrics...'}
+              </p>
+            )}
           </div>
 
           {/* Elo System */}
@@ -220,9 +241,9 @@ export default function SystemHealth() {
         </h2>
         <div className="space-y-2">
           {[
-            { severity: 'high', icon: AlertCircle, text: 'ML predictions unreliable until 1,000+ resolved markets (current: ~4,341)' },
+            { severity: 'medium', icon: AlertTriangle, text: `Training data: ${modelAccuracy?.metrics?.n_usable?.toLocaleString() ?? '...'} usable resolved markets from ${modelAccuracy?.metrics?.n_total_resolved?.toLocaleString() ?? '...'} total` },
             { severity: 'medium', icon: AlertTriangle, text: 'Orderbook data only available for Polymarket' },
-            { severity: 'medium', icon: AlertTriangle, text: 'Snapshot coverage at 21.5% — momentum features may be inaccurate' },
+            { severity: 'medium', icon: AlertTriangle, text: `${modelAccuracy?.metrics?.features_dropped?.length ?? 0} features dropped due to zero variance or low diversity` },
             { severity: 'low', icon: Shield, text: 'Arbitrage detection may lag market by 30s-2m' },
           ].map((item, i) => {
             const Icon = item.icon

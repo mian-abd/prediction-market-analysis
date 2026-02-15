@@ -446,6 +446,27 @@ async def run_pipeline_loop():
     except Exception as e:
         logger.error(f"Initial arb scan failed: {e}")
 
+    # ── Initial ML scans (so signals appear immediately after deploy) ──
+    try:
+        await scan_ensemble_edges()
+    except Exception as e:
+        logger.error(f"Initial ensemble scan failed: {e}")
+
+    try:
+        await scan_elo_edges()
+    except Exception as e:
+        logger.error(f"Initial elo scan failed: {e}")
+
+    # ── Initial auto-trade (execute any signals found above) ──
+    try:
+        from execution.paper_executor import execute_paper_trades
+        async with async_session() as exec_session:
+            created = await execute_paper_trades(exec_session)
+            if created:
+                logger.info(f"Initial auto paper trades: {len(created)} positions opened")
+    except Exception as e:
+        logger.error(f"Initial paper executor error: {e}")
+
     # ── Loop configuration ──
     price_interval = settings.price_poll_interval_sec
     market_interval = settings.market_refresh_interval_sec
@@ -454,8 +475,8 @@ async def run_pipeline_loop():
     cycles_per_orderbook = max(1, settings.orderbook_poll_interval_sec // price_interval)
     cycles_per_trader_refresh = max(1, 1800 // price_interval)  # Every ~30 min
     cycles_per_elo_scan = max(1, settings.elo_scan_interval_sec // price_interval)  # Every ~10 min
-    cycles_per_ensemble_scan = max(1, 900 // price_interval)  # Every ~15 min
-    cycles_per_auto_trade = max(1, 900 // price_interval)  # Every ~15 min (independent of scans)
+    cycles_per_ensemble_scan = 15  # Every 15 cycles (~5 min with real cycle time)
+    cycles_per_auto_trade = 15     # Every 15 cycles (~5 min, matches ensemble scan)
     cycles_per_resolution_score = max(1, 1800 // price_interval)  # Every ~30 min
 
     cycle = 0
