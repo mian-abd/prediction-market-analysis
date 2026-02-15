@@ -522,8 +522,8 @@ async def run_pipeline_loop():
     cycles_per_orderbook = max(1, settings.orderbook_poll_interval_sec // price_interval)
     cycles_per_trader_refresh = max(1, 1800 // price_interval)  # Every ~30 min
     cycles_per_elo_scan = max(1, settings.elo_scan_interval_sec // price_interval)  # Every ~10 min
-    cycles_per_ensemble_scan = 15  # Every 15 cycles (~5 min with real cycle time)
-    cycles_per_auto_trade = 15     # Every 15 cycles (~5 min, matches ensemble scan)
+    cycles_per_ensemble_scan = 5   # Every 5 cycles (~2-3 min) - faster for more trades
+    cycles_per_auto_trade = 5      # Every 5 cycles - matches ensemble scan
     cycles_per_resolution_score = max(1, 1800 // price_interval)  # Every ~30 min
 
     cycle = 0
@@ -537,6 +537,16 @@ async def run_pipeline_loop():
             await collect_prices()
         except Exception as e:
             logger.error(f"Price collection error: {e}")
+
+        # ── Auto-close check EVERY cycle for fast stop-loss response ──
+        try:
+            from execution.auto_closer import auto_close_positions
+            async with async_session() as close_session:
+                closed = await auto_close_positions(close_session)
+                if closed:
+                    logger.info(f"Auto-closed {len(closed)} positions")
+        except Exception as e:
+            logger.error(f"Auto-closer error: {e}")
 
         # ── Arbitrage scan every ~5 min ──
         if cycle % cycles_per_arb_scan == 0:
@@ -576,15 +586,6 @@ async def run_pipeline_loop():
                         logger.info(f"Auto paper trades: {len(created)} positions opened")
             except Exception as e:
                 logger.error(f"Paper executor error: {e}")
-
-            try:
-                from execution.auto_closer import auto_close_positions
-                async with async_session() as close_session:
-                    closed = await auto_close_positions(close_session)
-                    if closed:
-                        logger.info(f"Auto-closed {len(closed)} positions")
-            except Exception as e:
-                logger.error(f"Auto-closer error: {e}")
 
         # ── Trader stats refresh every ~30 min ──
         if cycle % cycles_per_trader_refresh == 0:

@@ -117,16 +117,19 @@ function TradeTooltipContent({ active, payload, label }: any) {
       {/* Equity values */}
       {payload
         .filter((p: any) => p.dataKey !== 'tradeMarker' && p.value != null)
-        .map((p: any) => (
-          <div key={p.dataKey} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '2px' }}>
-            <span style={{ color: '#8E8E93' }}>
-              {p.dataKey === 'all' ? 'Total' : p.dataKey.replace(/_/g, ' ')}
-            </span>
-            <span className="font-mono" style={{ color: p.value >= 0 ? '#4CAF70' : '#EF5350' }}>
-              ${p.value.toFixed(2)}
-            </span>
-          </div>
-        ))}
+        .map((p: any) => {
+          const val = typeof p.value === 'number' ? p.value : Number(p.value) || 0
+          return (
+            <div key={p.dataKey} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '2px' }}>
+              <span style={{ color: '#8E8E93' }}>
+                {p.dataKey === 'all' ? 'Total' : p.dataKey.replace(/_/g, ' ')}
+              </span>
+              <span className="font-mono" style={{ color: val >= 0 ? '#4CAF70' : '#EF5350' }}>
+                ${val.toFixed(2)}
+              </span>
+            </div>
+          )
+        })}
 
       {/* Trade event details */}
       {tradePayload?.payload?.tradeType && (

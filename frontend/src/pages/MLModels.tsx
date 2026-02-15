@@ -13,14 +13,14 @@ import {
   Target,
 } from 'lucide-react'
 import {
-  ScatterChart,
+  ComposedChart,
   Scatter,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  ReferenceLine,
 } from 'recharts'
 import apiClient from '../api/client'
 import SignalAccuracyChart from '../components/charts/SignalAccuracyChart'
@@ -278,7 +278,15 @@ export default function MLModels() {
           </div>
           <div style={{ width: '100%', height: '300px' }}>
             <ResponsiveContainer width="100%" height={300}>
-              <ScatterChart margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
+              <ComposedChart
+                data={[
+                  ...calCurveData.curve.map((p) => ({ ...p, diagonal: p.market_price })),
+                  // Ensure diagonal endpoints exist
+                  ...(calCurveData.curve[0]?.market_price > 0.01 ? [{ market_price: 0, calibrated_price: null, diagonal: 0 }] : []),
+                  ...(calCurveData.curve[calCurveData.curve.length - 1]?.market_price < 0.99 ? [{ market_price: 1, calibrated_price: null, diagonal: 1 }] : []),
+                ].sort((a, b) => a.market_price - b.market_price)}
+                margin={{ top: 10, right: 20, left: 10, bottom: 10 }}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
                 <XAxis
                   dataKey="market_price"
@@ -290,7 +298,6 @@ export default function MLModels() {
                   label={{ value: 'Market Price', position: 'insideBottom', offset: -5, fill: '#48484A', fontSize: 11 }}
                 />
                 <YAxis
-                  dataKey="calibrated_price"
                   type="number"
                   domain={[0, 1]}
                   tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
@@ -307,28 +314,33 @@ export default function MLModels() {
                     fontSize: '12px',
                     padding: '8px 12px',
                   }}
-                  formatter={(value: number | undefined, name: string | undefined) => [
-                    `${((value ?? 0) * 100).toFixed(1)}%`,
-                    name === 'calibrated_price' ? 'Calibrated' : 'Market',
-                  ]}
+                  formatter={(value: number | string | undefined, name: string | undefined) => {
+                    const v = typeof value === 'number' ? value : Number(value) || 0
+                    return [
+                      `${(v * 100).toFixed(1)}%`,
+                      name === 'calibrated_price' ? 'Calibrated' : name === 'diagonal' ? 'Perfect' : 'Market',
+                    ]
+                  }}
                 />
-                {/* Perfect calibration diagonal */}
-                <ReferenceLine
-                  segment={[{ x: 0, y: 0 }, { x: 1, y: 1 }]}
+                {/* Perfect calibration diagonal line */}
+                <Line
+                  dataKey="diagonal"
                   stroke="rgba(255,255,255,0.15)"
                   strokeDasharray="6 4"
-                  label={{ value: 'Perfect', position: 'insideTopLeft', fill: '#48484A', fontSize: 10 }}
+                  dot={false}
+                  name="Perfect calibration"
+                  legendType="none"
                 />
-                {/* Calibrated curve as scatter + line */}
+                {/* Calibrated points */}
                 <Scatter
-                  data={calCurveData.curve}
+                  dataKey="calibrated_price"
                   fill="#C4A24D"
                   fillOpacity={0.9}
-                  r={4}
+                  r={5}
+                  name="calibrated_price"
                   line={{ stroke: '#C4A24D', strokeWidth: 2 }}
-                  lineType="fitting"
                 />
-              </ScatterChart>
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
           <div className="flex items-center gap-4 mt-3 text-[11px]" style={{ color: 'var(--text-3)' }}>
