@@ -5,6 +5,7 @@ from pathlib import Path
 class Settings(BaseSettings):
     # Paths
     project_root: Path = Path(__file__).parent.parent
+    # DATABASE_URL env overrides. Default uses project data/ dir; in production ensure dir exists or set DATABASE_URL.
     database_url: str = "sqlite+aiosqlite:///./data/markets.db"
 
     # Anthropic
