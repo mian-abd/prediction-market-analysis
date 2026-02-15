@@ -14,6 +14,9 @@ import {
 } from 'lucide-react'
 import {
   ComposedChart,
+  BarChart,
+  Bar,
+  Cell,
   Scatter,
   Line,
   XAxis,
@@ -440,36 +443,72 @@ export default function MLModels() {
             </div>
           )}
 
-          {/* Feature Importance */}
-          {accuracy.metrics.xgb_feature_importance && (
-            <div className="mt-5 pt-5" style={{ borderTop: '1px solid var(--border)' }}>
-              <p className="text-[11px] uppercase mb-3" style={{ color: 'var(--text-3)' }}>Top Features (XGBoost)</p>
-              <div className="space-y-2">
-                {Object.entries(accuracy.metrics.xgb_feature_importance)
-                  .filter(([, v]) => (v as number) > 0)
-                  .slice(0, 5)
-                  .map(([name, importance]) => {
-                    const pct = (importance as number) * 100
-                    return (
-                      <div key={name} className="flex items-center gap-3">
-                        <p className="text-[11px] w-40 text-right font-mono flex-shrink-0" style={{ color: 'var(--text-2)' }}>
-                          {name}
-                        </p>
-                        <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.03)' }}>
-                          <div
-                            className="h-full rounded-full"
-                            style={{ width: `${pct}%`, background: '#F59E0B', opacity: 0.7 }}
+          {/* Feature Importance Bar Chart */}
+          {accuracy.metrics.xgb_feature_importance && (() => {
+            const featureData = Object.entries(accuracy.metrics.xgb_feature_importance)
+              .filter(([, v]) => (v as number) > 0)
+              .map(([name, importance]) => ({
+                name: name.replace(/_/g, ' '),
+                importance: Number(((importance as number) * 100).toFixed(1)),
+              }))
+              .sort((a, b) => b.importance - a.importance)
+              .slice(0, 10)
+            const maxImportance = featureData[0]?.importance || 1
+
+            return (
+              <div className="mt-5 pt-5" style={{ borderTop: '1px solid var(--border)' }}>
+                <p className="text-[11px] uppercase mb-3" style={{ color: 'var(--text-3)' }}>
+                  Top Features (XGBoost)
+                </p>
+                <div style={{ width: '100%', height: `${featureData.length * 32 + 20}px` }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={featureData}
+                      layout="vertical"
+                      margin={{ top: 0, right: 40, left: 120, bottom: 0 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
+                      <XAxis
+                        type="number"
+                        domain={[0, Math.ceil(maxImportance)]}
+                        stroke="rgba(255,255,255,0.06)"
+                        tick={{ fill: '#48484A', fontSize: 10 }}
+                        tickFormatter={(v) => `${v}%`}
+                      />
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        stroke="rgba(255,255,255,0.06)"
+                        tick={{ fill: '#8E8E93', fontSize: 11, fontFamily: 'monospace' }}
+                        width={115}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: '#1A1A1C',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                          borderRadius: '8px',
+                          color: '#FFF',
+                          fontSize: '12px',
+                          padding: '6px 10px',
+                        }}
+                        formatter={((value: number | undefined) => [`${(value ?? 0).toFixed(1)}%`, 'Importance']) as any}
+                        cursor={{ fill: 'rgba(255,255,255,0.03)' }}
+                      />
+                      <Bar dataKey="importance" radius={[0, 4, 4, 0]} barSize={18}>
+                        {featureData.map((_, i) => (
+                          <Cell
+                            key={`fi-${i}`}
+                            fill={i === 0 ? '#C4A24D' : i < 3 ? '#D4B85D' : '#F59E0B'}
+                            fillOpacity={1 - i * 0.06}
                           />
-                        </div>
-                        <p className="text-[10px] font-mono w-10 text-right" style={{ color: 'var(--text-3)' }}>
-                          {pct.toFixed(0)}%
-                        </p>
-                      </div>
-                    )
-                  })}
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
         </div>
       )}
 

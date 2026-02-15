@@ -12,6 +12,9 @@ import {
   Shield,
   ShieldAlert,
   TrendingUp,
+  CheckCircle,
+  XCircle,
+  BarChart3,
 } from 'lucide-react'
 import apiClient from '../api/client'
 import { Skeleton } from '../components/LoadingSkeleton'
@@ -110,6 +113,28 @@ export default function SignalsHub() {
     queryKey: ['strategy-signals'],
     queryFn: async () => (await apiClient.get('/strategies/signals?limit=100')).data,
     refetchInterval: 60_000,
+    retry: 1,
+  })
+
+  const { data: perfData, isLoading: perfLoading } = useQuery<{
+    data: Array<{
+      date: string
+      signals_generated: number
+      signals_correct: number
+      daily_pnl: number
+      cumulative_pnl: number
+      cumulative_hit_rate: number
+    }>
+    summary: {
+      total_scored: number
+      total_correct: number
+      hit_rate: number
+      cumulative_pnl: number
+    }
+  }>({
+    queryKey: ['signal-performance'],
+    queryFn: async () => (await apiClient.get('/strategies/signal-performance')).data,
+    refetchInterval: 300_000,
     retry: 1,
   })
 
@@ -427,6 +452,135 @@ export default function SignalsHub() {
                 </div>
               </div>
             )}
+          </>
+        )}
+      </div>
+
+      {/* Signal Scorecard — Historical Performance Proof */}
+      <div className="card p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <BarChart3 className="h-5 w-5" style={{ color: 'var(--accent)' }} />
+          <h2 className="text-[16px] font-semibold" style={{ color: 'var(--text)' }}>
+            Signal Scorecard
+          </h2>
+          <span className="text-[11px] ml-2" style={{ color: 'var(--text-3)' }}>
+            Resolved signals vs actual outcomes
+          </span>
+        </div>
+
+        {perfLoading ? (
+          <div className="space-y-3">
+            {[...Array(4)].map((_, i) => (
+              <Skeleton key={i} className="h-10 rounded-lg" />
+            ))}
+          </div>
+        ) : !perfData?.summary || perfData.summary.total_scored === 0 ? (
+          <div className="flex flex-col items-center justify-center h-32 gap-2">
+            <CheckCircle className="h-5 w-5" style={{ color: 'var(--text-3)' }} />
+            <p className="text-[13px]" style={{ color: 'var(--text-3)' }}>
+              No resolved signals yet — results appear after markets close.
+            </p>
+          </div>
+        ) : (
+          <>
+            {/* Summary Stats */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+              <div className="p-3 rounded-lg" style={{ background: 'rgba(255,255,255,0.02)' }}>
+                <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Scored</p>
+                <p className="text-[20px] font-mono font-bold" style={{ color: 'var(--text)' }}>
+                  {perfData.summary.total_scored}
+                </p>
+              </div>
+              <div className="p-3 rounded-lg" style={{ background: 'rgba(255,255,255,0.02)' }}>
+                <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Hit Rate</p>
+                <p
+                  className="text-[20px] font-mono font-bold"
+                  style={{ color: (perfData.summary.hit_rate ?? 0) >= 0.5 ? 'var(--green)' : 'var(--red)' }}
+                >
+                  {((perfData.summary.hit_rate ?? 0) * 100).toFixed(1)}%
+                </p>
+              </div>
+              <div className="p-3 rounded-lg" style={{ background: 'rgba(255,255,255,0.02)' }}>
+                <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Cumulative P&L</p>
+                <p
+                  className="text-[20px] font-mono font-bold"
+                  style={{ color: (perfData.summary.cumulative_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}
+                >
+                  {(perfData.summary.cumulative_pnl ?? 0) >= 0 ? '+' : ''}
+                  {(perfData.summary.cumulative_pnl ?? 0).toFixed(2)}%
+                </p>
+              </div>
+              <div className="p-3 rounded-lg" style={{ background: 'rgba(255,255,255,0.02)' }}>
+                <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Correct</p>
+                <p className="text-[20px] font-mono font-bold" style={{ color: 'var(--green)' }}>
+                  {perfData.summary.total_correct}/{perfData.summary.total_scored}
+                </p>
+              </div>
+            </div>
+
+            {/* Daily Breakdown Table */}
+            <div className="space-y-1.5">
+              {/* Header */}
+              <div
+                className="grid grid-cols-5 gap-2 px-3 py-2 text-[10px] uppercase"
+                style={{ color: 'var(--text-3)' }}
+              >
+                <span>Date</span>
+                <span className="text-center">Signals</span>
+                <span className="text-center">Correct</span>
+                <span className="text-right">Daily P&L</span>
+                <span className="text-right">Cumulative</span>
+              </div>
+
+              {[...(perfData.data || [])]
+                .reverse()
+                .slice(0, 30)
+                .map((row) => {
+                  const hitRate = row.signals_generated > 0 ? row.signals_correct / row.signals_generated : 0
+                  const isGoodDay = hitRate >= 0.5
+
+                  return (
+                    <div
+                      key={row.date}
+                      className="grid grid-cols-5 gap-2 px-3 py-2.5 rounded-lg"
+                      style={{
+                        background: isGoodDay
+                          ? 'rgba(76,175,112,0.06)'
+                          : 'rgba(207,102,121,0.06)',
+                      }}
+                    >
+                      <span className="text-[12px] font-mono" style={{ color: 'var(--text-2)' }}>
+                        {new Date(row.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </span>
+                      <span className="text-[12px] font-mono text-center" style={{ color: 'var(--text)' }}>
+                        {row.signals_generated}
+                      </span>
+                      <span className="text-[12px] font-mono text-center flex items-center justify-center gap-1">
+                        {isGoodDay ? (
+                          <CheckCircle className="h-3 w-3" style={{ color: 'var(--green)' }} />
+                        ) : (
+                          <XCircle className="h-3 w-3" style={{ color: 'var(--red)' }} />
+                        )}
+                        <span style={{ color: isGoodDay ? 'var(--green)' : 'var(--red)' }}>
+                          {row.signals_correct}/{row.signals_generated}
+                        </span>
+                      </span>
+                      <span
+                        className="text-[12px] font-mono font-semibold text-right"
+                        style={{ color: (row.daily_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}
+                      >
+                        {(row.daily_pnl ?? 0) >= 0 ? '+' : ''}{(row.daily_pnl ?? 0).toFixed(2)}%
+                      </span>
+                      <span
+                        className="text-[12px] font-mono text-right"
+                        style={{ color: (row.cumulative_pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}
+                      >
+                        {(row.cumulative_pnl ?? 0) >= 0 ? '+' : ''}{(row.cumulative_pnl ?? 0).toFixed(2)}%
+                      </span>
+                    </div>
+                  )
+                })}
+            </div>
           </>
         )}
       </div>
