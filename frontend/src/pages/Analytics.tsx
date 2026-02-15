@@ -42,7 +42,7 @@ export default function Analytics() {
   const [viewMode, setViewMode] = useState<ViewMode>('graph')
   const [category, setCategory] = useState<string>('')
   const [minCorrelation, setMinCorrelation] = useState(0.3)
-  const [lookbackDays, setLookbackDays] = useState(7)
+  const [lookbackDays, setLookbackDays] = useState(30)
 
   // Pre-fetch data for graph mode (CorrelationMatrix fetches its own)
   const { data: graphData, isLoading: graphLoading, isFetching: graphFetching } = useQuery<CorrelationData>({
