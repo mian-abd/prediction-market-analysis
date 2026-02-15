@@ -92,11 +92,10 @@ async def get_trader_leaderboard(
     - **sort_by**: total_pnl, roi_pct, win_rate, or total_trades
     - **limit**: max traders to return (1-100)
     """
-    # Build query with optional filters
+    # Build query — show all public traders (PnL from leaderboard is real)
     query = select(TraderProfile).where(
         TraderProfile.is_public == True,
         TraderProfile.accepts_copiers == True,
-        TraderProfile.total_trades > 0,  # Only traders with trading history
     )
 
     # Sort by requested field

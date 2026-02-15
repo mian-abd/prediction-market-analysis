@@ -240,7 +240,7 @@ async def backfill_traders(replace: bool = False):
 
             # Use real trade data for stats
             from data_pipeline.collectors.trader_data import (
-                fetch_trader_trades, calculate_trader_stats, generate_trader_bio,
+                fetch_trader_positions, calculate_trader_stats, generate_trader_bio,
             )
             import asyncio as _asyncio
 
@@ -253,12 +253,12 @@ async def backfill_traders(replace: bool = False):
                 username = trader_data.get("userName")
                 display_name = username if username else f"Trader_{wallet[-6:].upper()}"
 
-                # Fetch real trade history
-                trades = await fetch_trader_trades(wallet, limit=100)
+                # Fetch real position history
+                positions = await fetch_trader_positions(wallet, limit=100)
                 await _asyncio.sleep(0.2)  # Rate limit
 
-                if trades:
-                    stats = calculate_trader_stats(trader_data, trades)
+                if positions:
+                    stats = calculate_trader_stats(trader_data, positions)
                 else:
                     pnl = float(trader_data.get("pnl", 0))
                     volume = float(trader_data.get("vol", 0))

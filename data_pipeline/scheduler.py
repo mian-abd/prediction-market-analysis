@@ -35,7 +35,7 @@ async def refresh_trader_stats():
     logger.info("Refreshing trader stats from Polymarket...")
     try:
         from data_pipeline.collectors.trader_data import (
-            fetch_polymarket_leaderboard, fetch_trader_trades,
+            fetch_polymarket_leaderboard, fetch_trader_positions,
             calculate_trader_stats, generate_trader_bio,
         )
 
@@ -51,7 +51,7 @@ async def refresh_trader_stats():
         async with async_session() as session:
             updated = 0
             created = 0
-            trades_fetched = 0
+            positions_fetched = 0
 
             for trader_data in leaderboard:
                 wallet = trader_data.get("proxyWallet")
@@ -64,16 +64,16 @@ async def refresh_trader_stats():
                 )
                 existing = result.scalar_one_or_none()
 
-                # Fetch real trades for up to 5 traders per cycle (rate limit)
-                trades = []
-                if trades_fetched < 5:
-                    trades = await fetch_trader_trades(wallet, limit=100)
-                    if trades:
-                        trades_fetched += 1
+                # Fetch real positions for up to 5 traders per cycle (rate limit)
+                positions = []
+                if positions_fetched < 5:
+                    positions = await fetch_trader_positions(wallet, limit=100)
+                    if positions:
+                        positions_fetched += 1
                     await _asyncio.sleep(0.2)  # Rate limit
 
-                if trades:
-                    stats = calculate_trader_stats(trader_data, trades)
+                if positions:
+                    stats = calculate_trader_stats(trader_data, positions)
                 else:
                     # Only update PnL (the one thing we KNOW from leaderboard)
                     pnl = float(trader_data.get("pnl", 0))
@@ -525,7 +525,7 @@ async def run_pipeline_loop():
             if not count:
                 logger.info("No trader profiles found, backfilling from Polymarket leaderboard...")
                 from data_pipeline.collectors.trader_data import (
-                    fetch_polymarket_leaderboard, fetch_trader_trades,
+                    fetch_polymarket_leaderboard, fetch_trader_positions,
                     calculate_trader_stats, generate_trader_bio,
                 )
                 import asyncio as _asyncio
@@ -546,11 +546,11 @@ async def run_pipeline_loop():
                     seen.add(wallet)
                     pnl = float(td.get("pnl", 0))
                     volume = float(td.get("vol", 0))
-                    # Fetch real trades (with rate limit)
-                    trades = await fetch_trader_trades(wallet, limit=100)
+                    # Fetch real positions (with rate limit)
+                    positions = await fetch_trader_positions(wallet, limit=100)
                     await _asyncio.sleep(0.2)
-                    if trades:
-                        stats = calculate_trader_stats(td, trades)
+                    if positions:
+                        stats = calculate_trader_stats(td, positions)
                     else:
                         stats = {
                             "total_pnl": pnl, "roi_pct": (pnl / max(volume * 0.3, 1)) * 100 if volume > 0 else 0,

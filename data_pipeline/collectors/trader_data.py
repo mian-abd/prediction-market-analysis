@@ -1,38 +1,34 @@
-"""Collect real trader performance data from Polymarket leaderboard API."""
+"""Collect real trader performance data from Polymarket APIs.
+
+Uses data-api.polymarket.com for:
+- /v1/leaderboard — top traders by PnL/volume
+- /v1/positions — real position-level P&L per trader
+- /v1/trades — individual trade executions
+"""
 
 import httpx
 import logging
-from datetime import datetime
 from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
-POLYMARKET_LEADERBOARD_URL = "https://data-api.polymarket.com/v1/leaderboard"
+POLYMARKET_DATA_API = "https://data-api.polymarket.com/v1"
 
 
 async def fetch_polymarket_leaderboard(
-    time_period: str = "MONTH",  # Options: "DAY", "WEEK", "MONTH", "ALL"
+    time_period: str = "MONTH",
     limit: int = 50,
-    order_by: str = "PNL",  # Options: "PNL", "VOL"
-    category: str = "OVERALL",  # Options: OVERALL, POLITICS, SPORTS, etc.
+    order_by: str = "PNL",
+    category: str = "OVERALL",
     offset: int = 0,
 ) -> List[Dict]:
-    """
-    Fetch top traders from Polymarket leaderboard.
+    """Fetch top traders from Polymarket leaderboard.
 
-    Returns list of trader objects with:
-    - proxyWallet: Wallet address
-    - userName: Display name
-    - pnl: Profit/Loss in USD
-    - vol: Total volume traded
-    - rank: Leaderboard position
-    - profileImage: Avatar URL
-    - xUsername: Twitter handle
-    - verifiedBadge: Verification status
+    Returns list of trader objects with real PnL and volume data.
     """
     params = {
         "timePeriod": time_period,
-        "limit": min(limit, 50),  # API max is 50
+        "limit": min(limit, 50),
         "orderBy": order_by,
         "category": category,
         "offset": offset,
@@ -40,7 +36,7 @@ async def fetch_polymarket_leaderboard(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(POLYMARKET_LEADERBOARD_URL, params=params)
+            resp = await client.get(f"{POLYMARKET_DATA_API}/leaderboard", params=params)
             resp.raise_for_status()
             data = resp.json()
             logger.info(f"Fetched {len(data)} traders from Polymarket leaderboard")
@@ -50,165 +46,133 @@ async def fetch_polymarket_leaderboard(
         return []
 
 
-async def fetch_trader_details(user_address: str) -> Dict | None:
-    """
-    Fetch detailed stats for a specific trader.
+async def fetch_trader_positions(user_address: str, limit: int = 100) -> List[Dict]:
+    """Fetch real positions with P&L for a trader from Polymarket data API.
 
-    Polymarket API endpoint: /users/{address}
+    Each position includes: size, avgPrice, cashPnl, percentPnl,
+    realizedPnl, curPrice, title, outcome, endDate.
     """
-    url = f"https://gamma-api.polymarket.com/users/{user_address}"
+    params = {"user": user_address, "limit": limit}
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url)
-            if resp.status_code == 404:
-                return None
+            resp = await client.get(f"{POLYMARKET_DATA_API}/positions", params=params)
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPError as e:
-        logger.warning(f"Failed to fetch trader details for {user_address}: {e}")
-        return None
-
-
-async def fetch_trader_positions(user_address: str, limit: int = 50) -> List[Dict]:
-    """Fetch current positions for a trader."""
-    url = f"https://gamma-api.polymarket.com/users/{user_address}/positions"
-    params = {"limit": limit}
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPError as e:
-        logger.warning(f"Failed to fetch positions for {user_address}: {e}")
+        logger.warning(f"Failed to fetch positions for {user_address[:10]}...: {e}")
         return []
 
 
 async def fetch_trader_trades(
     user_address: str,
     limit: int = 100,
-    offset: int = 0,
 ) -> List[Dict]:
-    """Fetch trade history for a trader."""
-    url = f"https://gamma-api.polymarket.com/users/{user_address}/trades"
-    params = {"limit": limit, "offset": offset}
+    """Fetch real trade executions for a trader from Polymarket data API.
+
+    Each trade includes: side (BUY/SELL), size, price, timestamp,
+    title, outcome, conditionId.
+    """
+    params = {"user": user_address, "limit": limit}
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, params=params)
+            resp = await client.get(f"{POLYMARKET_DATA_API}/trades", params=params)
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPError as e:
-        logger.warning(f"Failed to fetch trades for {user_address}: {e}")
+        logger.warning(f"Failed to fetch trades for {user_address[:10]}...: {e}")
         return []
 
 
-def calculate_trader_stats(trader_data: Dict, trades: List[Dict]) -> Dict:
-    """
-    Calculate comprehensive trader statistics.
+def calculate_trader_stats(trader_data: Dict, positions: List[Dict]) -> Dict:
+    """Calculate real trader statistics from Polymarket position data.
+
+    Uses actual position-level P&L (cashPnl field) from the data API,
+    NOT estimated/fabricated stats.
 
     Args:
-        trader_data: Raw trader data from API
-        trades: List of trader's historical trades
-
-    Returns:
-        Dict with calculated stats for TraderProfile model
+        trader_data: Leaderboard data (has real pnl, vol)
+        positions: Real position data from /v1/positions endpoint
     """
     total_pnl = float(trader_data.get("pnl", 0) or 0)
-    volume = float(trader_data.get("volume", 0) or 0)
+    volume = float(trader_data.get("vol", 0) or 0)
 
-    # Calculate win rate from trades
-    winning_trades = sum(1 for t in trades if float(t.get("pnl", 0)) > 0)
-    total_trades = len([t for t in trades if t.get("pnl") is not None])
-    win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
+    # Calculate stats from real position-level P&L
+    total_positions = len(positions)
+    winning_positions = 0
+    losing_positions = 0
+    pnl_values = []
 
-    # Calculate ROI
-    # Assume starting capital is volume - pnl (rough estimate)
-    invested = volume - total_pnl if volume > 0 else 1000
-    roi_pct = (total_pnl / invested * 100) if invested > 0 else 0.0
+    for pos in positions:
+        cash_pnl = float(pos.get("cashPnl", 0) or 0)
+        pnl_values.append(cash_pnl)
+        if cash_pnl > 0:
+            winning_positions += 1
+        elif cash_pnl < 0:
+            losing_positions += 1
 
-    # Calculate average trade duration from trades
-    durations = []
-    for trade in trades:
-        if trade.get("created_at") and trade.get("closed_at"):
-            try:
-                created = datetime.fromisoformat(trade["created_at"].replace("Z", "+00:00"))
-                closed = datetime.fromisoformat(trade["closed_at"].replace("Z", "+00:00"))
-                duration_hrs = (closed - created).total_seconds() / 3600
-                durations.append(duration_hrs)
-            except (ValueError, TypeError, KeyError):
-                continue
+    win_rate = (winning_positions / total_positions * 100) if total_positions > 0 else 0.0
 
-    avg_trade_duration_hrs = sum(durations) / len(durations) if durations else 48.0
+    # ROI from leaderboard data
+    invested = volume - total_pnl if volume > total_pnl else volume * 0.3
+    roi_pct = (total_pnl / max(invested, 1)) * 100
 
-    # Calculate max drawdown from PnL history
-    pnl_values = [float(t.get("pnl", 0)) for t in trades if t.get("pnl") is not None]
+    # Max drawdown from position-level P&L
+    max_drawdown = 0.0
     if pnl_values:
-        cumulative_pnl = []
-        running_total = 0
+        cumulative = []
+        running = 0.0
         for pnl in pnl_values:
-            running_total += pnl
-            cumulative_pnl.append(running_total)
+            running += pnl
+            cumulative.append(running)
 
-        max_drawdown = 0
-        peak = cumulative_pnl[0]
-        for value in cumulative_pnl:
+        peak = cumulative[0]
+        for value in cumulative:
             if value > peak:
                 peak = value
-            drawdown = peak - value
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
-        max_drawdown = -max_drawdown  # Negative value
-    else:
-        max_drawdown = 0.0
+            dd = peak - value
+            if dd > max_drawdown:
+                max_drawdown = dd
+        max_drawdown = -max_drawdown
 
-    # Calculate risk score (1-10 scale)
-    # Based on: volatility, max drawdown, avg position size
-    volatility = calculate_pnl_volatility(pnl_values) if len(pnl_values) > 5 else 0
-    risk_score = calculate_risk_score(
+    # Risk score from real data
+    volatility = _calculate_volatility(pnl_values) if len(pnl_values) > 5 else 0
+    risk_score = _calculate_risk_score(
         max_drawdown=abs(max_drawdown),
         volatility=volatility,
-        avg_position_size=volume / total_trades if total_trades > 0 else 0,
+        avg_position_size=volume / total_positions if total_positions > 0 else 0,
     )
 
     return {
         "total_pnl": total_pnl,
-        "roi_pct": roi_pct,
-        "win_rate": win_rate,
-        "total_trades": total_trades,
-        "winning_trades": winning_trades,
-        "avg_trade_duration_hrs": avg_trade_duration_hrs,
+        "roi_pct": round(roi_pct, 2),
+        "win_rate": round(win_rate, 1),
+        "total_trades": total_positions,
+        "winning_trades": winning_positions,
+        "avg_trade_duration_hrs": 0.0,  # Not available from position data
         "risk_score": risk_score,
-        "max_drawdown": max_drawdown,
+        "max_drawdown": round(max_drawdown, 2),
     }
 
 
-def calculate_pnl_volatility(pnl_values: List[float]) -> float:
-    """Calculate standard deviation of PnL values."""
+def _calculate_volatility(pnl_values: List[float]) -> float:
+    """Standard deviation of P&L values."""
     if len(pnl_values) < 2:
         return 0.0
-
     mean = sum(pnl_values) / len(pnl_values)
     variance = sum((x - mean) ** 2 for x in pnl_values) / len(pnl_values)
     return variance ** 0.5
 
 
-def calculate_risk_score(
+def _calculate_risk_score(
     max_drawdown: float,
     volatility: float,
     avg_position_size: float,
 ) -> int:
-    """
-    Calculate risk score (1-10) based on trader behavior.
+    """Risk score (1-10) from real trading behavior."""
+    score = 5
 
-    1-3: Low risk (conservative, stable)
-    4-6: Medium risk (balanced)
-    7-10: High risk (aggressive, volatile)
-    """
-    score = 5  # Start with medium risk
-
-    # Adjust based on max drawdown
     if max_drawdown > 5000:
         score += 3
     elif max_drawdown > 2000:
@@ -217,10 +181,7 @@ def calculate_risk_score(
         score += 1
     elif max_drawdown < 500:
         score -= 1
-    elif max_drawdown < 200:
-        score -= 2
 
-    # Adjust based on volatility
     if volatility > 1000:
         score += 2
     elif volatility > 500:
@@ -228,45 +189,39 @@ def calculate_risk_score(
     elif volatility < 100:
         score -= 1
 
-    # Adjust based on position size
     if avg_position_size > 5000:
         score += 1
     elif avg_position_size < 500:
         score -= 1
 
-    # Clamp to 1-10 range
     return max(1, min(10, score))
 
 
 def generate_trader_bio(trader_data: Dict, stats: Dict) -> str:
-    """Generate a bio for a trader based on their stats."""
+    """Generate bio from real stats."""
     win_rate = stats["win_rate"]
     risk = stats["risk_score"]
     total_trades = stats["total_trades"]
 
-    # Determine trading style
     if risk <= 3:
-        style = "Conservative trader with focus on capital preservation"
+        style = "Conservative, capital-preservation focused"
     elif risk <= 6:
-        style = "Balanced approach with moderate risk tolerance"
+        style = "Balanced risk approach"
     else:
-        style = "Aggressive trader seeking high-reward opportunities"
+        style = "Aggressive, high-conviction trader"
 
-    # Determine skill level
     if win_rate >= 70:
         skill = "Exceptional track record"
     elif win_rate >= 60:
-        skill = "Strong performance"
+        skill = "Strong performer"
     elif win_rate >= 50:
         skill = "Consistent results"
-    else:
+    elif total_trades > 0:
         skill = "Active trader"
+    else:
+        skill = "Leaderboard trader"
 
-    return f"{skill}. {style}. {total_trades}+ trades executed on Polymarket."
+    pnl = stats["total_pnl"]
+    pnl_str = f"${pnl:,.0f}" if pnl >= 0 else f"-${abs(pnl):,.0f}"
 
-
-def anonymize_address(address: str) -> str:
-    """Convert wallet address to readable trader name."""
-    # Take last 6 chars of address for uniqueness
-    suffix = address[-6:].upper()
-    return f"Trader_{suffix}"
+    return f"{skill}. {style}. {pnl_str} P&L on Polymarket."

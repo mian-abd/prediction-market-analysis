@@ -15,7 +15,7 @@ from db.database import async_session
 from db.models import TraderProfile
 from data_pipeline.collectors.trader_data import (
     fetch_polymarket_leaderboard,
-    fetch_trader_trades,
+    fetch_trader_positions,
     calculate_trader_stats,
     generate_trader_bio,
 )
@@ -105,18 +105,18 @@ async def backfill_traders(replace_existing: bool = False):
                 username = trader_data.get("userName")
                 display_name = username if username else f"Trader_{wallet[-6:].upper()}"
 
-                # Fetch real trade history from Gamma API
-                trades = await fetch_trader_trades(wallet, limit=100)
+                # Fetch real positions with P&L from Polymarket data API
+                positions = await fetch_trader_positions(wallet, limit=100)
 
-                if trades:
-                    # Calculate real stats from actual trades
-                    stats = calculate_trader_stats(trader_data, trades)
+                if positions:
+                    # Calculate real stats from actual position P&L
+                    stats = calculate_trader_stats(trader_data, positions)
                     logger.debug(
-                        f"  {display_name}: {stats['total_trades']} real trades, "
+                        f"  {display_name}: {stats['total_trades']} positions, "
                         f"{stats['win_rate']:.1f}% win rate"
                     )
                 else:
-                    # Trader has leaderboard presence but no fetchable trades
+                    # Trader has leaderboard presence but no fetchable positions
                     # Use only what we actually know (PnL, volume)
                     pnl = float(trader_data.get("pnl", 0))
                     volume = float(trader_data.get("vol", 0))
