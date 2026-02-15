@@ -380,6 +380,21 @@ async def scan_ensemble_edges():
 
                     # Only persist tradeable edges
                     if edge.direction and edge.net_ev > 0.03 and edge.confidence >= 0.4:
+                        # Don't create signal if there's already an open position on this market
+                        # Prevents signal expiry → re-creation → duplicate position loop
+                        from db.models import PortfolioPosition
+                        existing_pos = await session.execute(
+                            select(PortfolioPosition.id)
+                            .where(
+                                PortfolioPosition.market_id == market.id,
+                                PortfolioPosition.exit_time == None,  # noqa: E711
+                                PortfolioPosition.portfolio_type == "auto",
+                            )
+                            .limit(1)
+                        )
+                        if existing_pos.scalar_one_or_none():
+                            continue  # Skip: position already exists, don't create new signal
+
                         signal = EnsembleEdgeSignal(
                             market_id=market.id,
                             detected_at=datetime.utcnow(),
@@ -607,6 +622,23 @@ async def run_pipeline_loop():
                         )
             except Exception as e:
                 logger.error(f"Resolution scoring failed: {e}")
+
+            # Log rolling forward performance (7-day window)
+            try:
+                from ml.evaluation.signal_tracker import compute_signal_accuracy
+                async with async_session() as perf_session:
+                    perf = await compute_signal_accuracy(perf_session, days_back=7)
+                    n = perf["n_signals_evaluated"]
+                    if n > 0:
+                        logger.info(
+                            f"FORWARD PERFORMANCE (7d): {n} signals | "
+                            f"hit_rate={perf['hit_rate']:.1%} | "
+                            f"Brier={perf['brier_score']} | "
+                            f"P&L=${perf['simulated_pnl']:.2f} | "
+                            f"improvement={perf.get('brier_improvement_pct', 'N/A')}%"
+                        )
+            except Exception as e:
+                logger.error(f"Forward performance log failed: {e}")
 
         # ── Full market refresh + deactivate expired + re-match every ~1 hr ──
         if cycle % cycles_per_market_refresh == 0:

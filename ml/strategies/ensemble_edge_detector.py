@@ -204,8 +204,15 @@ def compute_confidence(
         if n_checkable > 0:
             completeness_score = max(0.0, 1.0 - n_defaulted / n_checkable)
 
-    # Component 3: Edge magnitude
-    edge_score = min(1.0, abs(net_ev) / 0.10)
+    # Component 3: Edge magnitude — moderate edges are best, very large edges are suspect
+    abs_ev = abs(net_ev)
+    if abs_ev <= 0.05:
+        edge_score = abs_ev / 0.05  # Linear ramp up to 5%
+    elif abs_ev <= 0.08:
+        edge_score = 1.0  # Sweet spot: 5-8% edge
+    else:
+        # Penalize: edges >8% are increasingly likely noise/leakage
+        edge_score = max(0.0, 1.0 - (abs_ev - 0.08) / 0.07)  # Drops to 0 at 15%
 
     # Weighted combination
     confidence = (

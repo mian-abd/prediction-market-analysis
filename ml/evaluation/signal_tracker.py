@@ -6,6 +6,7 @@ to prove the model works. This is THE answer to the judge's #1 question.
 
 import logging
 from collections import defaultdict
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,14 +16,18 @@ from db.models import Market, EnsembleEdgeSignal
 logger = logging.getLogger(__name__)
 
 
-async def compute_signal_accuracy(session: AsyncSession) -> dict:
-    """Compute accuracy metrics for all resolved edge signals.
+async def compute_signal_accuracy(session: AsyncSession, days_back: int | None = None) -> dict:
+    """Compute accuracy metrics for resolved edge signals.
+
+    Args:
+        session: Database session
+        days_back: If set, only evaluate signals from the last N days
 
     Evaluates ensemble edge signals against actual market resolutions.
     Returns hit rate, Brier score, simulated P&L, and breakdowns.
     """
-    # Get all ensemble edge signals for markets that have since resolved
-    result = await session.execute(
+    # Get ensemble edge signals for markets that have since resolved
+    query = (
         select(EnsembleEdgeSignal, Market)
         .join(Market, EnsembleEdgeSignal.market_id == Market.id)
         .where(
@@ -31,6 +36,10 @@ async def compute_signal_accuracy(session: AsyncSession) -> dict:
         )
         .order_by(EnsembleEdgeSignal.detected_at)
     )
+    if days_back is not None:
+        cutoff = datetime.utcnow() - timedelta(days=days_back)
+        query = query.where(EnsembleEdgeSignal.detected_at >= cutoff)
+    result = await session.execute(query)
     rows = result.all()
 
     if not rows:

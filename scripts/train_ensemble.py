@@ -664,6 +664,33 @@ async def main():
     )
     ensemble_brier = brier_score_loss(y_test, ensemble_test_preds)
 
+    # --- Brier by Price Bucket (understand real edge in tradeable range) ---
+    market_prices_for_bucket = X_test_full[:, price_col_full]
+    bucket_edges = [(0.0, 0.20, "0-20% (near NO)"),
+                    (0.20, 0.80, "20-80% (tradeable)"),
+                    (0.80, 1.01, "80-100% (near YES)")]
+    brier_by_bucket = {}
+    logger.info(f"\n--- Brier by Price Bucket ---")
+    for lo, hi, label in bucket_edges:
+        mask = (market_prices_for_bucket >= lo) & (market_prices_for_bucket < hi)
+        n_bucket = int(mask.sum())
+        if n_bucket >= 5:
+            bucket_brier = float(brier_score_loss(y_test[mask], ensemble_test_preds[mask]))
+            bucket_baseline = float(brier_score_loss(y_test[mask], market_prices_for_bucket[mask]))
+            improvement = (1 - bucket_brier / bucket_baseline) * 100 if bucket_baseline > 0 else 0
+            brier_by_bucket[label] = {
+                "n": n_bucket, "brier": round(bucket_brier, 4),
+                "baseline": round(bucket_baseline, 4),
+                "improvement_pct": round(improvement, 1),
+            }
+            logger.info(
+                f"  {label}: n={n_bucket}, Brier={bucket_brier:.4f} "
+                f"(baseline {bucket_baseline:.4f}, {improvement:+.1f}%)"
+            )
+        else:
+            brier_by_bucket[label] = {"n": n_bucket, "brier": None, "baseline": None, "improvement_pct": None}
+            logger.info(f"  {label}: n={n_bucket} (too few for Brier)")
+
     # --- Post-Ensemble Calibration ---
     logger.info(f"\n--- Post-Ensemble Calibration ---")
     post_calibrator = CalibrationModel()
@@ -813,6 +840,7 @@ async def main():
         "optimal_threshold": round(best_threshold, 3),
         "ablation": {k: round(v, 4) for k, v in ablation.items()},
         "profit_simulation": profit_sim,
+        "brier_by_price_bucket": brier_by_bucket,
         "price_distribution": {
             "pct_near_0": round(pct_near_0, 3),
             "pct_near_1": round(pct_near_1, 3),

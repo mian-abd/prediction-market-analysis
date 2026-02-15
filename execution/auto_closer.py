@@ -7,8 +7,9 @@ Close conditions (checked in order):
 1. Market resolved -> close at resolution value (1.0 or 0.0)
 1b. Effectively resolved -> price near 0/1 (lock in profits immediately)
 1c. Market deactivated -> close at last price
-2. Stop loss hit -> close at current market price
-3. Signal expired -> close at current market price (if close_on_signal_expiry=True)
+2. Edge invalidation -> price moved >15% away from entry AND losing (prediction markets)
+3. Stop loss hit -> close at current market price
+4. Signal expired -> close at current market price (if close_on_signal_expiry=True)
 """
 
 import logging
@@ -77,7 +78,26 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
             exit_price = market.price_yes
             close_reason = "market_deactivated"
 
-        # 2. Stop loss — check BEFORE signal expiry to prevent unbounded losses
+        # 2. Edge invalidation — CRITICAL for prediction markets
+        # If price moved significantly away from entry AND we're losing, edge is gone
+        # This is NOT volatility (stocks) — it's new information invalidating our thesis
+        if exit_price is None and market.price_yes is not None:
+            price_deviation = abs(market.price_yes - pos.entry_price)
+
+            # If price moved >15 percentage points away from entry, edge is likely gone
+            if price_deviation > 0.15:
+                # Check if we're losing money (directional mismatch)
+                if pos.side == "yes":
+                    unrealized = (market.price_yes - pos.entry_price) * pos.quantity
+                else:
+                    unrealized = (pos.entry_price - market.price_yes) * pos.quantity
+
+                # If price deviated AND we're losing, exit immediately
+                if unrealized < 0:
+                    exit_price = market.price_yes
+                    close_reason = "edge_invalidation"
+
+        # 3. Stop loss — check AFTER edge invalidation to prevent unbounded losses
         # Also check for momentum (consistent downtrend) in prediction markets
         if exit_price is None and config and config.stop_loss_pct > 0:
             if market.price_yes is not None:
@@ -99,7 +119,7 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
                     exit_price = market.price_yes
                     close_reason = "momentum_downtrend"
 
-        # 3. Signal expired (only if config says so)
+        # 4. Signal expired (only if config says so)
         if exit_price is None and config and config.close_on_signal_expiry:
             has_active_signal = await _has_active_signal(session, pos.market_id, pos.strategy)
             if not has_active_signal:
@@ -127,9 +147,12 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
             pos.exit_price = exit_price
             pos.exit_time = datetime.utcnow()
             if pos.side == "yes":
-                pos.realized_pnl = (exit_price - pos.entry_price) * pos.quantity
+                gross_pnl = (exit_price - pos.entry_price) * pos.quantity
             else:
-                pos.realized_pnl = (pos.entry_price - exit_price) * pos.quantity
+                gross_pnl = (pos.entry_price - exit_price) * pos.quantity
+            # Polymarket charges 2% fee on net winnings only (0% on losses)
+            fee = 0.02 * max(gross_pnl, 0.0)
+            pos.realized_pnl = gross_pnl - fee
 
             closed_ids.append(pos.id)
             logger.info(

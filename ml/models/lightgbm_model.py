@@ -24,23 +24,23 @@ class LightGBMModel:
 
         LightGBM uses leaf-wise growth (vs XGBoost's depth-wise), so we
         control complexity via num_leaves and min_child_samples.
-        Conservative for small data.
+        Moderate capacity for N~2000-5000.
         """
         pos_count = y.sum()
         neg_count = len(y) - pos_count
         scale_pos_weight = neg_count / max(pos_count, 1)
 
         self.model = LGBMClassifier(
-            n_estimators=80,
-            num_leaves=8,
-            max_depth=3,
-            learning_rate=0.1,
+            n_estimators=150,
+            num_leaves=16,
+            max_depth=4,
+            learning_rate=0.05,
             min_child_samples=10,
             feature_fraction=0.8,
             bagging_fraction=0.8,
             bagging_freq=3,
-            lambda_l1=0.5,
-            lambda_l2=2.0,
+            lambda_l1=0.3,
+            lambda_l2=1.5,
             scale_pos_weight=scale_pos_weight,
             random_state=42,
             verbose=-1,

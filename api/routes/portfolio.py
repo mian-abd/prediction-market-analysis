@@ -661,4 +661,4 @@ async def get_portfolio_risk_status(
 
     When portfolio_type is omitted, returns both manual and auto risk status.
     """
-    return await get_risk_status(session, user_id=current_user, portfolio_type=portfolio_type)
+    return await get_risk_status(session, portfolio_type=portfolio_type)

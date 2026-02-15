@@ -6,6 +6,7 @@ All auto positions get portfolio_type="auto" for isolated risk accounting.
 """
 
 import logging
+import math
 from datetime import datetime
 
 from sqlalchemy import select
@@ -18,6 +19,9 @@ from db.models import (
 from risk.risk_manager import check_risk_limits
 
 logger = logging.getLogger(__name__)
+
+# Edge decay: signals lose half their edge every 2 hours (exponential decay)
+EDGE_DECAY_HALF_LIFE_HOURS = 2.0
 
 
 def compute_execution_cost(
@@ -98,19 +102,19 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
     )
     signal_market_pairs = result.all()
 
-    # Sort by urgency: prioritize markets ending in next 7 days
-    # BUT skip markets ending in < 2 hours (too risky, no time for stop-loss)
+    # Sort by edge-decayed EV: discount stale signals, skip near-resolution markets
     def urgency_score(signal, market):
         base_ev = signal.net_ev
+        # Edge decay: exponential decay based on signal age
+        if signal.detected_at:
+            signal_age_hours = (now - signal.detected_at).total_seconds() / 3600
+            decay = math.exp(-0.693 * signal_age_hours / EDGE_DECAY_HALF_LIFE_HOURS)
+            base_ev *= decay
+        # Skip markets too close to resolution (no time for stop-loss)
         if market.end_date:
             hours_until = (market.end_date - now).total_seconds() / 3600
             if hours_until < 2:
-                return -1  # Skip: too close to resolution, stop-loss can't protect
-            days_until = hours_until / 24
-            if days_until < 7:
-                return base_ev * 2.0
-            elif days_until < 30:
-                return base_ev * 1.5
+                return -1
         return base_ev
 
     # Filter out markets too close to resolution
@@ -121,13 +125,14 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
     if not signals:
         return []
 
-    # Markets with existing open auto positions (ensemble)
+    # Markets with existing open auto positions (ANY strategy in auto portfolio)
+    # Prevent duplicate positions on same market across all auto-strategies
     open_markets = set()
     open_result = await session.execute(
         select(PortfolioPosition.market_id)
         .where(
             PortfolioPosition.exit_time == None,  # noqa
-            PortfolioPosition.strategy == "auto_ensemble",
+            PortfolioPosition.portfolio_type == "auto",
         )
     )
     for row in open_result.all():
@@ -162,6 +167,11 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
 
         kelly = signal.kelly_fraction or 0.0
         kelly = min(kelly, config.max_kelly_fraction)
+        # Apply edge decay to Kelly (stale signals get smaller positions)
+        if signal.detected_at:
+            signal_age_hours = (now - signal.detected_at).total_seconds() / 3600
+            decay = math.exp(-0.693 * signal_age_hours / EDGE_DECAY_HALF_LIFE_HOURS)
+            kelly *= decay
         if kelly <= 0:
             continue
 
@@ -173,6 +183,12 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
                 kelly *= 0.3  # 30% of normal size for very short markets
             elif hours_until < 24:
                 kelly *= 0.5  # 50% of normal size for < 1 day markets
+
+        # Sanity check: don't open if market is effectively decided
+        # Positions at 0.001 or 0.999 are too late — market already converged
+        if market.price_yes is not None and (market.price_yes <= 0.01 or market.price_yes >= 0.99):
+            logger.warning(f"Skipping {market.question[:60]}: effectively decided (price={market.price_yes:.4f})")
+            continue
 
         # Model execution costs (2% slippage)
         exec_result = compute_execution_cost(
@@ -233,6 +249,8 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
     if not config:
         return []
 
+    now = datetime.utcnow()
+
     result = await session.execute(
         select(EloEdgeSignal)
         .where(
@@ -248,13 +266,14 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
     if not signals:
         return []
 
-    # Markets with existing open auto positions (elo)
+    # Markets with existing open auto positions (ANY strategy in auto portfolio)
+    # Prevent duplicate positions on same market across all auto-strategies
     open_markets = set()
     open_result = await session.execute(
         select(PortfolioPosition.market_id)
         .where(
             PortfolioPosition.exit_time == None,  # noqa
-            PortfolioPosition.strategy == "auto_elo",
+            PortfolioPosition.portfolio_type == "auto",
         )
     )
     for row in open_result.all():
@@ -270,12 +289,22 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
         if not market or not market.is_active:
             continue
 
+        # Sanity check: don't open if market is effectively decided
+        if market.price_yes is not None and (market.price_yes <= 0.01 or market.price_yes >= 0.99):
+            logger.warning(f"Skipping {market.question[:60]}: effectively decided (price={market.price_yes:.4f})")
+            continue
+
         # Derive direction from Elo probability
         elo_prob_yes = signal.elo_prob_a if signal.yes_side_player == signal.player_a else (1 - signal.elo_prob_a)
         direction = "buy_yes" if elo_prob_yes > signal.market_price_yes else "buy_no"
 
         kelly = signal.kelly_fraction or 0.0
         kelly = min(kelly, config.max_kelly_fraction)
+        # Apply edge decay to Kelly (stale signals get smaller positions)
+        if signal.detected_at:
+            signal_age_hours = (now - signal.detected_at).total_seconds() / 3600
+            decay = math.exp(-0.693 * signal_age_hours / EDGE_DECAY_HALF_LIFE_HOURS)
+            kelly *= decay
         if kelly <= 0:
             continue
 

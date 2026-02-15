@@ -50,19 +50,20 @@ async def lifespan(app: FastAPI):
         from db.models import AutoTradingConfig
 
         # Tightened defaults — these are the production-quality values
-        # Lowered stop_loss to 10% + added momentum detection for prediction markets
+        # Prediction markets: 5% stop-loss (not 10%) because price moves = information, not volatility
+        # Holding without signal = refusing to accept new information (not "riding out dips")
         DESIRED_CONFIGS = {
             "ensemble": dict(
                 is_enabled=True, bankroll=1000.0,
                 min_confidence=0.6, min_net_ev=0.07, max_kelly_fraction=0.02,
-                stop_loss_pct=0.10, min_quality_tier="high", close_on_signal_expiry=True,
+                stop_loss_pct=0.05, min_quality_tier="high", close_on_signal_expiry=True,
                 max_position_usd=100.0, max_total_exposure_usd=500.0,
                 max_loss_per_day_usd=25.0, max_daily_trades=20,
             ),
             "elo": dict(
                 is_enabled=False, bankroll=500.0,
                 min_confidence=0.6, min_net_ev=0.05, max_kelly_fraction=0.02,
-                stop_loss_pct=0.10, min_quality_tier="high", close_on_signal_expiry=True,
+                stop_loss_pct=0.05, min_quality_tier="high", close_on_signal_expiry=True,
                 max_position_usd=100.0, max_total_exposure_usd=500.0,
                 max_loss_per_day_usd=25.0, max_daily_trades=20,
             ),

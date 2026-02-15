@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import case
 
 from config.settings import settings
-from db.models import PortfolioPosition, AutoTradingConfig
+from db.models import PortfolioPosition, AutoTradingConfig, Market
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +113,29 @@ async def check_risk_limits(
             reason=f"Position size ${position_cost:.2f} exceeds limit ${limits['max_position_usd']:.2f}",
         )
 
-    # 2. Total exposure check (all open positions)
-    exposure_query = (
-        select(func.sum(_cost_expr()))
+    # 2. Total exposure check — mark-to-market (uses current prices, not entry prices)
+    open_pos_query = (
+        select(PortfolioPosition)
         .where(PortfolioPosition.exit_time == None)  # noqa: E711
     )
-    exposure_query = _apply_portfolio_filter(exposure_query, portfolio_type)
-    total_exposure = (await session.execute(exposure_query)).scalar() or 0.0
+    open_pos_query = _apply_portfolio_filter(open_pos_query, portfolio_type)
+    open_positions = (await session.execute(open_pos_query)).scalars().all()
+
+    total_exposure = 0.0
+    for pos in open_positions:
+        market = await session.get(Market, pos.market_id)
+        if market and market.price_yes is not None:
+            # Mark-to-market: current value of position
+            if pos.side == "yes":
+                total_exposure += market.price_yes * pos.quantity
+            else:
+                total_exposure += (1.0 - market.price_yes) * pos.quantity
+        else:
+            # Fallback to entry cost if market price unavailable
+            if pos.side == "yes":
+                total_exposure += pos.entry_price * pos.quantity
+            else:
+                total_exposure += (1.0 - pos.entry_price) * pos.quantity
 
     if total_exposure + position_cost > limits["max_total_exposure_usd"]:
         return RiskCheckResult(
@@ -161,30 +177,7 @@ async def check_risk_limits(
 
     # 4. Portfolio-level stop-loss (prediction markets version: -5% of exposure)
     # If total unrealized loss is > 5% of open exposure, stop opening new positions
-    unrealized_query = (
-        select(
-            func.sum(
-                case(
-                    (PortfolioPosition.side == "yes",
-                     (1 - PortfolioPosition.entry_price) * PortfolioPosition.quantity),  # Simulated current price at 1 for YES that dropped
-                    else_=(PortfolioPosition.entry_price) * PortfolioPosition.quantity,
-                )
-            )
-        )
-        .where(PortfolioPosition.exit_time == None)  # noqa: E711
-    )
-    unrealized_query = _apply_portfolio_filter(unrealized_query, portfolio_type)
-
-    # Simplified: just check if total unrealized is significantly negative relative to exposure
-    # Get unrealized loss across open positions
-    from db.models import Market
-    open_positions_query = (
-        select(PortfolioPosition)
-        .where(PortfolioPosition.exit_time == None)  # noqa: E711
-    )
-    open_positions_query = _apply_portfolio_filter(open_positions_query, portfolio_type)
-    open_positions = (await session.execute(open_positions_query)).scalars().all()
-
+    # Reuse open_positions from mark-to-market check above
     total_unrealized = 0.0
     for pos in open_positions:
         market = await session.get(Market, pos.market_id)

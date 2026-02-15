@@ -49,14 +49,16 @@ def get_ensemble_model():
 
 @router.get("/predictions/accuracy/backtest")
 async def get_signal_backtest(
+    days: int | None = Query(default=None, ge=1, le=365, description="Only evaluate signals from the last N days"),
     session: AsyncSession = Depends(get_session),
 ):
     """Backtest: compare our past signals against actual market resolutions.
 
     Returns hit rate, Brier score, simulated P&L, and breakdowns by direction/tier.
+    Pass ?days=7 for rolling 7-day forward performance.
     """
     from ml.evaluation.signal_tracker import compute_signal_accuracy
-    return await compute_signal_accuracy(session)
+    return await compute_signal_accuracy(session, days_back=days)
 
 
 @router.get("/predictions/accuracy")

@@ -22,24 +22,25 @@ class XGBoostModel:
     def train(self, X: np.ndarray, y: np.ndarray, feature_names: list[str] | None = None):
         """Train XGBoost binary classifier.
 
-        Conservative hyperparameters for small datasets (N~100-1000):
-        - max_depth=2: very shallow trees to prevent overfitting
-        - n_estimators=50: fewer trees with small data
-        - learning_rate=0.1: moderate learning rate
-        - Strong L1/L2 regularization
+        Moderate hyperparameters for N~2000-5000:
+        - max_depth=4: enough depth for meaningful feature interactions
+        - n_estimators=150: sufficient trees with low learning rate
+        - learning_rate=0.05: slower learning for better generalization
+        - Moderate L1/L2 regularization
         """
         pos_count = y.sum()
         neg_count = len(y) - pos_count
         scale_pos_weight = neg_count / max(pos_count, 1)
 
         self.model = XGBClassifier(
-            n_estimators=50,
-            max_depth=2,
-            learning_rate=0.1,
+            n_estimators=150,
+            max_depth=4,
+            learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
-            reg_alpha=0.5,
-            reg_lambda=2.0,
+            reg_alpha=0.3,
+            reg_lambda=1.5,
+            min_child_weight=5,
             scale_pos_weight=scale_pos_weight,
             eval_metric="logloss",
             random_state=42,
