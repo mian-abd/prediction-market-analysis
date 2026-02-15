@@ -77,8 +77,9 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
     if not config:
         return []
 
-    # Build quality tier filter: include target tier and all tiers above it
-    tier_hierarchy = ["low", "medium", "high", "speculative"]
+    # Build quality tier filter: include target tier and tiers above it
+    # "speculative" is NEVER auto-traded (edges >15% are noise/leakage)
+    tier_hierarchy = ["low", "medium", "high"]
     min_idx = tier_hierarchy.index(config.min_quality_tier) if config.min_quality_tier in tier_hierarchy else 0
     accepted_tiers = tier_hierarchy[min_idx:]
 
