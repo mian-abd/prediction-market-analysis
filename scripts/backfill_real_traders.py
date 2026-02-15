@@ -1,4 +1,8 @@
-"""Backfill database with real trader data from Polymarket leaderboard."""
+"""Backfill database with real trader data from Polymarket leaderboard.
+
+Fetches actual trade history per trader to calculate real win rate,
+trade count, drawdown, and duration — no fabricated estimates.
+"""
 
 import asyncio
 import sys
@@ -9,134 +13,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from sqlalchemy import select, delete
 from db.database import async_session
 from db.models import TraderProfile
-from data_pipeline.collectors.trader_data import fetch_polymarket_leaderboard
+from data_pipeline.collectors.trader_data import (
+    fetch_polymarket_leaderboard,
+    fetch_trader_trades,
+    calculate_trader_stats,
+    generate_trader_bio,
+)
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def estimate_trader_stats(trader_data: dict) -> dict:
-    """
-    Estimate comprehensive trader statistics from leaderboard data.
-
-    Since we only have PnL and volume from the leaderboard,
-    we'll make reasonable estimates for other metrics.
-    """
-    pnl = float(trader_data.get("pnl", 0))
-    volume = float(trader_data.get("vol", 0))
-
-    # Estimate number of trades based on volume
-    # Average trade size is ~$50-$200 on Polymarket
-    avg_trade_size = 100
-    total_trades = max(10, int(volume / avg_trade_size))
-
-    # Estimate win rate based on PnL/volume ratio
-    # Higher ratio = better win rate
-    pnl_ratio = (pnl / volume * 100) if volume > 0 else 0
-
-    if pnl_ratio > 15:
-        win_rate = 75.0 + (pnl_ratio - 15) * 0.5  # 75-85%
-    elif pnl_ratio > 10:
-        win_rate = 65.0 + (pnl_ratio - 10)  # 65-75%
-    elif pnl_ratio > 5:
-        win_rate = 55.0 + (pnl_ratio - 5) * 2  # 55-65%
-    elif pnl_ratio > 0:
-        win_rate = 50.0 + pnl_ratio  # 50-55%
-    else:
-        win_rate = 45.0 + pnl_ratio  # Below 50% for losses
-
-    win_rate = max(30.0, min(90.0, win_rate))  # Clamp to realistic range
-
-    winning_trades = int(total_trades * win_rate / 100)
-
-    # Estimate ROI (return on investment)
-    # Assume invested capital is 20-40% of volume for active traders
-    invested = volume * 0.3
-    roi_pct = (pnl / invested * 100) if invested > 0 else 0
-
-    # Estimate average trade duration
-    # High volume = shorter duration (day trading)
-    # Lower volume = longer duration (swing trading)
-    if volume > 1000000:  # $1M+ volume
-        avg_duration = 24.0  # Day trading
-        risk_score = 7
-    elif volume > 500000:  # $500k+ volume
-        avg_duration = 48.0  # 2-day holds
-        risk_score = 6
-    elif volume > 100000:  # $100k+ volume
-        avg_duration = 72.0  # 3-day holds
-        risk_score = 5
-    else:
-        avg_duration = 120.0  # 5-day holds
-        risk_score = 4
-
-    # Adjust risk score based on PnL volatility (estimated)
-    if pnl > 50000:
-        risk_score += 2  # High stakes
-    elif pnl < -10000:
-        risk_score += 1  # Losing streaks = higher risk
-
-    # Positive consistent traders are lower risk
-    if win_rate > 65 and pnl > 0:
-        risk_score -= 1
-
-    risk_score = max(1, min(10, risk_score))
-
-    # Estimate max drawdown (10-30% of total PnL)
-    max_drawdown = -abs(pnl * 0.2) if pnl > 0 else pnl * 1.5
-
-    return {
-        "total_pnl": pnl,
-        "roi_pct": roi_pct,
-        "win_rate": win_rate,
-        "total_trades": total_trades,
-        "winning_trades": winning_trades,
-        "avg_trade_duration_hrs": avg_duration,
-        "risk_score": risk_score,
-        "max_drawdown": max_drawdown,
-    }
-
-
-def generate_bio(trader_data: dict, stats: dict) -> str:
-    """Generate a bio based on trader performance."""
-    win_rate = stats["win_rate"]
-    risk = stats["risk_score"]
-    pnl = stats["total_pnl"]
-
-    # Performance tier
-    if pnl > 50000:
-        tier = "Elite trader"
-    elif pnl > 20000:
-        tier = "Top performer"
-    elif pnl > 10000:
-        tier = "Skilled trader"
-    elif pnl > 0:
-        tier = "Profitable trader"
-    else:
-        tier = "Active trader"
-
-    # Style
-    if risk <= 3:
-        style = "Conservative, risk-averse approach"
-    elif risk <= 6:
-        style = "Balanced strategy with calculated risks"
-    else:
-        style = "Aggressive, high-conviction positions"
-
-    # Specialty
-    category = trader_data.get("category", "OVERALL")
-    if category != "OVERALL":
-        specialty = f"{category.lower()} markets specialist"
-    else:
-        specialty = "diverse market coverage"
-
-    return f"{tier} with {specialty}. {style}. {win_rate:.1f}% historical win rate."
-
-
 async def backfill_traders(replace_existing: bool = False):
     """
     Fetch top traders from Polymarket and populate database.
+
+    For each trader, fetches real trade history from the Gamma API
+    to calculate actual win rate, drawdown, and trade duration.
 
     Args:
         replace_existing: If True, delete existing traders and refetch
@@ -198,7 +92,7 @@ async def backfill_traders(replace_existing: bool = False):
                 seen_wallets.add(wallet)
                 unique_traders.append(trader)
 
-        logger.info(f"Processing {len(unique_traders)} unique traders...")
+        logger.info(f"Processing {len(unique_traders)} unique traders (fetching real trade history)...")
 
         created_count = 0
         for i, trader_data in enumerate(unique_traders, 1):
@@ -209,17 +103,37 @@ async def backfill_traders(replace_existing: bool = False):
 
                 # Use username if available, otherwise generate from wallet
                 username = trader_data.get("userName")
-                if username:
-                    display_name = username
+                display_name = username if username else f"Trader_{wallet[-6:].upper()}"
+
+                # Fetch real trade history from Gamma API
+                trades = await fetch_trader_trades(wallet, limit=100)
+
+                if trades:
+                    # Calculate real stats from actual trades
+                    stats = calculate_trader_stats(trader_data, trades)
+                    logger.debug(
+                        f"  {display_name}: {stats['total_trades']} real trades, "
+                        f"{stats['win_rate']:.1f}% win rate"
+                    )
                 else:
-                    # Generate readable name from wallet
-                    display_name = f"Trader_{wallet[-6:].upper()}"
+                    # Trader has leaderboard presence but no fetchable trades
+                    # Use only what we actually know (PnL, volume)
+                    pnl = float(trader_data.get("pnl", 0))
+                    volume = float(trader_data.get("vol", 0))
+                    stats = {
+                        "total_pnl": pnl,
+                        "roi_pct": (pnl / max(volume * 0.3, 1)) * 100 if volume > 0 else 0,
+                        "win_rate": 0.0,  # Unknown — don't fabricate
+                        "total_trades": 0,  # Unknown
+                        "winning_trades": 0,
+                        "avg_trade_duration_hrs": 0.0,
+                        "risk_score": 5,  # Neutral default
+                        "max_drawdown": 0.0,
+                    }
+                    logger.debug(f"  {display_name}: no trades available, using PnL/volume only")
 
-                # Estimate comprehensive stats from leaderboard data
-                stats = estimate_trader_stats(trader_data)
-
-                # Generate bio
-                bio = generate_bio(trader_data, stats)
+                # Generate bio from real stats
+                bio = generate_trader_bio(trader_data, stats)
 
                 # Create TraderProfile
                 profile = TraderProfile(
@@ -234,7 +148,7 @@ async def backfill_traders(replace_existing: bool = False):
                     avg_trade_duration_hrs=stats["avg_trade_duration_hrs"],
                     risk_score=stats["risk_score"],
                     max_drawdown=stats["max_drawdown"],
-                    follower_count=0,  # Start with 0
+                    follower_count=0,
                     is_public=True,
                     accepts_copiers=True,
                 )
@@ -245,7 +159,10 @@ async def backfill_traders(replace_existing: bool = False):
                 # Commit in batches of 10
                 if created_count % 10 == 0:
                     await session.commit()
-                    logger.info(f"Saved {created_count} traders so far...")
+                    logger.info(f"Saved {created_count}/{len(unique_traders)} traders...")
+
+                # Small delay to avoid rate limiting on Gamma API
+                await asyncio.sleep(0.2)
 
             except Exception as e:
                 logger.error(f"Failed to process trader {trader_data.get('proxyWallet', 'unknown')[:10]}: {e}")
@@ -253,7 +170,7 @@ async def backfill_traders(replace_existing: bool = False):
 
         # Final commit
         await session.commit()
-        logger.info(f"[OK] Successfully created {created_count} real trader profiles from Polymarket")
+        logger.info(f"[OK] Created {created_count} trader profiles from Polymarket (real trade data)")
 
         # Show top 5 by P&L
         result = await session.execute(
@@ -271,7 +188,7 @@ async def backfill_traders(replace_existing: bool = False):
                 f"${trader.total_pnl:,.2f} P&L | "
                 f"{trader.win_rate:.1f}% win rate | "
                 f"Risk: {trader.risk_score}/10 | "
-                f"{trader.total_trades} trades (est)"
+                f"{trader.total_trades} trades"
             )
 
 

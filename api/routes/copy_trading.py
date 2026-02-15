@@ -426,7 +426,7 @@ async def get_trader_activity(
 ):
     """Get recent activity feed for a trader.
 
-    If no real activity exists, generates estimated feed from trader stats.
+    Returns empty list if no real activity exists.
     """
     # Try to get real activity first
     result = await session.execute(
@@ -470,7 +470,7 @@ async def get_trader_positions(
 ):
     """Get a trader's recent positions (for analytics display).
 
-    If no real positions exist, generates estimated positions from trader stats.
+    Returns empty list if no real positions exist.
     """
     # Try to get real positions first
     query = select(PortfolioPosition).where(
@@ -518,7 +518,7 @@ async def get_trader_equity_curve(
 ):
     """Get cumulative P&L over time for a trader's equity curve.
 
-    If no actual positions exist, generates estimated curve from trader stats.
+    Returns empty data if no actual positions exist.
     """
     # Try to get actual positions first
     result = await session.execute(
@@ -556,7 +556,7 @@ async def get_trader_drawdown(
 ):
     """Get drawdown curve and P&L distribution for a trader.
 
-    If no actual positions exist, generates estimated data from trader stats.
+    Returns empty data if no actual positions exist.
     """
     # Try to get actual positions first
     result = await session.execute(

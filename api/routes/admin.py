@@ -238,8 +238,11 @@ async def backfill_traders(replace: bool = False):
                     seen_wallets.add(wallet)
                     unique_traders.append(trader)
 
-            # Import stat estimation from backfill script
-            from scripts.backfill_real_traders import estimate_trader_stats, generate_bio
+            # Use real trade data for stats
+            from data_pipeline.collectors.trader_data import (
+                fetch_trader_trades, calculate_trader_stats, generate_trader_bio,
+            )
+            import asyncio as _asyncio
 
             created_count = 0
             for trader_data in unique_traders:
@@ -250,8 +253,23 @@ async def backfill_traders(replace: bool = False):
                 username = trader_data.get("userName")
                 display_name = username if username else f"Trader_{wallet[-6:].upper()}"
 
-                stats = estimate_trader_stats(trader_data)
-                bio = generate_bio(trader_data, stats)
+                # Fetch real trade history
+                trades = await fetch_trader_trades(wallet, limit=100)
+                await _asyncio.sleep(0.2)  # Rate limit
+
+                if trades:
+                    stats = calculate_trader_stats(trader_data, trades)
+                else:
+                    pnl = float(trader_data.get("pnl", 0))
+                    volume = float(trader_data.get("vol", 0))
+                    stats = {
+                        "total_pnl": pnl,
+                        "roi_pct": (pnl / max(volume * 0.3, 1)) * 100 if volume > 0 else 0,
+                        "win_rate": 0.0, "total_trades": 0, "winning_trades": 0,
+                        "avg_trade_duration_hrs": 0.0, "risk_score": 5, "max_drawdown": 0.0,
+                    }
+
+                bio = generate_trader_bio(trader_data, stats)
 
                 profile = TraderProfile(
                     user_id=wallet,
@@ -276,7 +294,7 @@ async def backfill_traders(replace: bool = False):
                     await session.commit()
 
             await session.commit()
-            logger.info(f"Backfilled {created_count} trader profiles")
+            logger.info(f"Backfilled {created_count} trader profiles (real trade data)")
 
             return {
                 "success": True,

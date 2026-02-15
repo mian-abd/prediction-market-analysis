@@ -26,15 +26,18 @@ logger = logging.getLogger(__name__)
 # ── Trader Data Refresh ──────────────────────────────────────────────
 
 async def refresh_trader_stats():
-    """Refresh trader profiles with latest data from Polymarket leaderboard.
+    """Refresh trader profiles with real data from Polymarket.
 
-    Runs periodically to keep trader PnL, win rate, and volume stats current.
-    Updates existing traders and adds new ones from the leaderboard.
+    Fetches leaderboard for PnL/volume, then real trade history (5 traders
+    per cycle to avoid rate limiting) for accurate win rate and drawdown.
     """
+    import asyncio as _asyncio
     logger.info("Refreshing trader stats from Polymarket...")
     try:
-        from data_pipeline.collectors.trader_data import fetch_polymarket_leaderboard
-        from scripts.backfill_real_traders import estimate_trader_stats, generate_bio
+        from data_pipeline.collectors.trader_data import (
+            fetch_polymarket_leaderboard, fetch_trader_trades,
+            calculate_trader_stats, generate_trader_bio,
+        )
 
         # Fetch latest leaderboard data
         leaderboard = await fetch_polymarket_leaderboard(
@@ -48,6 +51,7 @@ async def refresh_trader_stats():
         async with async_session() as session:
             updated = 0
             created = 0
+            trades_fetched = 0
 
             for trader_data in leaderboard:
                 wallet = trader_data.get("proxyWallet")
@@ -60,10 +64,39 @@ async def refresh_trader_stats():
                 )
                 existing = result.scalar_one_or_none()
 
-                stats = estimate_trader_stats(trader_data)
+                # Fetch real trades for up to 5 traders per cycle (rate limit)
+                trades = []
+                if trades_fetched < 5:
+                    trades = await fetch_trader_trades(wallet, limit=100)
+                    if trades:
+                        trades_fetched += 1
+                    await _asyncio.sleep(0.2)  # Rate limit
+
+                if trades:
+                    stats = calculate_trader_stats(trader_data, trades)
+                else:
+                    # Only update PnL (the one thing we KNOW from leaderboard)
+                    pnl = float(trader_data.get("pnl", 0))
+                    volume = float(trader_data.get("vol", 0))
+                    if existing:
+                        # Keep existing real stats, just update PnL
+                        existing.total_pnl = pnl
+                        existing.roi_pct = (pnl / max(volume * 0.3, 1)) * 100 if volume > 0 else 0
+                        updated += 1
+                        continue
+                    else:
+                        stats = {
+                            "total_pnl": pnl,
+                            "roi_pct": (pnl / max(volume * 0.3, 1)) * 100 if volume > 0 else 0,
+                            "win_rate": 0.0,
+                            "total_trades": 0,
+                            "winning_trades": 0,
+                            "avg_trade_duration_hrs": 0.0,
+                            "risk_score": 5,
+                            "max_drawdown": 0.0,
+                        }
 
                 if existing:
-                    # Update existing trader stats
                     existing.total_pnl = stats["total_pnl"]
                     existing.roi_pct = stats["roi_pct"]
                     existing.win_rate = stats["win_rate"]
@@ -73,10 +106,9 @@ async def refresh_trader_stats():
                     existing.max_drawdown = stats["max_drawdown"]
                     updated += 1
                 else:
-                    # Add new trader
                     username = trader_data.get("userName")
                     display_name = username if username else f"Trader_{wallet[-6:].upper()}"
-                    bio = generate_bio(trader_data, stats)
+                    bio = generate_trader_bio(trader_data, stats)
 
                     new_trader = TraderProfile(
                         user_id=wallet,
@@ -98,7 +130,7 @@ async def refresh_trader_stats():
                     created += 1
 
             await session.commit()
-            logger.info(f"Trader refresh: {updated} updated, {created} new")
+            logger.info(f"Trader refresh: {updated} updated, {created} new, {trades_fetched} with real trades")
 
     except Exception as e:
         logger.error(f"Trader stats refresh failed: {e}")
@@ -492,8 +524,11 @@ async def run_pipeline_loop():
             )).scalars().first()
             if not count:
                 logger.info("No trader profiles found, backfilling from Polymarket leaderboard...")
-                from data_pipeline.collectors.trader_data import fetch_polymarket_leaderboard
-                from scripts.backfill_real_traders import estimate_trader_stats, generate_bio
+                from data_pipeline.collectors.trader_data import (
+                    fetch_polymarket_leaderboard, fetch_trader_trades,
+                    calculate_trader_stats, generate_trader_bio,
+                )
+                import asyncio as _asyncio
 
                 all_traders = []
                 for period, order, limit in [("MONTH", "PNL", 50), ("MONTH", "VOL", 30), ("WEEK", "PNL", 20)]:
@@ -509,11 +544,23 @@ async def run_pipeline_loop():
                     if not wallet or wallet in seen:
                         continue
                     seen.add(wallet)
-                    stats = estimate_trader_stats(td)
+                    pnl = float(td.get("pnl", 0))
+                    volume = float(td.get("vol", 0))
+                    # Fetch real trades (with rate limit)
+                    trades = await fetch_trader_trades(wallet, limit=100)
+                    await _asyncio.sleep(0.2)
+                    if trades:
+                        stats = calculate_trader_stats(td, trades)
+                    else:
+                        stats = {
+                            "total_pnl": pnl, "roi_pct": (pnl / max(volume * 0.3, 1)) * 100 if volume > 0 else 0,
+                            "win_rate": 0.0, "total_trades": 0, "winning_trades": 0,
+                            "avg_trade_duration_hrs": 0.0, "risk_score": 5, "max_drawdown": 0.0,
+                        }
                     session.add(TraderProfile(
                         user_id=wallet,
                         display_name=td.get("userName") or f"Trader_{wallet[-6:].upper()}",
-                        bio=generate_bio(td, stats),
+                        bio=generate_trader_bio(td, stats),
                         total_pnl=stats["total_pnl"], roi_pct=stats["roi_pct"],
                         win_rate=stats["win_rate"], total_trades=stats["total_trades"],
                         winning_trades=stats["winning_trades"],
@@ -523,7 +570,7 @@ async def run_pipeline_loop():
                     ))
                     created_count += 1
                 await session.commit()
-                logger.info(f"Backfilled {created_count} trader profiles")
+                logger.info(f"Backfilled {created_count} trader profiles (real trade data)")
             else:
                 logger.info("Trader profiles already exist, skipping backfill")
     except Exception as e:
