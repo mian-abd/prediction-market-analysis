@@ -73,11 +73,16 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
     if not config:
         return []
 
+    # Build quality tier filter: include target tier and all tiers above it
+    tier_hierarchy = ["low", "medium", "high", "speculative"]
+    min_idx = tier_hierarchy.index(config.min_quality_tier) if config.min_quality_tier in tier_hierarchy else 0
+    accepted_tiers = tier_hierarchy[min_idx:]
+
     result = await session.execute(
         select(EnsembleEdgeSignal)
         .where(
             EnsembleEdgeSignal.expired_at == None,  # noqa
-            EnsembleEdgeSignal.quality_tier == config.min_quality_tier,
+            EnsembleEdgeSignal.quality_tier.in_(accepted_tiers),
             EnsembleEdgeSignal.confidence >= config.min_confidence,
             EnsembleEdgeSignal.net_ev >= config.min_net_ev,
         )
