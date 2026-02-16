@@ -21,13 +21,17 @@ def _resolve_sqlite_url(url_str: str) -> str:
 
 
 _db_url = settings.database_url
-if _db_url.strip().startswith("sqlite"):
+_is_sqlite = _db_url.strip().startswith("sqlite")
+if _is_sqlite:
     _db_url = _resolve_sqlite_url(_db_url)
+
+# SQLite-specific connect_args
+_connect_args = {"check_same_thread": False} if _is_sqlite else {}
 
 engine = create_async_engine(
     _db_url,
     echo=False,
-    connect_args={"check_same_thread": False},  # SQLite needs this
+    connect_args=_connect_args,
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

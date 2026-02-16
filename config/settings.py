@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
@@ -7,6 +8,14 @@ class Settings(BaseSettings):
     project_root: Path = Path(__file__).parent.parent
     # DATABASE_URL env overrides. Default uses project data/ dir; in production ensure dir exists or set DATABASE_URL.
     database_url: str = "sqlite+aiosqlite:///./data/markets.db"
+
+    @field_validator("database_url")
+    @classmethod
+    def convert_postgres_url(cls, v: str) -> str:
+        """Convert Railway's postgresql:// URL to postgresql+asyncpg:// for async SQLAlchemy."""
+        if v and v.startswith("postgresql://"):
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     # Anthropic
     anthropic_api_key: str = ""
