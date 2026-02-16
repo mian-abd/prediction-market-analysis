@@ -1,11 +1,14 @@
-"""Data storage helpers - bulk upsert markets, snapshots, orderbooks into SQLite."""
+"""Data storage helpers - bulk upsert markets, snapshots, orderbooks into DB."""
 
 import logging
-from datetime import datetime
-from sqlalchemy import select
+from datetime import datetime, timedelta
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Platform, Market, PriceSnapshot, OrderbookSnapshot
+from db.models import (
+    Platform, Market, PriceSnapshot, OrderbookSnapshot,
+    ArbitrageOpportunity, NewsEvent, SystemMetric, TraderActivity,
+)
 from data_pipeline.category_normalizer import normalize_category
 
 logger = logging.getLogger(__name__)
@@ -186,6 +189,58 @@ async def insert_orderbook_snapshot(
     )
     session.add(snapshot)
     await session.commit()
+
+
+async def cleanup_old_data(session: AsyncSession, days: int = 3) -> dict[str, int]:
+    """Delete old time-series data to prevent disk from filling up.
+
+    Keeps the last `days` worth of data for high-volume tables.
+    Returns count of deleted rows per table.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    deleted = {}
+
+    # Price snapshots — biggest offender (~2000 rows per 20s cycle)
+    result = await session.execute(
+        delete(PriceSnapshot).where(PriceSnapshot.timestamp < cutoff)
+    )
+    deleted["price_snapshots"] = result.rowcount
+
+    # Orderbook snapshots (JSON blobs eat space fast)
+    result = await session.execute(
+        delete(OrderbookSnapshot).where(OrderbookSnapshot.timestamp < cutoff)
+    )
+    deleted["orderbook_snapshots"] = result.rowcount
+
+    # Expired arbitrage opportunities older than cutoff
+    result = await session.execute(
+        delete(ArbitrageOpportunity).where(
+            ArbitrageOpportunity.detected_at < cutoff,
+            ArbitrageOpportunity.expired_at != None,  # noqa: E711
+        )
+    )
+    deleted["arbitrage_opportunities"] = result.rowcount
+
+    # Old news events
+    result = await session.execute(
+        delete(NewsEvent).where(NewsEvent.fetched_at < cutoff)
+    )
+    deleted["news_events"] = result.rowcount
+
+    # Old system metrics
+    result = await session.execute(
+        delete(SystemMetric).where(SystemMetric.timestamp < cutoff)
+    )
+    deleted["system_metrics"] = result.rowcount
+
+    # Old trader activities
+    result = await session.execute(
+        delete(TraderActivity).where(TraderActivity.created_at < cutoff)
+    )
+    deleted["trader_activities"] = result.rowcount
+
+    await session.commit()
+    return deleted
 
 
 async def get_active_markets(

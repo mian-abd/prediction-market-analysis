@@ -11,7 +11,7 @@ from db.database import async_session
 from db.models import Market
 from data_pipeline.storage import (
     ensure_platforms, upsert_markets, insert_price_snapshots,
-    get_active_markets, insert_orderbook_snapshot,
+    get_active_markets, insert_orderbook_snapshot, cleanup_old_data,
 )
 from data_pipeline.collectors import polymarket_gamma, kalshi_markets
 from data_pipeline.collectors.polymarket_gamma import parse_gamma_market
@@ -706,7 +706,7 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Forward performance log failed: {e}")
 
-        # ── Full market refresh + deactivate expired + re-match every ~1 hr ──
+        # ── Full market refresh + deactivate expired + re-match + cleanup every ~1 hr ──
         if cycle % cycles_per_market_refresh == 0:
             try:
                 await collect_markets()
@@ -720,6 +720,16 @@ async def run_pipeline_loop():
                 await run_market_matching()
             except Exception as e:
                 logger.error(f"Market matching error: {e}")
+
+            # Data retention: prune old time-series to prevent disk from filling
+            try:
+                async with async_session() as cleanup_session:
+                    deleted = await cleanup_old_data(cleanup_session, days=3)
+                    total = sum(deleted.values())
+                    if total > 0:
+                        logger.info(f"Data cleanup: {total} old rows pruned {deleted}")
+            except Exception as e:
+                logger.error(f"Data cleanup error: {e}")
 
 
 if __name__ == "__main__":
