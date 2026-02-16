@@ -43,82 +43,96 @@ async def upsert_markets(
     parsed_markets: list[dict],
     platform_id: int,
 ) -> int:
-    """Upsert markets into the database. Returns count of upserted markets."""
-    count = 0
-    for m in parsed_markets:
-        result = await session.execute(
-            select(Market).where(
-                Market.platform_id == platform_id,
-                Market.external_id == m["external_id"],
-            )
-        )
-        existing = result.scalar_one_or_none()
+    """Upsert markets into the database. Returns count of upserted markets.
 
-        if existing:
-            # Update existing market
-            existing.question = m["question"]
-            existing.description = m.get("description")
-            existing.category = m.get("category")
-            existing.normalized_category = normalize_category(
-                m.get("category"), m.get("question", ""), m.get("description", ""),
-            )
-            existing.price_yes = m.get("price_yes")
-            existing.price_no = m.get("price_no")
-            existing.volume_24h = m.get("volume_24h", 0)
-            existing.volume_total = m.get("volume_total", 0)
-            existing.liquidity = m.get("liquidity", 0)
-            existing.is_active = m.get("is_active", True)
-            existing.is_resolved = m.get("is_resolved", False)
-            existing.end_date = _strip_timezone(m.get("end_date"))
-            existing.is_neg_risk = m.get("is_neg_risk", False)
-            existing.last_fetched_at = datetime.utcnow()
-            existing.updated_at = datetime.utcnow()
-            if m.get("token_id_yes"):
-                existing.token_id_yes = m["token_id_yes"]
-            if m.get("token_id_no"):
-                existing.token_id_no = m["token_id_no"]
-            if m.get("condition_id"):
-                existing.condition_id = m["condition_id"]
-            # Resolution fields
-            if m.get("resolution_value") is not None:
-                existing.resolution_value = m["resolution_value"]
-            if m.get("resolution_outcome"):
-                existing.resolution_outcome = m["resolution_outcome"]
-            if m.get("resolved_at"):
-                existing.resolved_at = _strip_timezone(m["resolved_at"])
-        else:
-            # Insert new market
-            market = Market(
-                platform_id=platform_id,
-                external_id=m["external_id"],
-                condition_id=m.get("condition_id"),
-                token_id_yes=m.get("token_id_yes"),
-                token_id_no=m.get("token_id_no"),
-                question=m["question"],
-                description=m.get("description"),
-                category=m.get("category"),
-                normalized_category=normalize_category(
-                    m.get("category"), m.get("question", ""), m.get("description", ""),
-                ),
-                slug=m.get("slug"),
-                price_yes=m.get("price_yes"),
-                price_no=m.get("price_no"),
-                volume_24h=m.get("volume_24h", 0),
-                volume_total=m.get("volume_total", 0),
-                liquidity=m.get("liquidity", 0),
-                is_active=m.get("is_active", True),
-                is_resolved=m.get("is_resolved", False),
-                end_date=_strip_timezone(m.get("end_date")),
-                is_neg_risk=m.get("is_neg_risk", False),
-                resolution_value=m.get("resolution_value"),
-                resolution_outcome=m.get("resolution_outcome"),
-                resolved_at=_strip_timezone(m.get("resolved_at")),
-                last_fetched_at=datetime.utcnow(),
-            )
-            session.add(market)
-        count += 1
+    Uses no_autoflush blocks and per-market error handling so one bad record
+    doesn't crash the entire batch (critical for PostgreSQL strict type checks).
+    """
+    count = 0
+    errors = 0
+    for m in parsed_markets:
+        try:
+            # Use SAVEPOINT so one failure doesn't revert all previous markets
+            async with session.begin_nested():
+                result = await session.execute(
+                    select(Market).where(
+                        Market.platform_id == platform_id,
+                        Market.external_id == m["external_id"],
+                    )
+                )
+                existing = result.scalar_one_or_none()
+
+                if existing:
+                    # Update existing market
+                    existing.question = m["question"]
+                    existing.description = m.get("description")
+                    existing.category = m.get("category")
+                    existing.normalized_category = normalize_category(
+                        m.get("category"), m.get("question", ""), m.get("description", ""),
+                    )
+                    existing.price_yes = m.get("price_yes")
+                    existing.price_no = m.get("price_no")
+                    existing.volume_24h = m.get("volume_24h", 0)
+                    existing.volume_total = m.get("volume_total", 0)
+                    existing.liquidity = m.get("liquidity", 0)
+                    existing.is_active = m.get("is_active", True)
+                    existing.is_resolved = m.get("is_resolved", False)
+                    existing.end_date = _strip_timezone(m.get("end_date"))
+                    existing.is_neg_risk = m.get("is_neg_risk", False)
+                    existing.last_fetched_at = datetime.utcnow()
+                    existing.updated_at = datetime.utcnow()
+                    if m.get("token_id_yes"):
+                        existing.token_id_yes = m["token_id_yes"]
+                    if m.get("token_id_no"):
+                        existing.token_id_no = m["token_id_no"]
+                    if m.get("condition_id"):
+                        existing.condition_id = m["condition_id"]
+                    # Resolution fields
+                    if m.get("resolution_value") is not None:
+                        existing.resolution_value = m["resolution_value"]
+                    if m.get("resolution_outcome"):
+                        existing.resolution_outcome = m["resolution_outcome"]
+                    if m.get("resolved_at"):
+                        existing.resolved_at = _strip_timezone(m["resolved_at"])
+                else:
+                    # Insert new market
+                    market = Market(
+                        platform_id=platform_id,
+                        external_id=m["external_id"],
+                        condition_id=m.get("condition_id"),
+                        token_id_yes=m.get("token_id_yes"),
+                        token_id_no=m.get("token_id_no"),
+                        question=m["question"],
+                        description=m.get("description"),
+                        category=m.get("category"),
+                        normalized_category=normalize_category(
+                            m.get("category"), m.get("question", ""), m.get("description", ""),
+                        ),
+                        slug=m.get("slug"),
+                        price_yes=m.get("price_yes"),
+                        price_no=m.get("price_no"),
+                        volume_24h=m.get("volume_24h", 0),
+                        volume_total=m.get("volume_total", 0),
+                        liquidity=m.get("liquidity", 0),
+                        is_active=m.get("is_active", True),
+                        is_resolved=m.get("is_resolved", False),
+                        end_date=_strip_timezone(m.get("end_date")),
+                        is_neg_risk=m.get("is_neg_risk", False),
+                        resolution_value=m.get("resolution_value"),
+                        resolution_outcome=m.get("resolution_outcome"),
+                        resolved_at=_strip_timezone(m.get("resolved_at")),
+                        last_fetched_at=datetime.utcnow(),
+                    )
+                    session.add(market)
+            count += 1
+        except Exception as e:
+            errors += 1
+            if errors <= 3:  # Log first few, avoid spam
+                logger.warning(f"Skipping market {m.get('external_id', '?')[:20]}: {e}")
 
     await session.commit()
+    if errors:
+        logger.warning(f"Upsert complete: {count} ok, {errors} skipped")
     return count
 
 

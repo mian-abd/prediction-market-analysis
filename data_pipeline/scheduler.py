@@ -173,28 +173,36 @@ async def deactivate_expired_markets():
 # ── Market & Price Collection ────────────────────────────────────────
 
 async def collect_markets():
-    """Fetch and store all active markets from both platforms."""
+    """Fetch and store all active markets from both platforms.
+
+    Uses separate sessions per platform so one failure doesn't cascade
+    (PostgreSQL rolls back the entire session on error).
+    """
     logger.info("Starting market collection...")
+
+    # Ensure platforms exist first (shared lookup)
     async with async_session() as session:
         platforms = await ensure_platforms(session)
 
-        # Polymarket
-        try:
-            raw_poly = await polymarket_gamma.fetch_all_active_markets(max_markets=2000)
-            parsed_poly = [parse_gamma_market(m) for m in raw_poly]
+    # Polymarket — isolated session
+    try:
+        raw_poly = await polymarket_gamma.fetch_all_active_markets(max_markets=2000)
+        parsed_poly = [parse_gamma_market(m) for m in raw_poly]
+        async with async_session() as session:
             count = await upsert_markets(session, parsed_poly, platforms["polymarket"])
             logger.info(f"Upserted {count} Polymarket markets")
-        except Exception as e:
-            logger.error(f"Polymarket collection failed: {e}")
+    except Exception as e:
+        logger.error(f"Polymarket collection failed: {e}")
 
-        # Kalshi
-        try:
-            raw_kalshi = await kalshi_markets.fetch_all_active_markets(max_markets=2000)
-            parsed_kalshi = [parse_kalshi_market(m) for m in raw_kalshi]
+    # Kalshi — isolated session
+    try:
+        raw_kalshi = await kalshi_markets.fetch_all_active_markets(max_markets=2000)
+        parsed_kalshi = [parse_kalshi_market(m) for m in raw_kalshi]
+        async with async_session() as session:
             count = await upsert_markets(session, parsed_kalshi, platforms["kalshi"])
             logger.info(f"Upserted {count} Kalshi markets")
-        except Exception as e:
-            logger.error(f"Kalshi collection failed: {e}")
+    except Exception as e:
+        logger.error(f"Kalshi collection failed: {e}")
 
     logger.info("Market collection complete")
 

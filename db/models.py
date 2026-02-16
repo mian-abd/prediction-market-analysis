@@ -44,7 +44,7 @@ class Market(Base):
     # Resolution
     is_active = Column(Boolean, default=True)
     is_resolved = Column(Boolean, default=False)
-    resolution_outcome = Column(String(10))  # "YES"/"NO" text outcome
+    resolution_outcome = Column(Text)  # "YES"/"NO" or resolution source URL
     resolution_value = Column(Float)  # Numeric: 1.0=YES, 0.0=NO (for ML training)
     end_date = Column(DateTime)
     resolved_at = Column(DateTime)
@@ -307,7 +307,7 @@ class AutoTradingConfig(Base):
     is_enabled = Column(Boolean, default=False)
 
     # Signal filters
-    min_quality_tier = Column(String(10), default="high")
+    min_quality_tier = Column(String(20), default="high")
     min_confidence = Column(Float, default=0.7)
     min_net_ev = Column(Float, default=0.05)
 
@@ -454,7 +454,7 @@ class EnsembleEdgeSignal(Base):
 
     # Quality
     confidence = Column(Float, nullable=False)
-    quality_tier = Column(String(10), nullable=False)  # "high", "medium", "low"
+    quality_tier = Column(String(20), nullable=False)  # "high", "medium", "low", "speculative"
     model_predictions = Column(JSON)  # Individual model probs + weights
 
     # Outcome tracking
