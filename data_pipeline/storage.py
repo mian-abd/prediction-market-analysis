@@ -11,6 +11,13 @@ from data_pipeline.category_normalizer import normalize_category
 logger = logging.getLogger(__name__)
 
 
+def _strip_timezone(dt):
+    """Strip timezone from datetime for PostgreSQL compatibility with timezone-naive columns."""
+    if dt and hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
 async def ensure_platforms(session: AsyncSession) -> dict[str, int]:
     """Ensure polymarket and kalshi platform rows exist. Returns {name: id}."""
     platforms = {}
@@ -62,7 +69,7 @@ async def upsert_markets(
             existing.liquidity = m.get("liquidity", 0)
             existing.is_active = m.get("is_active", True)
             existing.is_resolved = m.get("is_resolved", False)
-            existing.end_date = m.get("end_date")
+            existing.end_date = _strip_timezone(m.get("end_date"))
             existing.is_neg_risk = m.get("is_neg_risk", False)
             existing.last_fetched_at = datetime.utcnow()
             existing.updated_at = datetime.utcnow()
@@ -78,7 +85,7 @@ async def upsert_markets(
             if m.get("resolution_outcome"):
                 existing.resolution_outcome = m["resolution_outcome"]
             if m.get("resolved_at"):
-                existing.resolved_at = m["resolved_at"]
+                existing.resolved_at = _strip_timezone(m["resolved_at"])
         else:
             # Insert new market
             market = Market(
@@ -101,11 +108,11 @@ async def upsert_markets(
                 liquidity=m.get("liquidity", 0),
                 is_active=m.get("is_active", True),
                 is_resolved=m.get("is_resolved", False),
-                end_date=m.get("end_date"),
+                end_date=_strip_timezone(m.get("end_date")),
                 is_neg_risk=m.get("is_neg_risk", False),
                 resolution_value=m.get("resolution_value"),
                 resolution_outcome=m.get("resolution_outcome"),
-                resolved_at=m.get("resolved_at"),
+                resolved_at=_strip_timezone(m.get("resolved_at")),
                 last_fetched_at=datetime.utcnow(),
             )
             session.add(market)

@@ -9,7 +9,13 @@
       "Bash(npx vite build)",
       "Bash(curl:*)",
       "Bash(timeout 10 tail:*)",
-      "Bash(/d/prediction-market-analysis/venv/Scripts/python.exe:*)"
+      "Bash(/d/prediction-market-analysis/venv/Scripts/python.exe:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nUse real Polymarket position data for trader profiles\n\nSwitch from broken gamma-api.polymarket.com to working\ndata-api.polymarket.com/v1/positions endpoint. All 72 traders now\npopulated with real position-level P&L \\(cashPnl\\), win rates, and\ndrawdown from actual Polymarket trading activity.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(d:/prediction-market-analysis/venv/Scripts/python.exe:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix copy trading: proxy to local backend, backfill traders first\n\nTwo issues preventing traders from showing:\n1. Vite proxy defaulted to Railway URL - local frontend never hit\n   local backend where traders were backfilled. Now defaults to\n   localhost:8000 for development.\n2. Trader backfill ran AFTER all heavy collection \\(markets, prices,\n   ML scans\\) - Railway users hit the page before backfill finished.\n   Moved backfill to run FIRST in pipeline startup.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(grep:*)"
     ]
   }
 }
