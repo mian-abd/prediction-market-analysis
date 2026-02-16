@@ -1,253 +1,228 @@
 # PredictFlow
 
-> **Quantitative prediction market analysis platform with multi-strategy signal generation, ML ensemble models, and automated paper trading**
+> **Quantitative prediction market analysis platform — ML ensemble models, automated paper trading, and multi-strategy signal generation**
 
-Built for the **"Built with Opus 4.6: Claude Code Hackathon"** (Feb 10-16, 2026) — designed for long-term prop trading.
+**[Live Demo](https://prediction-market-analysis-one.vercel.app)** | **[API](https://prediction-market-analysis-production-e6fa.up.railway.app/api/v1/system/stats)**
+
+Built for the **"Built with Claude: Claude Code Hackathon"** (Feb 10-16, 2026)
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
-## What Makes This Different
+## The Problem
 
-Most prediction market tools show prices. PredictFlow generates **fee-adjusted, Kelly-sized trading signals** with honest confidence estimates.
+Prediction markets are the most accurate forecasting tool we have — but trading them profitably requires quantitative infrastructure that doesn't exist for retail users. Prices are noisy, fees eat edges, and most "mispricing" signals are statistical noise.
 
-- **3-model ensemble** (Isotonic + XGBoost + LightGBM) with temporal train/test split — no future data leakage
-- **Edge credibility capping** — signals >15% edge are auto-flagged as speculative (professional markets don't have 30% edges)
-- **Signal accuracy tracking** — every signal is scored against market resolution. Hit rate, Brier score, simulated P&L all queryable via API
-- **Risk management** — position limits, exposure caps, daily loss circuit breaker enforced before every trade
-- **Fee-aware throughout** — platform fees + 1% slippage deducted from every edge estimate
-- **Paper trading automation** — high-confidence signals auto-execute as paper trades with fractional Kelly sizing
+## What PredictFlow Does
+
+PredictFlow is a **full-stack quantitative trading platform** that continuously collects data from Polymarket and Kalshi, runs ML models against every active market, generates fee-adjusted trading signals, and auto-executes paper trades with proper risk management.
+
+It doesn't just show prices — it answers: **"Is this market mispriced, by how much after fees, and how much should I bet?"**
 
 ---
 
-## Architecture
+## Key Results
+
+### ML Ensemble Performance
+
+Trained on **4,341 resolved markets** with strict temporal split (no future data leakage):
+
+| Metric | Ensemble | Market Baseline | Improvement |
+|--------|----------|-----------------|-------------|
+| **Brier Score** | **0.0662** | 0.0843 | **+21.5%** |
+| **AUC-ROC** | **0.9329** | — | — |
+| **Tradeable Range (20-80%)** | **0.1349** | 0.1722 | **+21.7%** |
+
+The 20-80% price bucket is where the real money is — markets near 0% or 100% are easy to predict but untradeable. Our model shows a **21.7% Brier improvement in exactly the price range that matters for trading.**
+
+### Honesty in Metrics
+
+We discovered and fixed data leakage mid-hackathon. Our Brier score went from 0.054 (contaminated) to 0.066 (clean). We documented the entire process in our [CHANGELOG](CHANGELOG.md) — the degradation *proves* the audit was correct.
+
+- Edges >15% are auto-flagged as **speculative** and never auto-traded
+- Post-calibrator was disabled because it *hurt* performance (0.068 > 0.066)
+- Quality gates were tested and found to *not* add value — so we documented that too
+
+---
+
+## How It Works
 
 ```
-                          ┌─────────────────────────────────────┐
-                          │     React 19 Frontend (Vite + TS)   │
-                          │  Dashboard · Markets · Signals ·    │
-                          │  ML Models · Portfolio · Analytics   │
-                          └──────────────┬──────────────────────┘
-                                         │ REST API
-┌────────────────────────────────────────┴──────────────────────────────────┐
-│                        FastAPI Backend (Python 3.13)                      │
-│                                                                          │
-│  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐  ┌────────────┐  │
-│  │ Data Pipeline │  │ ML Ensemble   │  │ Strategy     │  │ Execution  │  │
-│  │ (asyncio)    │  │ (3 models)    │  │ Signals      │  │ Engine     │  │
-│  │              │  │               │  │              │  │            │  │
-│  │ · Prices     │  │ · Calibration │  │ · Ensemble   │  │ · Paper    │  │
-│  │ · Orderbooks │  │ · XGBoost     │  │ · Elo Tennis │  │   trades   │  │
-│  │ · Matching   │  │ · LightGBM    │  │ · Arbitrage  │  │ · Copy     │  │
-│  │ · Snapshots  │  │ · 25 features │  │ · Quality    │  │   trading  │  │
-│  └──────┬───────┘  └──────┬────────┘  │   gates      │  │ · Risk     │  │
-│         │                  │           └──────┬───────┘  │   limits   │  │
-│         │                  │                  │          └─────┬──────┘  │
-│  ┌──────┴──────────────────┴──────────────────┴───────────────┴───────┐  │
-│  │                   SQLite (16 tables, aiosqlite)                    │  │
-│  │  Markets · Prices · Orderbooks · Predictions · Signals · Elo ·    │  │
-│  │  Arbitrage · Portfolio · Trades · Copy · AI Cache · Metrics       │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────┘
+                    ┌────────────────────────────────────────┐
+                    │    React 19 Frontend (Vercel)           │
+                    │  Dashboard · Markets · Signals ·        │
+                    │  ML Models · Portfolio · Copy Trading    │
+                    └──────────────────┬─────────────────────┘
+                                       │ REST API (32+ endpoints)
+┌──────────────────────────────────────┴───────────────────────────────┐
+│                     FastAPI Backend (Railway)                         │
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  ┌──────────┐ │
+│  │ Data Pipeline │  │ ML Ensemble  │  │  Strategy   │  │Execution │ │
+│  │  (asyncio)   │  │  (3 models)  │  │  Signals    │  │ Engine   │ │
+│  │              │  │              │  │             │  │          │ │
+│  │ · Prices     │  │ · Isotonic   │  │ · Ensemble  │  │ · Paper  │ │
+│  │ · Orderbooks │  │ · XGBoost    │  │ · Elo/      │  │   trades │ │
+│  │ · Matching   │  │ · LightGBM   │  │   Glicko-2  │  │ · Copy   │ │
+│  │ · News       │  │ · 19 features│  │ · Arbitrage │  │   trading│ │
+│  └──────┬───────┘  └──────┬───────┘  │ · Quality   │  │ · Risk   │ │
+│         │                  │          │   gates     │  │   mgmt   │ │
+│         │                  │          └──────┬──────┘  └────┬─────┘ │
+│  ┌──────┴──────────────────┴────────────────┴───────────────┴─────┐ │
+│  │              PostgreSQL (17 tables, asyncpg)                    │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────┘
          │                    │                    │
-    ┌────┴────┐         ┌────┴────┐          ┌────┴────┐
-    │Polymarket│         │  Kalshi │          │ Claude  │
-    │Gamma+CLOB│         │REST API │          │Opus 4.6 │
-    └─────────┘         └─────────┘          └─────────┘
+    ┌────┴─────┐        ┌────┴────┐          ┌────┴────┐
+    │Polymarket │        │  Kalshi │          │ Claude  │
+    │Gamma+CLOB │        │REST API │          │Opus 4.6 │
+    └──────────┘        └─────────┘          └─────────┘
 ```
+
+### The Pipeline (runs continuously)
+
+1. **Collect** — Fetch prices from Polymarket CLOB + Kalshi every 20s (~2,000 markets)
+2. **Predict** — Run 3-model ensemble on all active markets every few minutes
+3. **Signal** — Generate fee-aware, Kelly-sized signals with quality tiers
+4. **Execute** — Auto-open paper trades for high-confidence signals (>0.6 confidence, >7% net EV)
+5. **Close** — Stop-loss at 5%, auto-close on signal expiry, fee-aware P&L
+6. **Score** — Track every signal against actual resolution for rolling Brier/hit-rate
 
 ---
 
-## Quick Start
+## Five Trading Strategies
 
-### Prerequisites
+### 1. ML Ensemble Edge Detection
+3-model blend finds markets where predicted probability diverges from market price. Every signal includes direction, net EV (after 2% Polymarket fee + 1% slippage), Kelly fraction, and quality tier. **Edge decay with 2-hour half-life** prevents stale signals from executing.
 
-- Python 3.13+
-- Node.js 18+
-- API key: Anthropic (for Claude deep analysis, optional)
+### 2. Elo Sports Pricing (Glicko-2)
+Custom Glicko-2 engine for tennis player ratings. When Elo-implied win probability differs from market price by more than fees, generate a signal. Surface-specific ratings (hard, clay, grass).
 
-### Backend
+### 3. Cross-Platform Arbitrage
+TF-IDF matching between Polymarket and Kalshi markets, then fee-aware spread detection. Most "opportunities" vanish after honest fee accounting — we show that transparently.
 
-```bash
-git clone https://github.com/yourusername/prediction-market-analysis.git
-cd prediction-market-analysis
+### 4. Copy Trading
+Real trader data from Polymarket leaderboard (not synthetic). Follow top traders, auto-replicate positions with configurable sizing, activity feed in real-time.
 
-# Virtual environment
-python -m venv venv
-# Linux/Mac: source venv/bin/activate
-# Windows: .\venv\Scripts\Activate.ps1
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env: add ANTHROPIC_API_KEY (optional)
-
-# Start server (auto-creates DB, starts background pipeline)
-uvicorn api.main:app --reload --port 8000
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-# Open http://localhost:5173
-```
-
-### Verify
-
-- Health check: `GET http://localhost:8000/api/v1/health`
-- System stats: `GET http://localhost:8000/api/v1/system/stats`
-- Frontend: http://localhost:5173
-
-### Optional: Build ML Models
-
-```bash
-# Train ensemble (requires resolved markets in DB)
-python scripts/train_ensemble.py
-
-# Build Elo ratings for tennis markets
-python scripts/build_elo_ratings.py --export-db
-
-# Backfill historical prices from CLOB API
-python scripts/backfill_price_history.py
-```
+### 5. Claude Deep Analysis
+On-demand AI analysis via Claude Opus 4.6 with extended thinking. Cached by SHA-256 prompt hash — never pays twice for the same analysis. ~$0.15/market.
 
 ---
 
-## ML Ensemble Model
+## Frontend (12 pages)
+
+| Page | What It Shows |
+|------|---------------|
+| **Dashboard** | Live stats, risk status bars, market overview, pipeline status |
+| **Markets** | Browse 3,000+ markets with search, filters, categories, grid/list views |
+| **Market Detail** | Price chart, ensemble breakdown, quality gates, AI analysis trigger |
+| **Signals Hub** | All active signals — direction arrows, Kelly sizing, quality tier pills, model agreement |
+| **ML Models** | Training methodology, Brier scores, feature importance, signal accuracy over time |
+| **Portfolio** | Open/closed positions, unrealized P&L (correct for both YES and NO sides) |
+| **Copy Trading** | Top trader leaderboard, follow/unfollow, position replication |
+| **Calibration** | Model calibration curve visualization |
+| **Correlation** | Interactive market correlation matrix with zoom/pan |
+| **Data Quality** | System health monitoring, pipeline metrics |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| **Frontend** | React 19, TypeScript, Vite 7, Tailwind CSS 4, Recharts, TanStack Query |
+| **Backend** | Python 3.13, FastAPI, SQLAlchemy 2 (async), Pydantic |
+| **ML** | scikit-learn (isotonic regression), XGBoost, LightGBM, Glicko-2 |
+| **AI** | Claude Opus 4.6 via Anthropic SDK (user-triggered, cached) |
+| **Database** | PostgreSQL (Railway, asyncpg) / SQLite (local dev) |
+| **Data Sources** | Polymarket Gamma + CLOB APIs, Kalshi REST API, GDELT news |
+| **Deployment** | Vercel (frontend) + Railway (backend + PostgreSQL) |
+
+---
+
+## API (32+ endpoints)
+
+```
+Markets          GET  /markets, /markets/{id}, /markets/categories
+ML Predictions   GET  /predictions/{id}, /predictions/top/mispriced, /predictions/accuracy/backtest
+Signals          GET  /strategies/signals, /strategies/ensemble-edges, /strategies/signal-performance
+Elo              GET  /elo/ratings, /elo/predict/tennis, /elo/edges
+Portfolio        GET  /portfolio/positions, /portfolio/summary, /portfolio/risk-status
+                 POST /portfolio/positions, /portfolio/positions/{id}/close
+Auto-Trading     GET  /auto-trading/status
+Arbitrage        GET  /arbitrage/opportunities, /arbitrage/history
+AI Analysis      POST /analyze/{id}  |  GET /analyze/{id}/cached
+Copy Trading     GET  /copy-trading/traders, /copy-trading/traders/{id}
+System           GET  /system/stats, /health
+```
+
+All endpoints prefixed with `/api/v1/`.
+
+---
+
+## Ensemble Model Details
 
 **3-model blend** with temporal train/test split at 2026-02-13:
 
 | Component | Weight | Role |
 |-----------|--------|------|
-| Isotonic Regression | 20% | Calibration correction |
-| XGBoost | 40% | Non-linear patterns |
-| LightGBM | 40% | Gradient boosting |
+| Isotonic Regression | 20% | Probability calibration |
+| XGBoost | 40% | Non-linear feature interactions |
+| LightGBM | 40% | Gradient boosting (complementary to XGB) |
 
-**Performance** (2,840 training markets, 957 YES / 1,883 NO):
+**19 features extracted** per market (7 survive automatic pruning):
 
-| Metric | Value |
-|--------|-------|
-| Brier Score | 0.0539 (baseline 0.0670, +19.6% improvement) |
-| AUC-ROC | 0.9654 |
-| Features | 25 extracted, 13 survive pruning |
-| Post-calibrator | Disabled (hurts: 0.0579 > 0.0539) |
+| Feature | XGB Importance | Source |
+|---------|---------------|--------|
+| `log_open_interest` | 41% | Liquidity signal |
+| `volatility_20` | 27% | 20-period price volatility |
+| `price_yes` | 16% | Market consensus price |
+| `time_to_resolution_hrs` | 8% | Temporal decay |
+| `price_distance_from_50` | 5% | Uncertainty measure |
+| `return_1h` | 2% | Short-term momentum |
+| `zscore_24h` | 1% | Deviation from rolling mean |
 
-**Top features** (XGBoost importance): `volume_volatility` (55%), `volume_trend_7d` (26%), `log_open_interest` (5%)
+### Execution Engine
 
-### Signal Generation Pipeline
-
-1. Extract 25 features per market (price, volume, time, orderbook)
-2. Ensemble prediction (weighted blend of 3 models)
-3. Quality gates: volume > threshold, liquidity check, price range check
-4. Fee-aware edge: `raw_edge - platform_fee - slippage`
-5. Edge credibility cap: edges >15% flagged as speculative
-6. Fractional Kelly sizing (0.25x Kelly, 2% max of bankroll)
-7. Signal persistence + resolution scoring for accuracy tracking
-
----
-
-## Strategies
-
-### ML Ensemble Edge Detection
-Find markets where the ensemble model disagrees with market price by more than fees + slippage. Signals include direction (buy YES/NO), net expected value, Kelly fraction, confidence score, and quality tier (high/medium/low/speculative).
-
-### Elo Sports Edge Detection
-Glicko-2 ratings for tennis players. When Elo-implied probability diverges from market price by more than fees, generate a signal. Uses canonical Kelly formula shared with ensemble detector.
-
-### Cross-Platform Arbitrage
-Detect same-event pricing differences between Polymarket and Kalshi. Fee-aware (platform fees + 1% slippage). Many "opportunities" disappear after honest fee accounting.
-
-### Copy Trading
-Follow top Polymarket traders. Auto-replicate their positions with configurable sizing. Activity feed shows leader trades in real-time.
-
-### Claude Deep Analysis
-On-demand AI analysis (~$0.15/market). Extended thinking + market context. Cached in SQLite (SHA-256 prompt hash) — never pays twice for the same analysis.
+- **Edge decay**: 2-hour half-life on Kelly sizing (stale signals get smaller bets)
+- **Confidence scoring**: Penalizes edges >8% (drops to 0 at 15% — real markets don't have 30% edges)
+- **Risk management**: $100 max position, $500 exposure cap, $25 daily loss circuit breaker
+- **Fee model**: 2% on net winnings only (Polymarket fee structure), applied asymmetrically in Kelly formula
+- **Dual portfolios**: Manual (human + copy trades) vs Auto (ML signals), isolated risk budgets
 
 ---
 
-## API Reference (25+ endpoints)
+## Quick Start (Local Development)
 
-### Markets
-```
-GET  /api/v1/markets                    # List markets (paginated, filterable)
-GET  /api/v1/markets/categories         # Category breakdown
-GET  /api/v1/markets/{id}               # Market details + price history
-```
+```bash
+# Clone and setup
+git clone https://github.com/mian-abd/prediction-market-analysis.git
+cd prediction-market-analysis
 
-### ML Predictions
-```
-GET  /api/v1/predictions/{id}           # Ensemble prediction for market
-GET  /api/v1/predictions/top/mispriced  # Top mispriced markets
-GET  /api/v1/predictions/top/edges      # Top edge opportunities
-GET  /api/v1/predictions/accuracy/backtest  # Signal accuracy proof
-GET  /api/v1/calibration/curve          # Calibration curve data
-```
+# Backend
+python -m venv venv
+.\venv\Scripts\Activate.ps1          # Windows
+# source venv/bin/activate            # Linux/Mac
+pip install -r requirements.txt
+uvicorn api.main:app --reload --port 8000
 
-### Strategy Signals
-```
-GET  /api/v1/strategies/signals         # Unified: all signal types
-GET  /api/v1/strategies/ensemble-edges  # Active ensemble edge signals
-GET  /api/v1/strategies/signal-performance  # Historical signal P&L time-series
+# Frontend (new terminal)
+cd frontend
+npm install
+npm run dev                           # http://localhost:5173
 ```
 
-### Elo Ratings
-```
-GET  /api/v1/elo/ratings                # All player ratings
-GET  /api/v1/elo/player/{name}          # Player rating + history
-GET  /api/v1/elo/predict/tennis         # Head-to-head prediction
-GET  /api/v1/elo/edges                  # Active Elo edge signals
-POST /api/v1/elo/scan                   # Trigger Elo edge scan
-```
+### Optional: Train ML Models
 
-### Portfolio & Risk
+```bash
+python scripts/train_ensemble.py              # Train ensemble (needs resolved markets)
+python scripts/build_elo_ratings.py --export-db  # Build Elo ratings
+python scripts/backfill_price_history.py      # Backfill price history from CLOB API
 ```
-GET  /api/v1/portfolio/positions        # Open positions
-POST /api/v1/portfolio/positions        # Open new position (risk-checked)
-POST /api/v1/portfolio/positions/{id}/close  # Close position
-GET  /api/v1/portfolio/summary          # Portfolio summary
-GET  /api/v1/portfolio/risk-status      # Risk limit utilization
-```
-
-### Arbitrage
-```
-GET  /api/v1/arbitrage/opportunities    # Current opportunities
-GET  /api/v1/arbitrage/history          # Historical opportunities
-```
-
-### AI Analysis
-```
-POST /api/v1/analyze/{id}              # Trigger Claude analysis
-GET  /api/v1/analyze/{id}/cached       # Get cached analysis
-GET  /api/v1/analyze/cost              # Cost tracking
-```
-
-### System
-```
-GET  /api/v1/health                    # Health check
-GET  /api/v1/system/stats              # Dashboard statistics
-```
-
----
-
-## Frontend Pages
-
-| Page | Description |
-|------|-------------|
-| **Dashboard** | Live stats, risk status card, market overview, quick actions |
-| **Markets** | Browse 3,200+ markets with search, filters, sort, grid/list views |
-| **Signals** | All active signals with direction arrows, Kelly sizing, quality tiers, model agreement indicators |
-| **ML Models** | Training methodology, Brier scores, ablation study, feature importance, signal accuracy charts |
-| **Market Detail** | Price chart, ensemble breakdown, quality gate checklist, trading signal card, AI analysis |
-| **Analytics** | Correlation matrix, sentiment gauge, orderbook depth, position heatmap |
-| **Portfolio** | Open/closed positions, P&L tracking (correct for both YES and NO sides) |
 
 ---
 
@@ -255,56 +230,50 @@ GET  /api/v1/system/stats              # Dashboard statistics
 
 ```
 prediction-market-analysis/
-├── api/                    # FastAPI application
-│   ├── routes/             # 25+ API endpoints
-│   └── main.py             # App factory + lifespan
-├── arbitrage/              # Arbitrage detection + fee calculator (with slippage)
-├── config/                 # Settings, constants, risk limits
-├── data_pipeline/          # Background pipeline (asyncio)
-│   ├── collectors/         # Polymarket, Kalshi data fetchers
-│   ├── copy_engine.py      # Copy trading auto-replication
-│   └── scheduler.py        # Pipeline orchestrator
-├── db/                     # SQLAlchemy models (16 tables), migrations
-├── execution/              # Paper trading automation
-│   └── paper_executor.py   # Auto-trade from high-confidence signals
-├── ml/                     # Machine learning
-│   ├── features/           # 25 engineered features + quality metadata
-│   ├── models/             # Ensemble (calibration + XGB + LGB)
-│   ├── strategies/         # Edge detection (ensemble + Elo)
-│   ├── evaluation/         # Signal accuracy tracker + resolution scorer
-│   └── saved_models/       # Trained model artifacts + model card
-├── risk/                   # Risk management
-│   └── risk_manager.py     # Position limits, exposure caps, circuit breaker
-├── ai_analysis/            # Claude integration + caching
+├── api/                    # FastAPI app + 32 route handlers
+├── arbitrage/              # Cross-platform arb detection + fee calculator
+├── ai_analysis/            # Claude integration + SHA-256 caching
+├── config/                 # Settings, risk limits
+├── data_pipeline/          # Background pipeline (asyncio scheduler)
+│   ├── collectors/         # Polymarket Gamma/CLOB, Kalshi, GDELT, trader data
+│   ├── copy_engine.py      # Copy trading position replication
+│   └── scheduler.py        # Orchestrator (prices → signals → trades → scoring)
+├── db/                     # SQLAlchemy 2 models (17 tables)
+├── execution/              # Paper executor + auto-closer (stop-loss, fee-aware P&L)
+├── ml/
+│   ├── features/           # 19 engineered features + automatic pruning
+│   ├── models/             # Ensemble (Isotonic + XGB + LGB) + Glicko-2 Elo
+│   ├── strategies/         # Edge detection + quality gates + Kelly sizing
+│   └── evaluation/         # Signal accuracy tracker + resolution scorer
+├── risk/                   # Position limits, exposure caps, circuit breaker
 ├── frontend/               # React 19 + TypeScript + Vite 7 + Tailwind 4
-│   └── src/
-│       ├── pages/          # 8 pages
-│       └── components/     # Charts, skeletons, error states
+│   └── src/pages/          # 12 pages
 ├── scripts/                # Training, backfill, Elo builder
-└── tests/                  # Test suite
+└── docs/                   # Architecture, API reference, strategies deep-dive
 ```
 
 ---
 
-## Technology Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Backend | Python 3.13, FastAPI, SQLAlchemy 2 (async), aiosqlite |
-| ML | scikit-learn (isotonic), XGBoost, LightGBM, Glicko-2 |
-| Frontend | React 19, TypeScript, Vite 7, Tailwind CSS 4, Recharts |
-| AI | Claude Opus 4.6 via Anthropic SDK (user-triggered, cached) |
-| Data | Polymarket Gamma + CLOB APIs, Kalshi REST API |
-
-## Cost
+## Cost to Run
 
 | Component | Cost |
 |-----------|------|
-| Data collection | $0 (free APIs) |
-| ML training + inference | $0 (local compute) |
-| Arbitrage detection | $0 (pure math) |
-| Claude analyses | ~$0.15/analysis (cached forever) |
-| **Monthly estimate** | **$15-50** |
+| Data collection (Polymarket, Kalshi, GDELT) | $0 |
+| ML training + inference | $0 (CPU) |
+| Claude deep analysis | ~$0.15/market (cached) |
+| Railway backend + PostgreSQL | ~$5/month |
+| Vercel frontend | $0 (free tier) |
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/ARCHITECTURE.md) | System design, data flow, design decisions |
+| [API Reference](docs/API.md) | Full endpoint documentation with examples |
+| [Strategies](docs/STRATEGIES.md) | Deep-dive on all 5 trading strategies |
+| [Changelog](CHANGELOG.md) | Version history including data leakage discovery + fix |
 
 ---
 
@@ -314,10 +283,10 @@ MIT License - see [LICENSE](LICENSE) file.
 
 ## Acknowledgments
 
-- **Academic Research**: [AFT 2025 NegRisk paper](https://arxiv.org/abs/2501.05602), [Hediger et al. 2022](https://www.sciencedirect.com/science/article/pii/S0169207021001679), [Polymarket calibration](https://arxiv.org/abs/2409.18044)
+- **Academic**: [AFT 2025 NegRisk paper](https://arxiv.org/abs/2501.05602), [Hediger et al. 2022](https://www.sciencedirect.com/science/article/pii/S0169207021001679), [Polymarket calibration](https://arxiv.org/abs/2409.18044)
 - **Platforms**: Polymarket, Kalshi, Anthropic
-- **Hackathon**: "Built with Opus 4.6: Claude Code Hackathon" (Feb 10-16, 2026)
+- **Hackathon**: "Built with Claude: Claude Code Hackathon" (Feb 10-16, 2026)
 
 ---
 
-**Disclaimer:** This platform is for educational and research purposes. Prediction market trading involves financial risk. Not financial advice.
+*This platform is for educational and research purposes. Prediction market trading involves financial risk. Not financial advice.*
