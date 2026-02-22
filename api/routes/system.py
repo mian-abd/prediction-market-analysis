@@ -9,6 +9,7 @@ from db.models import (
     Market, Platform, PriceSnapshot, OrderbookSnapshot,
     ArbitrageOpportunity, CrossPlatformMatch,
 )
+from ml.evaluation.confidence_adjuster import get_adjuster_stats
 
 router = APIRouter(tags=["system"])
 
@@ -74,3 +75,57 @@ async def system_stats(session: AsyncSession = Depends(get_session)):
         "active_arbitrage_opportunities": arb_count,
         "last_data_fetch": latest_fetch.isoformat() if latest_fetch else None,
     }
+
+@router.get("/system/websocket-status")
+async def websocket_status():
+    """Real-time WebSocket streaming status (Phase 2.1)."""
+    try:
+        # Import here to avoid circular dependency
+        from data_pipeline.scheduler import _price_cache, _polymarket_stream
+        
+        if not _price_cache or not _polymarket_stream:
+            return {
+                "status": "not_initialized",
+                "connected": False,
+                "subscribed_markets": 0,
+                "messages_processed": 0,
+                "last_message": None,
+                "pending_arbitrage_signals": 0,
+            }
+        
+        # Get stream stats
+        stream_stats = await _polymarket_stream.get_stats()
+        cache_stats = await _price_cache.get_stats()
+        
+        return {
+            "status": "connected" if stream_stats["connected"] else "disconnected",
+            "connected": stream_stats["connected"],
+            "subscribed_markets": stream_stats["subscribed_markets"],
+            "messages_processed": stream_stats["messages_processed"],
+            "last_message": stream_stats["last_message"],
+            "pending_arbitrage_signals": cache_stats.get("pending_signals", 0),
+            "cache": {
+                "polymarket_cached": cache_stats.get("polymarket_cached", 0),
+                "kalshi_cached": cache_stats.get("kalshi_cached", 0),
+                "total_cached": cache_stats.get("total_cached", 0),
+            }
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "connected": False,
+        }
+
+
+@router.get("/system/confidence-adjuster")
+async def confidence_adjuster_stats():
+    """Adaptive confidence adjuster statistics (Phase 2.5)."""
+    try:
+        stats = get_adjuster_stats()
+        return stats
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+        }
