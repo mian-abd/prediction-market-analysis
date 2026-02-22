@@ -41,12 +41,32 @@ class FeeCalculator:
         platform: str = "polymarket",
         quantity: float = 1.0,
         slippage_pct: float = 0.01,
+        use_bid_ask: bool = False,
+        yes_ask: float | None = None,
+        no_ask: float | None = None,
     ) -> dict:
         """Calculate fees for single-market rebalancing arb.
         Buy YES + NO, guaranteed $1 payout.
-        Includes slippage estimate (default 1%).
+
+        Args:
+            yes_price: YES mid-price (for backward compatibility)
+            no_price: NO mid-price (for backward compatibility)
+            platform: "polymarket" or "kalshi"
+            quantity: Number of contracts
+            slippage_pct: Additional slippage estimate
+            use_bid_ask: If True, use yes_ask/no_ask for accurate execution cost
+            yes_ask: Actual YES ask price (what you pay to buy YES)
+            no_ask: Actual NO ask price (what you pay to buy NO)
+
+        Phase 3 Fix: When use_bid_ask=True, calculates with real execution prices
+        instead of mid-prices, eliminating false positives.
         """
-        entry_cost = (yes_price + no_price) * quantity
+        # Use bid/ask if provided (Phase 3), otherwise fall back to mid-price
+        if use_bid_ask and yes_ask is not None and no_ask is not None:
+            entry_cost = (yes_ask + no_ask) * quantity
+        else:
+            entry_cost = (yes_price + no_price) * quantity
+
         payout = 1.0 * quantity
         gross_profit = payout - entry_cost
 
