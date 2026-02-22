@@ -197,8 +197,9 @@ class EnsembleModel:
         total = sum(inv_brier.values())
         weights = {name: round(val / total, 4) for name, val in inv_brier.items()}
 
-        # Cap calibration weight at 5% — it hurts ensemble (Brier 0.0892 > baseline 0.0843)
-        CAL_MAX_WEIGHT = 0.05
+        # Cap calibration weight at 2% — it hurts ensemble (Brier 0.0892 > baseline 0.0843)
+        # Reduced from 5% to 2% in Phase 2 for better accuracy
+        CAL_MAX_WEIGHT = 0.02
         if "calibration" in weights and weights["calibration"] > CAL_MAX_WEIGHT:
             excess = weights["calibration"] - CAL_MAX_WEIGHT
             weights["calibration"] = CAL_MAX_WEIGHT
