@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import PaperTrade
+from db.models import PortfolioPosition
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +79,13 @@ class ConfidenceAdjuster:
 
         # Get all closed positions from last N days
         result = await session.execute(
-            select(PaperTrade).where(
+            select(PortfolioPosition).where(
                 and_(
-                    PaperTrade.status.in_(["closed", "auto_closed"]),
-                    PaperTrade.created_at >= cutoff,
-                    PaperTrade.strategy.in_(["ensemble", "elo"]),  # Only adaptive strategies
-                    PaperTrade.confidence.isnot(None),
-                    PaperTrade.entry_price.isnot(None),
+                    PortfolioPosition.status.in_(["closed", "auto_closed"]),
+                    PortfolioPosition.created_at >= cutoff,
+                    PortfolioPosition.strategy.in_(["ensemble", "elo"]),  # Only adaptive strategies
+                    PortfolioPosition.confidence.isnot(None),
+                    PortfolioPosition.entry_price.isnot(None),
                 )
             )
         )
