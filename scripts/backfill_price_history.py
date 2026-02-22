@@ -129,22 +129,13 @@ async def backfill_all_markets(limit: int = 1000, days: int = 30):
 
     # Query markets first (separate session)
     async with async_session() as query_session:
-        # STEP 1: Get markets pipeline is already tracking (has recent price snapshots)
-        logger.info("Finding pipeline-tracked markets...")
-        tracked_ids_result = await query_session.execute(
-            select(PriceSnapshot.market_id.distinct())
-            .where(PriceSnapshot.timestamp >= datetime.utcnow() - timedelta(days=30))
-        )
-        tracked_ids = set(row[0] for row in tracked_ids_result)
-        logger.info(f"Found {len(tracked_ids)} pipeline-tracked markets (last 30 days)")
-
-        # STEP 2: Find resolved markets from that tracked set
-        logger.info("Filtering to resolved markets with token IDs...")
+        # Get ALL resolved markets with token IDs (not just tracked ones)
+        # This ensures we backfill historical data for training, not just live markets
+        logger.info("Finding resolved markets with token IDs...")
         result = await query_session.execute(
             select(Market)
             .where(
-                Market.id.in_(tracked_ids),  # Only markets we're already tracking
-                Market.resolution_value.isnot(None),  # That have resolved
+                Market.resolution_value.isnot(None),  # Resolved markets
                 Market.token_id_yes.isnot(None),  # With token IDs for API
             )
             .order_by(Market.volume_total.desc())  # Prioritize high-volume
@@ -153,9 +144,8 @@ async def backfill_all_markets(limit: int = 1000, days: int = 30):
         markets = result.scalars().all()
 
     logger.info("=" * 60)
-    logger.info("ALIGNMENT SUMMARY:")
-    logger.info(f"Pipeline-tracked markets (last 30d): {len(tracked_ids)}")
-    logger.info(f"Resolved + tracked + has token_id: {len(markets)}")
+    logger.info("BACKFILL SUMMARY:")
+    logger.info(f"Resolved markets with token_id: {len(markets)}")
     logger.info(f"Will backfill: {len(markets)} markets")
     logger.info(f"Days per market: {days} days (hourly snapshots)")
     logger.info(f"Expected snapshots: ~{len(markets) * days * 24:,}")

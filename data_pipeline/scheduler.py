@@ -276,7 +276,7 @@ async def collect_orderbooks():
     """Collect CLOB orderbook snapshots for top Polymarket markets by volume."""
     logger.info("Starting orderbook collection...")
     async with async_session() as session:
-        markets = await get_active_markets(session, platform_name="polymarket", limit=200)
+        markets = await get_active_markets(session, platform_name="polymarket", limit=500)  # Increased from 200 to 500 for better feature coverage
         count = 0
 
         for market in markets:

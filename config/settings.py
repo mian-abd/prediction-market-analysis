@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # Pipeline intervals (seconds)
     price_poll_interval_sec: int = 20
-    orderbook_poll_interval_sec: int = 300
+    orderbook_poll_interval_sec: int = 120  # Increased from 300s (5min) to 120s (2min) for better feature coverage
     market_refresh_interval_sec: int = 3600
 
     # Arbitrage thresholds

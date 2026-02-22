@@ -145,6 +145,7 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
             # Group by market and filter to as_of
             markets_by_id = {m.id: m for m in markets}
             skipped_no_ob_as_of = 0
+            stale_orderbooks = 0  # Count orderbooks >10min old
 
             for market_id in market_ids:
                 market = markets_by_id.get(market_id)
@@ -166,11 +167,22 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
 
                 if valid_obs:
                     # Already sorted by timestamp desc, so first is latest before as_of
-                    orderbook_snapshots_map[market_id] = valid_obs[0]
+                    latest_ob = valid_obs[0]
+                    orderbook_snapshots_map[market_id] = latest_ob
+
+                    # Staleness check: warn if orderbook is >10min old relative to as_of
+                    staleness_minutes = (as_of - latest_ob.timestamp).total_seconds() / 60
+                    if staleness_minutes > 10:
+                        stale_orderbooks += 1
                 # Else: no orderbook before as_of, skip (no entry in map)
 
             if skipped_no_ob_as_of > 0:
                 logger.info(f"  Orderbook: skipped {skipped_no_ob_as_of} markets (no valid as_of time)")
+            if stale_orderbooks > 0:
+                logger.warning(
+                    f"  ⚠️  {stale_orderbooks}/{len(orderbook_snapshots_map)} orderbooks are >10min stale "
+                    f"(increase collection frequency or backfill historical data)"
+                )
 
             session.expunge_all()
 

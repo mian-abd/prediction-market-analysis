@@ -22,7 +22,10 @@
       "WebFetch(domain:arxiv.org)",
       "WebFetch(domain:hackmd.io)",
       "WebFetch(domain:pro.stockalarm.io)",
-      "WebFetch(domain:www.tradetheoutcome.com)"
+      "WebFetch(domain:www.tradetheoutcome.com)",
+      "Bash(.venvScriptspython.exe scriptsenable_elo_trading.py)",
+      "Bash(./venv/Scripts/python.exe:*)",
+      "Bash(tee:*)"
     ]
   }
 }
