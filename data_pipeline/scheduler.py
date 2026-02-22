@@ -388,8 +388,10 @@ async def scan_ensemble_edges():
     try:
         from ml.models.ensemble import EnsembleModel
         from ml.strategies.ensemble_edge_detector import (
-            check_quality_gates, detect_edge, edge_signal_to_dict,
+            check_quality_gates, detect_edge,
         )
+        from db.models import PortfolioPosition
+        from sqlalchemy import update as sa_update
 
         # Load ensemble (cached singleton pattern)
         ensemble = EnsembleModel()
@@ -398,20 +400,33 @@ async def scan_ensemble_edges():
             return
 
         async with async_session() as session:
-            # Expire old signals (>4 hrs for longer position hold times)
-            cutoff = datetime.utcnow() - timedelta(hours=4)
-            from sqlalchemy import update as sa_update
-            await session.execute(
-                sa_update(EnsembleEdgeSignal)
+            # Get market IDs with open auto positions — protect their signals from expiry.
+            # Without this, signals expire at 4h and auto_closer force-closes positions
+            # because the scanner skips open-position markets (no new signal → expiry → close loop).
+            open_pos_result = await session.execute(
+                select(PortfolioPosition.market_id)
                 .where(
-                    EnsembleEdgeSignal.expired_at == None,  # noqa: E711
-                    EnsembleEdgeSignal.detected_at < cutoff,
+                    PortfolioPosition.exit_time == None,  # noqa: E711
+                    PortfolioPosition.portfolio_type == "auto",
                 )
-                .values(expired_at=datetime.utcnow())
             )
+            open_position_market_ids = {row[0] for row in open_pos_result.all()}
+
+            # Expire old signals (>4 hrs), but NOT for markets with open positions.
+            # Positions stay open until stop-loss / edge-invalidation / market resolution.
+            cutoff = datetime.utcnow() - timedelta(hours=4)
+            expiry_query = sa_update(EnsembleEdgeSignal).where(
+                EnsembleEdgeSignal.expired_at == None,  # noqa: E711
+                EnsembleEdgeSignal.detected_at < cutoff,
+            )
+            if open_position_market_ids:
+                expiry_query = expiry_query.where(
+                    EnsembleEdgeSignal.market_id.not_in(open_position_market_ids)
+                )
+            await session.execute(expiry_query.values(expired_at=datetime.utcnow()))
             await session.commit()
 
-            # Query top 2000 liquid active markets (scan all active)
+            # Query top 2000 liquid active markets
             markets = (await session.execute(
                 select(Market)
                 .where(Market.is_active == True, Market.price_yes != None)  # noqa
@@ -419,34 +434,28 @@ async def scan_ensemble_edges():
                 .limit(2000)
             )).scalars().all()
 
+            # Per-stage diagnostic counters
+            n_quality_gate = 0
+            n_has_edge = 0
+            n_skipped_open_pos = 0
             edges_found = 0
+
             for market in markets:
                 try:
-                    # Quick quality gate filter (fast, no ML)
                     gate = check_quality_gates(market)
                     if not gate.passes:
                         continue
+                    n_quality_gate += 1
 
-                    # Full ensemble prediction + edge detection
                     result = ensemble.predict_market(market)
                     edge = detect_edge(market, result)
 
-                    # Only persist tradeable edges
                     if edge.direction and edge.net_ev > 0.03 and edge.confidence >= 0.4:
-                        # Don't create signal if there's already an open position on this market
-                        # Prevents signal expiry → re-creation → duplicate position loop
-                        from db.models import PortfolioPosition
-                        existing_pos = await session.execute(
-                            select(PortfolioPosition.id)
-                            .where(
-                                PortfolioPosition.market_id == market.id,
-                                PortfolioPosition.exit_time == None,  # noqa: E711
-                                PortfolioPosition.portfolio_type == "auto",
-                            )
-                            .limit(1)
-                        )
-                        if existing_pos.scalar_one_or_none():
-                            continue  # Skip: position already exists, don't create new signal
+                        n_has_edge += 1
+
+                        if market.id in open_position_market_ids:
+                            n_skipped_open_pos += 1
+                            continue  # Signal kept alive by expiry protection above
 
                         signal = EnsembleEdgeSignal(
                             market_id=market.id,
@@ -469,7 +478,11 @@ async def scan_ensemble_edges():
                     logger.debug(f"Edge detection failed for market {market.id}: {e}")
 
             await session.commit()
-            logger.info(f"Ensemble scan: {edges_found} new edges from {len(markets)} markets")
+            logger.info(
+                f"Ensemble scan: {edges_found} new signals | "
+                f"{len(markets)} scanned → {n_quality_gate} passed gates → "
+                f"{n_has_edge} with edge → {n_skipped_open_pos} skipped (open pos)"
+            )
 
     except Exception as e:
         logger.error(f"Ensemble edge scan failed: {e}")
@@ -603,11 +616,16 @@ async def run_pipeline_once():
 async def run_pipeline_loop():
     """Continuous pipeline loop with configurable intervals.
 
-    Timing (default 60s price interval):
-      - Prices:     every cycle     (60s)
-      - Arbitrage:  every 5 cycles  (5 min)
-      - Orderbooks: every 5 cycles  (5 min)
-      - Markets:    every 60 cycles (1 hr) + re-match after refresh
+    Timing (default 20s price interval, set via price_poll_interval_sec):
+      - Prices:          every cycle      (~20s)
+      - Auto-close:      every cycle      (~20s) — fast stop-loss response
+      - Arbitrage:       every 5 cycles   (~2 min)
+      - Orderbooks:      every 5 cycles   (~2 min)
+      - Ensemble scan:   every 5 cycles   (~2 min)
+      - Auto-trade:      every 5 cycles   (~2 min)
+      - Elo scan:        every 30 cycles  (~10 min)
+      - Trader refresh:  every 90 cycles  (~30 min)
+      - Markets:         every 180 cycles (~1 hr) + re-match after refresh
     """
     from config.settings import settings
 
@@ -789,14 +807,14 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Elo edge scan error: {e}")
 
-        # ── Ensemble edge scan every ~15 min ──
+        # ── Ensemble edge scan every ~2 min ──
         if cycle % cycles_per_ensemble_scan == 0:
             try:
                 await scan_ensemble_edges()
             except Exception as e:
                 logger.error(f"Ensemble edge scan error: {e}")
 
-        # ── Auto-trade + auto-close every ~15 min (independent cycle) ──
+        # ── Auto-trade every ~2 min (same cadence as ensemble scan) ──
         if cycle % cycles_per_auto_trade == 0:
             try:
                 from execution.paper_executor import execute_paper_trades

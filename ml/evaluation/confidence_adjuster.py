@@ -92,7 +92,7 @@ class ConfidenceAdjuster:
                 and_(
                     PortfolioPosition.exit_time.isnot(None),  # Closed positions
                     PortfolioPosition.entry_time >= cutoff,
-                    PortfolioPosition.strategy == "ensemble",
+                    PortfolioPosition.strategy == "auto_ensemble",
                     EnsembleEdgeSignal.confidence.isnot(None),
                 )
             )
@@ -113,7 +113,7 @@ class ConfidenceAdjuster:
                 and_(
                     PortfolioPosition.exit_time.isnot(None),  # Closed positions
                     PortfolioPosition.entry_time >= cutoff,
-                    PortfolioPosition.strategy == "elo",
+                    PortfolioPosition.strategy == "auto_elo",
                     EloEdgeSignal.elo_confidence.isnot(None),
                 )
             )

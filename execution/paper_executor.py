@@ -143,10 +143,11 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
                 return -1
         return base_ev
 
-    # Filter out markets too close to resolution
-    sorted_pairs = sorted(signal_market_pairs, key=lambda p: urgency_score(p[0], p[1]), reverse=True)
-    sorted_pairs = [(s, m) for s, m in sorted_pairs if urgency_score(s, m) > 0]
-    signals = [pair[0] for pair in sorted_pairs[:10]]
+    # Filter out markets too close to resolution, sort by decayed EV (cache score to avoid double-call)
+    scored = [(s, m, urgency_score(s, m)) for s, m in signal_market_pairs]
+    scored = [(s, m, sc) for s, m, sc in scored if sc > 0]
+    scored.sort(key=lambda t: t[2], reverse=True)
+    signals = [s for s, m, sc in scored[:10]]
 
     if not signals:
         return []

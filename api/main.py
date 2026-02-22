@@ -56,22 +56,23 @@ async def lifespan(app: FastAPI):
         DESIRED_CONFIGS = {
             "ensemble": dict(
                 is_enabled=True, bankroll=1000.0,
-                min_confidence=0.5, min_net_ev=0.05, max_kelly_fraction=0.02,
+                min_confidence=0.5, min_net_ev=0.03, max_kelly_fraction=0.02,
                 stop_loss_pct=0.05, min_quality_tier="medium", close_on_signal_expiry=True,
                 max_position_usd=100.0, max_total_exposure_usd=500.0,
                 max_loss_per_day_usd=25.0, max_daily_trades=20,
             ),
             "elo": dict(
                 is_enabled=False, bankroll=500.0,
-                min_confidence=0.5, min_net_ev=0.05, max_kelly_fraction=0.02,
+                min_confidence=0.5, min_net_ev=0.03, max_kelly_fraction=0.02,
                 stop_loss_pct=0.05, min_quality_tier="medium", close_on_signal_expiry=True,
                 max_position_usd=100.0, max_total_exposure_usd=500.0,
                 max_loss_per_day_usd=25.0, max_daily_trades=20,
             ),
         }
 
-        # One-time migration fields: update these specific fields on existing configs
-        # to push the profitability fixes. After this deploy, configs won't be overwritten.
+        # Migration fields: pushed to DB on every restart so code is source of truth.
+        # min_net_ev lowered 0.05→0.03: calibration-only model generates 3-5% edges;
+        # 5% threshold was blocking ALL signals since scanner creates at >3%.
         MIGRATION_FIELDS = {"min_confidence", "min_net_ev", "min_quality_tier"}
 
         async with async_session() as session:
@@ -83,12 +84,13 @@ async def lifespan(app: FastAPI):
                     session.add(AutoTradingConfig(strategy=strategy, **defaults))
                     logger.info(f"Created auto-trading config: {strategy}")
                 else:
-                    # One-time migration: only update the profitability-critical fields
+                    # Force-sync MIGRATION_FIELDS on every restart so code is the source of truth.
+                    # Other fields (stop_loss_pct, bankroll, etc.) remain user-editable via UI.
                     cfg = existing[strategy]
                     for field in MIGRATION_FIELDS:
                         if field in defaults:
                             setattr(cfg, field, defaults[field])
-                    logger.info(f"Migrated profitability fields for: {strategy}")
+                    logger.info(f"Synced profitability fields for: {strategy}")
 
             await session.commit()
             logger.info("Auto-trading configs initialized/synced")
