@@ -25,7 +25,8 @@
       "WebFetch(domain:www.tradetheoutcome.com)",
       "Bash(.venvScriptspython.exe scriptsenable_elo_trading.py)",
       "Bash(./venv/Scripts/python.exe:*)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "WebSearch"
     ]
   }
 }
