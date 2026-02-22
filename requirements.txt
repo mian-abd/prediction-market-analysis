@@ -37,6 +37,7 @@ python-Levenshtein>=0.25.0
 
 # Caching
 fastapi-cache2>=0.2.2
+redis[asyncio]>=5.0.0  # For real-time price cache and arbitrage detection
 
 # Utilities
 python-dateutil==2.9.0
