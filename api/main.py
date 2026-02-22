@@ -49,25 +49,30 @@ async def lifespan(app: FastAPI):
         from sqlalchemy import select
         from db.models import AutoTradingConfig
 
-        # Tightened defaults — these are the production-quality values
-        # Prediction markets: 5% stop-loss (not 10%) because price moves = information, not volatility
-        # Holding without signal = refusing to accept new information (not "riding out dips")
+        # Profitability-tuned defaults (2026-02-22):
+        # - Lower min_confidence/min_net_ev to allow favorable-asymmetry trades through
+        # - min_quality_tier="medium" allows more signals (asymmetry filter handles risk)
+        # - Kelly stays conservative at 0.02 until edge is proven
         DESIRED_CONFIGS = {
             "ensemble": dict(
                 is_enabled=True, bankroll=1000.0,
-                min_confidence=0.6, min_net_ev=0.07, max_kelly_fraction=0.02,
-                stop_loss_pct=0.05, min_quality_tier="high", close_on_signal_expiry=True,
+                min_confidence=0.5, min_net_ev=0.05, max_kelly_fraction=0.02,
+                stop_loss_pct=0.05, min_quality_tier="medium", close_on_signal_expiry=True,
                 max_position_usd=100.0, max_total_exposure_usd=500.0,
                 max_loss_per_day_usd=25.0, max_daily_trades=20,
             ),
             "elo": dict(
                 is_enabled=False, bankroll=500.0,
-                min_confidence=0.6, min_net_ev=0.05, max_kelly_fraction=0.02,
-                stop_loss_pct=0.05, min_quality_tier="high", close_on_signal_expiry=True,
+                min_confidence=0.5, min_net_ev=0.05, max_kelly_fraction=0.02,
+                stop_loss_pct=0.05, min_quality_tier="medium", close_on_signal_expiry=True,
                 max_position_usd=100.0, max_total_exposure_usd=500.0,
                 max_loss_per_day_usd=25.0, max_daily_trades=20,
             ),
         }
+
+        # One-time migration fields: update these specific fields on existing configs
+        # to push the profitability fixes. After this deploy, configs won't be overwritten.
+        MIGRATION_FIELDS = {"min_confidence", "min_net_ev", "min_quality_tier"}
 
         async with async_session() as session:
             result = await session.execute(select(AutoTradingConfig))
@@ -78,11 +83,12 @@ async def lifespan(app: FastAPI):
                     session.add(AutoTradingConfig(strategy=strategy, **defaults))
                     logger.info(f"Created auto-trading config: {strategy}")
                 else:
-                    # Sync key fields to ensure Railway matches local
+                    # One-time migration: only update the profitability-critical fields
                     cfg = existing[strategy]
-                    for key, val in defaults.items():
-                        setattr(cfg, key, val)
-                    logger.info(f"Synced auto-trading config: {strategy}")
+                    for field in MIGRATION_FIELDS:
+                        if field in defaults:
+                            setattr(cfg, field, defaults[field])
+                    logger.info(f"Migrated profitability fields for: {strategy}")
 
             await session.commit()
             logger.info("Auto-trading configs initialized/synced")

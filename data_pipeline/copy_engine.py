@@ -214,6 +214,8 @@ async def sync_copy_positions(session: AsyncSession) -> dict:
                     EnsembleEdgeSignal.market_id == pos.market_id,
                     EnsembleEdgeSignal.expired_at == None,  # noqa
                 )
+                .order_by(EnsembleEdgeSignal.detected_at.desc())
+                .limit(1)
             )
             active_signal = signal_result.scalar_one_or_none()
 

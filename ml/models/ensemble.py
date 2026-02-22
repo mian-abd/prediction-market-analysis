@@ -188,12 +188,28 @@ class EnsembleModel:
         """Compute weights inversely proportional to Brier scores.
 
         Lower Brier = better calibration = higher weight.
+        Calibration model is capped at 5% max weight to limit its drag
+        on ensemble performance (its Brier is worse than baseline).
         """
         inv_brier = {
             name: 1.0 / max(score, 0.001) for name, score in brier_scores.items()
         }
         total = sum(inv_brier.values())
-        return {name: round(val / total, 4) for name, val in inv_brier.items()}
+        weights = {name: round(val / total, 4) for name, val in inv_brier.items()}
+
+        # Cap calibration weight at 5% — it hurts ensemble (Brier 0.0892 > baseline 0.0843)
+        CAL_MAX_WEIGHT = 0.05
+        if "calibration" in weights and weights["calibration"] > CAL_MAX_WEIGHT:
+            excess = weights["calibration"] - CAL_MAX_WEIGHT
+            weights["calibration"] = CAL_MAX_WEIGHT
+            remaining = {k: v for k, v in weights.items() if k != "calibration"}
+            total_remaining = sum(remaining.values())
+            if total_remaining > 0:
+                for k in remaining:
+                    weights[k] = round(weights[k] + excess * (remaining[k] / total_remaining), 4)
+            logger.info(f"Calibration weight capped at {CAL_MAX_WEIGHT}: {weights}")
+
+        return weights
 
     def save_weights(self, weights: dict[str, float], metrics: dict):
         """Save ensemble weights and training metrics."""

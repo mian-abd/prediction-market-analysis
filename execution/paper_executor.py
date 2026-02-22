@@ -23,6 +23,29 @@ logger = logging.getLogger(__name__)
 # Edge decay: signals lose half their edge every 2 hours (exponential decay)
 EDGE_DECAY_HALF_LIFE_HOURS = 2.0
 
+# Markets with these keywords are blocked from auto-trading (no edge, pure noise)
+BLOCKED_KEYWORDS = [
+    "jesus christ", "gta vi", "gta 6", "bridgerton", "will.*die before",
+    "alien", "rapture", "second coming", "fdv above", "fdv below",
+    "mcap above", "market cap above.*one day", "before gta",
+    "nothing ever happens",
+]
+# Categories blocked from auto-trading
+BLOCKED_CATEGORIES = {"entertainment", "novelty"}
+
+import re
+_BLOCKED_PATTERNS = [re.compile(kw, re.IGNORECASE) for kw in BLOCKED_KEYWORDS]
+
+
+def _is_blocked_market(question: str, category: str) -> bool:
+    """Check if a market should be blocked from auto-trading."""
+    if category.lower() in BLOCKED_CATEGORIES:
+        return True
+    for pattern in _BLOCKED_PATTERNS:
+        if pattern.search(question):
+            return True
+    return False
+
 
 def compute_execution_cost(
     direction: str,
@@ -78,8 +101,10 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
         return []
 
     # Build quality tier filter: include target tier and tiers above it
-    # "speculative" is NEVER auto-traded (edges >15% are noise/leakage)
-    tier_hierarchy = ["low", "medium", "high"]
+    # "speculative" is now allowed — the payoff asymmetry factor in edge detection
+    # already suppresses speculative signals on expensive contracts (where they're noise)
+    # while allowing them on cheap contracts (where large edges = real alpha)
+    tier_hierarchy = ["low", "medium", "high", "speculative"]
     min_idx = tier_hierarchy.index(config.min_quality_tier) if config.min_quality_tier in tier_hierarchy else 0
     accepted_tiers = tier_hierarchy[min_idx:]
 
@@ -153,6 +178,11 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
         category = (market.category or "").lower()
         normalized_cat = (market.normalized_category or "").lower() if hasattr(market, 'normalized_category') else ""
         if category == "other" or normalized_cat == "other":
+            continue
+
+        # Skip blocked markets (meme, novelty, entertainment — no edge possible)
+        question = market.question or ""
+        if _is_blocked_market(question, category):
             continue
 
         # Skip short-term crypto price-at-point-in-time markets (essentially random)

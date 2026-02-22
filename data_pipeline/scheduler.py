@@ -706,6 +706,54 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Forward performance log failed: {e}")
 
+            # Log P&L breakdown by price zone and direction
+            try:
+                from sqlalchemy import func as sql_func
+                async with async_session() as zone_session:
+                    from db.models import PortfolioPosition
+                    from datetime import timedelta
+                    cutoff = datetime.utcnow() - timedelta(days=7)
+                    closed_result = await zone_session.execute(
+                        select(PortfolioPosition).where(
+                            PortfolioPosition.portfolio_type == "auto",
+                            PortfolioPosition.exit_time != None,  # noqa
+                            PortfolioPosition.exit_time >= cutoff,
+                        )
+                    )
+                    closed_positions = closed_result.scalars().all()
+                    if closed_positions:
+                        # Bucket by entry price zone
+                        zone_pnl = {"0-20%": 0.0, "20-40%": 0.0, "40-60%": 0.0, "60-80%": 0.0, "80-100%": 0.0}
+                        zone_count = {"0-20%": 0, "20-40%": 0, "40-60%": 0, "60-80%": 0, "80-100%": 0}
+                        dir_pnl = {"buy_yes": 0.0, "buy_no": 0.0}
+                        dir_count = {"buy_yes": 0, "buy_no": 0}
+                        dir_wins = {"buy_yes": 0, "buy_no": 0}
+                        for p in closed_positions:
+                            price = p.entry_price or 0.5
+                            pnl = p.realized_pnl or 0.0
+                            direction = "buy_yes" if p.side == "yes" else "buy_no"
+                            if price < 0.20: zone = "0-20%"
+                            elif price < 0.40: zone = "20-40%"
+                            elif price < 0.60: zone = "40-60%"
+                            elif price < 0.80: zone = "60-80%"
+                            else: zone = "80-100%"
+                            zone_pnl[zone] += pnl
+                            zone_count[zone] += 1
+                            dir_pnl[direction] += pnl
+                            dir_count[direction] += 1
+                            if pnl > 0:
+                                dir_wins[direction] += 1
+                        zone_str = " | ".join(f"{z}: ${v:.2f}({zone_count[z]})" for z, v in zone_pnl.items() if zone_count[z] > 0)
+                        yes_wr = f"{dir_wins['buy_yes']/max(dir_count['buy_yes'],1):.0%}" if dir_count["buy_yes"] > 0 else "N/A"
+                        no_wr = f"{dir_wins['buy_no']/max(dir_count['buy_no'],1):.0%}" if dir_count["buy_no"] > 0 else "N/A"
+                        logger.info(
+                            f"P&L BY ZONE (7d): {zone_str} | "
+                            f"buy_yes: ${dir_pnl['buy_yes']:.2f}({dir_count['buy_yes']} trades, {yes_wr} win) | "
+                            f"buy_no: ${dir_pnl['buy_no']:.2f}({dir_count['buy_no']} trades, {no_wr} win)"
+                        )
+            except Exception as e:
+                logger.error(f"P&L zone tracking failed: {e}")
+
         # ── Full market refresh + deactivate expired + re-match + cleanup every ~1 hr ──
         if cycle % cycles_per_market_refresh == 0:
             try:

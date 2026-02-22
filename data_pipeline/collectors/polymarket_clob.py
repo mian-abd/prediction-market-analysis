@@ -48,6 +48,12 @@ async def fetch_orderbook(token_id: str) -> dict | None:
             resp = await client.get(f"{BASE_URL}/book", params=params)
             resp.raise_for_status()
             return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.debug(f"Orderbook 404 for {token_id} (likely delisted)")
+            else:
+                logger.warning(f"Orderbook fetch failed for {token_id}: {e}")
+            return None
         except httpx.HTTPError as e:
             logger.warning(f"Orderbook fetch failed for {token_id}: {e}")
             return None

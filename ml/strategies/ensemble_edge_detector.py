@@ -104,6 +104,9 @@ def compute_directional_ev(
     Polymarket charges 2% on NET WINNINGS only when you win (0% if you lose).
     Expected fee = win_probability * fee_rate * winnings_per_share.
 
+    Direction selection is weighted by payoff asymmetry — we prefer directions
+    where risk:reward is favorable (e.g. buy_no on overpriced favorites).
+
     Returns (direction, net_ev, fee_cost) where fee_cost is for the chosen direction.
     """
     p = ensemble_prob    # true probability of YES
@@ -111,22 +114,26 @@ def compute_directional_ev(
     extra_fee = (taker_fee_bps / 10000)  # additional platform fees (usually 0)
 
     # Buy YES: pay q, receive 1 if YES. Winnings = (1-q). Fee only if win.
-    # EV = p * (1-q) * (1 - fee_rate) - (1-p) * q - slippage - extra_fee*(1-q)
     fee_yes = p * POLYMARKET_FEE_RATE * (1 - q) + SLIPPAGE_BUFFER + extra_fee * (1 - q)
     ev_yes = p * (1 - q) - (1 - p) * q - fee_yes
-    # Simplified: ev_yes = p - q - fee_yes (algebraically equivalent)
 
     # Buy NO: pay (1-q), receive 1 if NO. Winnings = q. Fee only if win.
     fee_no = (1 - p) * POLYMARKET_FEE_RATE * q + SLIPPAGE_BUFFER + extra_fee * q
     ev_no = (1 - p) * q - p * (1 - q) - fee_no
-    # Simplified: ev_no = q - p - fee_no (algebraically equivalent)
 
-    if ev_yes > ev_no and ev_yes > 0:
+    # Weight EV by payoff ratio — prefer directions where one win covers multiple losses
+    # buy_yes payoff ratio: (1-q)/q — favorable when q is low (cheap YES)
+    # buy_no payoff ratio: q/(1-q) — favorable when q is high (overpriced favorite)
+    payoff_yes = (1 - q) / max(q, 0.01)  # gain/risk for buy_yes
+    payoff_no = q / max(1 - q, 0.01)      # gain/risk for buy_no
+    adj_ev_yes = ev_yes * min(payoff_yes, 5.0) if ev_yes > 0 else ev_yes
+    adj_ev_no = ev_no * min(payoff_no, 5.0) if ev_no > 0 else ev_no
+
+    if adj_ev_yes > adj_ev_no and ev_yes > 0:
         return "buy_yes", ev_yes, fee_yes
     elif ev_no > 0:
         return "buy_no", ev_no, fee_no
     else:
-        # Return the higher (less negative) fee for the best direction
         return None, 0.0, fee_yes if ev_yes >= ev_no else fee_no
 
 
@@ -204,15 +211,14 @@ def compute_confidence(
         if n_checkable > 0:
             completeness_score = max(0.0, 1.0 - n_defaulted / n_checkable)
 
-    # Component 3: Edge magnitude — moderate edges are best, very large edges are suspect
+    # Component 3: Edge magnitude — any meaningful edge gets full score
+    # (Removed penalty on large edges — research shows large edges on cheap markets
+    # are where real alpha lives in prediction markets, not noise)
     abs_ev = abs(net_ev)
-    if abs_ev <= 0.05:
-        edge_score = abs_ev / 0.05  # Linear ramp up to 5%
-    elif abs_ev <= 0.08:
-        edge_score = 1.0  # Sweet spot: 5-8% edge
+    if abs_ev >= 0.03:
+        edge_score = 1.0  # Any edge above min threshold = full score
     else:
-        # Penalize: edges >8% are increasingly likely noise/leakage
-        edge_score = max(0.0, 1.0 - (abs_ev - 0.08) / 0.07)  # Drops to 0 at 15%
+        edge_score = abs_ev / 0.03  # Linear ramp below 3%
 
     # Weighted combination
     confidence = (
@@ -226,8 +232,10 @@ def compute_confidence(
 def classify_quality_tier(net_ev: float, confidence: float, raw_edge: float = 0.0) -> str:
     """Classify edge into quality tier.
 
-    Edges exceeding MAX_CREDIBLE_EDGE are downgraded to "speculative" —
-    25%+ edges on liquid markets are almost certainly noise or leakage.
+    Large edges are now allowed through the asymmetry-adjusted confidence score.
+    The payoff asymmetry factor in detect_edge() naturally suppresses large edges
+    on expensive contracts (where they're likely noise) while allowing them on
+    cheap contracts (where they represent real alpha from favorite-longshot bias).
     """
     if raw_edge > MAX_CREDIBLE_EDGE:
         return "speculative"
@@ -270,6 +278,19 @@ def detect_edge(
         active_features=active_features,
         net_ev=net_ev,
     )
+
+    # Payoff asymmetry factor: penalize trades where risk:reward is unfavorable
+    # buy_yes at 0.80 → payoff_ratio=0.25 → factor=0.50 → confidence halved
+    # buy_no at 0.80 → payoff_ratio=4.0 → factor=1.0 → full confidence
+    # buy_yes at 0.30 → payoff_ratio=2.33 → factor=1.0 → full confidence
+    if direction == "buy_yes":
+        payoff_ratio = (1 - market_price) / max(market_price, 0.01)
+    elif direction == "buy_no":
+        payoff_ratio = market_price / max(1 - market_price, 0.01)
+    else:
+        payoff_ratio = 1.0
+    asymmetry_factor = min(1.0, payoff_ratio / 0.5)  # Full score when gain >= 50% of risk
+    confidence = round(confidence * asymmetry_factor, 3)
 
     raw_edge = abs(ensemble_prob - market_price)
     quality_tier = classify_quality_tier(net_ev, confidence, raw_edge)

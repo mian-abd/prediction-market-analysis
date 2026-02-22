@@ -98,7 +98,7 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
                     close_reason = "edge_invalidation"
 
         # 3. Stop loss — check AFTER edge invalidation to prevent unbounded losses
-        # Also check for momentum (consistent downtrend) in prediction markets
+        # Scale stop-loss by cost basis: cheap contracts need more room (they're volatile)
         if exit_price is None and config and config.stop_loss_pct > 0:
             if market.price_yes is not None:
                 if pos.side == "yes":
@@ -108,7 +108,16 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
                     unrealized = (pos.entry_price - market.price_yes) * pos.quantity
                     position_cost = (1.0 - pos.entry_price) * pos.quantity
 
-                if position_cost > 0 and unrealized / position_cost < -config.stop_loss_pct:
+                # Scale stop-loss by cost basis (cheap contracts are volatile)
+                cost_per_share = pos.entry_price if pos.side == "yes" else (1.0 - pos.entry_price)
+                if cost_per_share < 0.30:
+                    effective_stop = 0.15  # 15% for cheap contracts
+                elif cost_per_share < 0.50:
+                    effective_stop = 0.10  # 10% for mid-range
+                else:
+                    effective_stop = config.stop_loss_pct  # default 5% for expensive
+
+                if position_cost > 0 and unrealized / position_cost < -effective_stop:
                     exit_price = market.price_yes
                     close_reason = "stop_loss"
                 # Momentum-based close: prediction markets trending toward extremes (0/1) are unlikely to recover
