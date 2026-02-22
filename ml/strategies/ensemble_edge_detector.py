@@ -12,6 +12,8 @@ import logging
 import numpy as np
 from dataclasses import dataclass
 
+from ml.evaluation.confidence_adjuster import adjust_confidence
+
 logger = logging.getLogger(__name__)
 
 # --- Quality Gate Thresholds (TIGHTENED 2026-02-14 to prevent thin market losses) ---
@@ -25,7 +27,7 @@ MAX_PRICE = 0.98            # Tradeable range upper bound
 MIN_NET_EDGE = 0.03         # 3% minimum net edge after fees
 SLIPPAGE_BUFFER = 0.01      # 1% slippage estimate
 POLYMARKET_FEE_RATE = 0.02  # 2% on net winnings (only charged when winning)
-MAX_KELLY = 0.03            # Maximum Kelly fraction (3%) - INCREASED for Phase 2
+MAX_KELLY = 0.04            # Maximum Kelly fraction (4%) - Phase 2.2: 1.0% effective position
 KELLY_FRACTION = 0.25       # Fractional Kelly multiplier (safety)
 MIN_CONFIDENCE = 0.5        # Minimum confidence score
 MAX_CREDIBLE_EDGE = 0.15    # 15% — edges above this are likely noise/leakage
@@ -291,6 +293,20 @@ def detect_edge(
         payoff_ratio = 1.0
     asymmetry_factor = min(1.0, payoff_ratio / 0.5)  # Full score when gain >= 50% of risk
     confidence = round(confidence * asymmetry_factor, 3)
+
+    # Adaptive confidence adjustment (Phase 2.5): adjust based on realized performance
+    # in similar scenarios (tier, direction, price zone)
+    adjusted_confidence, adjustment_reason = adjust_confidence(
+        base_confidence=confidence,
+        direction=direction,
+        entry_price=market_price,
+    )
+    if adjustment_reason != "not_initialized":
+        logger.debug(
+            f"Market {market.id}: confidence {confidence:.3f} → {adjusted_confidence:.3f} "
+            f"({adjustment_reason})"
+        )
+        confidence = adjusted_confidence
 
     raw_edge = abs(ensemble_prob - market_price)
     quality_tier = classify_quality_tier(net_ev, confidence, raw_edge)

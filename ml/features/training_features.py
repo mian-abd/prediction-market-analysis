@@ -73,9 +73,11 @@ ENSEMBLE_FEATURE_NAMES: list[str] = [
     # "volume_volatility",
     # "volume_acceleration",
     # "volume_to_liquidity_ratio",
+    # Cross-platform features (Phase 2.4)
+    "cross_platform_spread",  # poly_price - kalshi_price (informed trading signal)
 ]
 
-N_FEATURES = len(ENSEMBLE_FEATURE_NAMES)  # 19 (volume features excluded 2026-02-14)
+N_FEATURES = len(ENSEMBLE_FEATURE_NAMES)  # 20 (added cross_platform_spread 2026-02-22)
 
 # Feature quality metadata — "real" = derived from live market data,
 # "proxy" = synthetic approximation from snapshot-level data
@@ -135,6 +137,7 @@ def extract_features_from_market(
     price_snapshots: list[float] | None = None,
     orderbook_snapshot = None,
     price_yes_override: float | None = None,
+    matched_market_price: float | None = None,
 ) -> dict[str, float]:
     """Extract features from a Market ORM object.
 
@@ -149,6 +152,9 @@ def extract_features_from_market(
         price_yes_override: Optional price override for training (as_of enforcement).
                             If provided, use this instead of market.price_yes.
                             This prevents leakage from using resolved outcome price.
+        matched_market_price: Optional cross-platform matched market price (Kalshi if
+                             current is Polymarket, or vice versa). Used to compute
+                             cross_platform_spread feature. Defaults to 0.0 if not provided.
 
     Returns:
         Dict of {feature_name: float_value}
@@ -281,6 +287,15 @@ def extract_features_from_market(
     else:
         volume_to_liquidity_ratio = 0.0
 
+    # Cross-platform spread feature (Phase 2.4)
+    # Positive spread = Polymarket price > Kalshi price (potential informed buying on Poly)
+    # Negative spread = Polymarket price < Kalshi price (potential informed buying on Kalshi)
+    # Zero = no cross-platform match or prices equal
+    if matched_market_price is not None:
+        cross_platform_spread = price - matched_market_price
+    else:
+        cross_platform_spread = 0.0
+
     return {
         "price_yes": price,
         "price_bucket": float(price_bucket),
@@ -307,6 +322,7 @@ def extract_features_from_market(
         "volume_volatility": volume_volatility,
         "volume_acceleration": volume_acceleration,
         "volume_to_liquidity_ratio": volume_to_liquidity_ratio,
+        "cross_platform_spread": cross_platform_spread,
     }
 
 

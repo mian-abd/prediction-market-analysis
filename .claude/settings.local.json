@@ -27,7 +27,8 @@
       "Bash(./venv/Scripts/python.exe:*)",
       "Bash(tee:*)",
       "WebSearch",
-      "Bash(redis-cli ping:*)"
+      "Bash(redis-cli ping:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

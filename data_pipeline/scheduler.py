@@ -23,6 +23,13 @@ from db.models import TraderProfile, EloEdgeSignal, EnsembleEdgeSignal
 # Real-time WebSocket streaming
 from data_pipeline.streams import PriceCache, PolymarketStream
 
+# Adaptive confidence adjustment (Phase 2.5)
+from ml.evaluation.confidence_adjuster import (
+    init_confidence_adjuster,
+    refresh_confidence_adjuster,
+    get_adjuster_stats,
+)
+
 logger = logging.getLogger(__name__)
 
 # Global WebSocket stream instances (initialized in run_pipeline_loop)
@@ -675,6 +682,16 @@ async def run_pipeline_loop():
         logger.error(f"WebSocket stream initialization failed: {e}")
         logger.error("Continuing without real-time streaming...")
 
+    # ── Initialize adaptive confidence adjuster (Phase 2.5) ──
+    try:
+        async with async_session() as adj_session:
+            await init_confidence_adjuster(adj_session)
+            stats = get_adjuster_stats()
+            logger.info(f"Confidence adjuster loaded: {stats.get('total_segments', 0)} segments")
+    except Exception as e:
+        logger.error(f"Confidence adjuster initialization failed: {e}")
+        logger.error("Continuing without adaptive confidence adjustment...")
+
     # ── Initial full collection ──
     await collect_markets()
     await collect_prices()
@@ -808,6 +825,18 @@ async def run_pipeline_loop():
                 await refresh_trader_stats()
             except Exception as e:
                 logger.error(f"Trader stats refresh error: {e}")
+
+            # ── Refresh confidence adjuster (Phase 2.5) ──
+            try:
+                async with async_session() as adj_session:
+                    await refresh_confidence_adjuster(adj_session)
+                    stats = get_adjuster_stats()
+                    logger.info(
+                        f"Confidence adjuster refreshed: {stats.get('total_segments', 0)} segments, "
+                        f"{stats.get('total_trades_analyzed', 0)} trades analyzed"
+                    )
+            except Exception as e:
+                logger.error(f"Confidence adjuster refresh error: {e}")
 
         # ── Score resolved signals every ~30 min ──
         if cycle % cycles_per_resolution_score == 0:
