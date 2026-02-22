@@ -15,7 +15,7 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 
 from config.settings import settings
 from db.database import init_db, close_db
-from data_pipeline.scheduler import run_pipeline_loop
+from data_pipeline.scheduler import run_pipeline_loop, cleanup_realtime_streams
 
 logger = logging.getLogger(__name__)
 
@@ -102,12 +102,22 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    logger.info("Shutting down...")
+
+    # Close WebSocket streams
+    try:
+        await cleanup_realtime_streams()
+    except Exception as e:
+        logger.error(f"Stream cleanup error: {e}")
+
+    # Cancel pipeline task
     if _pipeline_task:
         _pipeline_task.cancel()
         try:
             await _pipeline_task
         except asyncio.CancelledError:
             pass
+
     await close_db()
     logger.info("Shutdown complete")
 

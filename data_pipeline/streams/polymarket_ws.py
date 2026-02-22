@@ -95,7 +95,7 @@ class PolymarketStream:
 
             self.ws = await websockets.connect(
                 self.WS_URL,
-                extra_headers=headers,
+                additional_headers=headers,
                 ping_interval=20,  # Send ping every 20s
                 ping_timeout=10,   # Timeout if no pong in 10s
                 close_timeout=10
@@ -121,26 +121,17 @@ class PolymarketStream:
             logger.warning("Cannot subscribe - not connected")
             return
 
-        new_subscriptions = 0
-        for market_id in market_ids:
-            if market_id not in self.subscribed_markets:
-                try:
-                    # Subscribe to market orderbook updates
-                    subscribe_msg = {
-                        "type": "subscribe",
-                        "market": market_id,
-                        "asset_id": market_id  # Token ID for YES side
-                    }
+        new_ids = [m for m in market_ids if m not in self.subscribed_markets]
+        new_subscriptions = len(new_ids)
 
-                    await self.ws.send(json.dumps(subscribe_msg))
-                    self.subscribed_markets.add(market_id)
-                    new_subscriptions += 1
-
-                    # Rate limit subscriptions (avoid overwhelming server)
-                    await asyncio.sleep(0.1)
-
-                except Exception as e:
-                    logger.error(f"Failed to subscribe to market {market_id}: {e}")
+        if new_ids:
+            try:
+                # Polymarket CLOB WS API: subscribe to multiple asset IDs in one message
+                subscribe_msg = {"assets_ids": new_ids}
+                await self.ws.send(json.dumps(subscribe_msg))
+                self.subscribed_markets.update(new_ids)
+            except Exception as e:
+                logger.error(f"Failed to subscribe to markets: {e}")
 
         logger.info(
             f"📡 Subscribed to {new_subscriptions} new markets "
@@ -214,6 +205,11 @@ class PolymarketStream:
                 "asks": [{"price": "0.67", "size": "80"}, ...]
             }
         """
+        # Handle non-dict messages (e.g., arrays, strings)
+        if not isinstance(data, dict):
+            logger.debug(f"Skipping non-dict message: {type(data)}")
+            return
+
         msg_type = data.get("type")
 
         # Only process orderbook updates
@@ -249,7 +245,7 @@ class PolymarketStream:
 
             # Update cache (triggers arbitrage check if applicable)
             await self.price_cache.update_price(
-                market_id=int(market_id) if market_id.isdigit() else hash(market_id),
+                market_id=market_id,
                 platform="polymarket",
                 price_yes=price_yes,
                 price_no=price_no

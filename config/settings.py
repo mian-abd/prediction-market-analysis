@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     elo_max_kelly: float = 0.02  # Maximum Kelly fraction (2%)
     elo_scan_interval_sec: int = 600  # Scan every 10 minutes
 
+    # Redis
+    redis_url: str = "redis://localhost:6379"
+
     # Server
     api_host: str = "0.0.0.0"
     api_port: int = 8000

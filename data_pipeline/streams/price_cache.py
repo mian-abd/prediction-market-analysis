@@ -10,6 +10,7 @@ Performance:
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Optional, Dict, List
 import asyncio
@@ -42,13 +43,14 @@ class PriceCache:
         >>> print(f"Found {len(signals)} arbitrage opportunities")
     """
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
+    def __init__(self, redis_url: Optional[str] = None):
         """Initialize price cache.
 
         Args:
-            redis_url: Redis connection URL (default: localhost:6379)
+            redis_url: Redis connection URL. Defaults to REDIS_URL env var,
+                       then falls back to localhost:6379.
         """
-        self.redis_url = redis_url
+        self.redis_url = redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379")
         self.redis: Optional[redis.Redis] = None
         self.arb_signals: List[Dict] = []  # Queue for arbitrage signals
         self._lock = asyncio.Lock()  # Thread-safe signal queue
@@ -82,7 +84,7 @@ class PriceCache:
 
     async def update_price(
         self,
-        market_id: int,
+        market_id: str,
         platform: str,
         price_yes: float,
         price_no: float,
@@ -91,7 +93,7 @@ class PriceCache:
         """Update price and check for arbitrage (<5ms total).
 
         Args:
-            market_id: Internal market ID
+            market_id: Market ID (token ID string or integer as string)
             platform: "polymarket" or "kalshi"
             price_yes: YES side price (0-1)
             price_no: NO side price (0-1)
@@ -125,7 +127,7 @@ class PriceCache:
 
     async def _check_arbitrage(
         self,
-        market_id: int,
+        market_id: str,
         updated_platform: str,
         updated_price_yes: float,
         updated_price_no: float
@@ -207,7 +209,7 @@ class PriceCache:
 
     async def get_price(
         self,
-        market_id: int,
+        market_id: str,
         platform: str
     ) -> Optional[tuple[float, float, datetime]]:
         """Get cached price (<1ms).

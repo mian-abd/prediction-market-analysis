@@ -47,8 +47,8 @@ async def test_redis_cache():
 
         # Test 1: Update and retrieve price
         logger.info("Test 1.1: Update and retrieve price...")
-        await cache.update_price(123, "polymarket", 0.65, 0.35)
-        result = await cache.get_price(123, "polymarket")
+        await cache.update_price("123", "polymarket", 0.65, 0.35)
+        result = await cache.get_price("123", "polymarket")
 
         if result:
             price_yes, price_no, ts = result
@@ -59,8 +59,8 @@ async def test_redis_cache():
 
         # Test 2: Arbitrage detection (simulated)
         logger.info("Test 1.2: Arbitrage detection...")
-        await cache.update_price(456, "polymarket", 0.65, 0.35)
-        await cache.update_price(456, "kalshi", 0.60, 0.40)  # 5% spread!
+        await cache.update_price("456", "polymarket", 0.65, 0.35)
+        await cache.update_price("456", "kalshi", 0.60, 0.40)  # 5% spread!
 
         signals = await cache.get_arbitrage_signals()
         if signals:
