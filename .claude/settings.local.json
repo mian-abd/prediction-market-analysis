@@ -15,7 +15,14 @@
       "Bash(git push:*)",
       "Bash(d:/prediction-market-analysis/venv/Scripts/python.exe:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nFix copy trading: proxy to local backend, backfill traders first\n\nTwo issues preventing traders from showing:\n1. Vite proxy defaulted to Railway URL - local frontend never hit\n   local backend where traders were backfilled. Now defaults to\n   localhost:8000 for development.\n2. Trader backfill ran AFTER all heavy collection \\(markets, prices,\n   ML scans\\) - Railway users hit the page before backfill finished.\n   Moved backfill to run FIRST in pipeline startup.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "WebFetch(domain:quantpedia.com)",
+      "WebFetch(domain:quantjourney.substack.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:hackmd.io)",
+      "WebFetch(domain:pro.stockalarm.io)",
+      "WebFetch(domain:www.tradetheoutcome.com)"
     ]
   }
 }
