@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import PortfolioPosition
+from db.models import PortfolioPosition, EnsembleEdgeSignal, EloEdgeSignal
 
 logger = logging.getLogger(__name__)
 
@@ -77,19 +77,51 @@ class ConfidenceAdjuster:
         """
         cutoff = datetime.utcnow() - timedelta(days=lookback_days)
 
-        # Get all closed positions from last N days
-        result = await session.execute(
-            select(PortfolioPosition).where(
+        # Get closed positions with their signal confidence (join with signal tables)
+        # For ensemble positions
+        ensemble_result = await session.execute(
+            select(
+                PortfolioPosition.entry_price,
+                PortfolioPosition.side,
+                PortfolioPosition.realized_pnl,
+                PortfolioPosition.entry_time,
+                EnsembleEdgeSignal.confidence
+            )
+            .join(EnsembleEdgeSignal, PortfolioPosition.market_id == EnsembleEdgeSignal.market_id)
+            .where(
                 and_(
-                    PortfolioPosition.status.in_(["closed", "auto_closed"]),
-                    PortfolioPosition.created_at >= cutoff,
-                    PortfolioPosition.strategy.in_(["ensemble", "elo"]),  # Only adaptive strategies
-                    PortfolioPosition.confidence.isnot(None),
-                    PortfolioPosition.entry_price.isnot(None),
+                    PortfolioPosition.exit_time.isnot(None),  # Closed positions
+                    PortfolioPosition.entry_time >= cutoff,
+                    PortfolioPosition.strategy == "ensemble",
+                    EnsembleEdgeSignal.confidence.isnot(None),
                 )
             )
         )
-        trades = result.scalars().all()
+        ensemble_trades = ensemble_result.all()
+
+        # For ELO positions
+        elo_result = await session.execute(
+            select(
+                PortfolioPosition.entry_price,
+                PortfolioPosition.side,
+                PortfolioPosition.realized_pnl,
+                PortfolioPosition.entry_time,
+                EloEdgeSignal.elo_confidence.label('confidence')
+            )
+            .join(EloEdgeSignal, PortfolioPosition.market_id == EloEdgeSignal.market_id)
+            .where(
+                and_(
+                    PortfolioPosition.exit_time.isnot(None),  # Closed positions
+                    PortfolioPosition.entry_time >= cutoff,
+                    PortfolioPosition.strategy == "elo",
+                    EloEdgeSignal.elo_confidence.isnot(None),
+                )
+            )
+        )
+        elo_trades = elo_result.all()
+
+        # Combine trades
+        trades = list(ensemble_trades) + list(elo_trades)
 
         if not trades:
             logger.info("No closed trades found for confidence adjustment")
@@ -99,32 +131,39 @@ class ConfidenceAdjuster:
         segment_trades = defaultdict(list)
 
         for trade in trades:
+            # Unpack tuple: (entry_price, side, realized_pnl, entry_time, confidence)
+            entry_price, side, realized_pnl, entry_time, confidence = trade
+
             # Determine tier from confidence
-            if trade.confidence >= 0.70:
+            if confidence >= 0.70:
                 tier = "high"
-            elif trade.confidence >= 0.55:
+            elif confidence >= 0.55:
                 tier = "medium"
             else:
                 tier = "low"
 
-            # Direction
-            direction = trade.direction
+            # Direction (convert side to direction format)
+            direction = f"buy_{side.lower()}"  # "YES" -> "buy_yes", "NO" -> "buy_no"
 
             # Price zone (entry price)
-            price = trade.entry_price
-            if price < 0.20:
+            if entry_price < 0.20:
                 zone = "zone1"
-            elif price < 0.40:
+            elif entry_price < 0.40:
                 zone = "zone2"
-            elif price < 0.60:
+            elif entry_price < 0.60:
                 zone = "zone3"
-            elif price < 0.80:
+            elif entry_price < 0.80:
                 zone = "zone4"
             else:
                 zone = "zone5"
 
             segment_key = (tier, direction, zone)
-            segment_trades[segment_key].append(trade)
+            # Store as dict for easier access
+            segment_trades[segment_key].append({
+                'confidence': confidence,
+                'realized_pnl': realized_pnl,
+                'entry_price': entry_price,
+            })
 
         # Compute statistics for each segment
         for segment_key, seg_trades in segment_trades.items():
@@ -133,11 +172,11 @@ class ConfidenceAdjuster:
                 continue
 
             total = len(seg_trades)
-            winning = sum(1 for t in seg_trades if t.total_pnl and t.total_pnl > 0)
+            winning = sum(1 for t in seg_trades if t['realized_pnl'] and t['realized_pnl'] > 0)
             realized_rate = winning / total if total > 0 else 0.0
 
             # Expected hit rate = average confidence in this segment
-            expected_rate = sum(t.confidence for t in seg_trades) / total
+            expected_rate = sum(t['confidence'] for t in seg_trades) / total
 
             # Adjustment multiplier
             if expected_rate > 0.01:  # Avoid division by zero
