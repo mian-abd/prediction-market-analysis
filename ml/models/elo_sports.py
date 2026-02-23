@@ -45,6 +45,30 @@ class SportConfig:
     min_surface_matches: int = 5  # Min matches on surface before using surface rating
 
 
+def ufc_sport_config() -> "SportConfig":
+    """UFC/MMA-specific config: single 'cage' surface, no surface blending.
+
+    Tuned for MMA's unique properties:
+    - Higher tau (0.7): MMA has more upsets than tennis, ratings shift faster
+    - Higher RD inflation (0.6): fighters have longer layoffs (months between fights)
+    - Lower RD floor (50): even active fighters have more uncertainty than tennis
+    - Single "cage" surface: no surface variation in MMA
+    """
+    return SportConfig(
+        sport="ufc",
+        tau=0.7,
+        rd_inflation_per_day=0.6,
+        rd_floor=50.0,
+        rd_ceiling=350.0,
+        default_mu=1500.0,
+        default_phi=350.0,
+        default_sigma=0.06,
+        surfaces=["cage"],
+        surface_blend=1.0,
+        min_surface_matches=3,
+    )
+
+
 @dataclass
 class PlayerRating:
     """A player's Glicko-2 rating (stored in display scale)."""

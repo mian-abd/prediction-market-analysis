@@ -1,25 +1,25 @@
 {
-  "trained_at": "2026-02-22T07:43:39.093541",
-  "n_total_resolved": 24638,
-  "n_usable": 3667,
-  "n_train": 2933,
-  "n_test": 734,
-  "class_balance_yes_pct": 18.4,
+  "trained_at": "2026-02-23T03:43:38.900734",
+  "n_total_resolved": 62229,
+  "n_usable": 9090,
+  "n_train": 7272,
+  "n_test": 1818,
+  "class_balance_yes_pct": 16.7,
   "temporal_split_date": "2026-02-13",
   "feature_names": [
     "log_open_interest",
     "time_to_resolution_hrs"
   ],
   "features_dropped": [
-    "price_yes (near-constant, 107 unique/2933)",
-    "price_bucket (near-constant, 20 unique/2933)",
-    "price_distance_from_50 (near-constant, 81 unique/2933)",
-    "calibration_bias (near-constant, 82 unique/2933)",
-    "category_encoded (near-constant, 6 unique/2933)",
-    "is_weekend (near-constant, 2 unique/2933)",
-    "return_1h (near-constant, 13 unique/2933)",
-    "volatility_20 (near-constant, 22 unique/2933)",
-    "zscore_24h (near-constant, 24 unique/2933)",
+    "price_yes (near-constant, 190 unique/7272)",
+    "price_bucket (near-constant, 20 unique/7272)",
+    "price_distance_from_50 (near-constant, 147 unique/7272)",
+    "calibration_bias (near-constant, 140 unique/7272)",
+    "category_encoded (near-constant, 7 unique/7272)",
+    "is_weekend (near-constant, 2 unique/7272)",
+    "return_1h (near-constant, 107 unique/7272)",
+    "volatility_20 (near-constant, 198 unique/7272)",
+    "zscore_24h (near-constant, 220 unique/7272)",
     "obi_level1 (zero variance)",
     "obi_weighted_5 (zero variance)",
     "bid_ask_spread_abs (zero variance)",
@@ -27,7 +27,8 @@
     "depth_ratio (zero variance)",
     "bid_depth_usd (zero variance)",
     "ask_depth_usd (zero variance)",
-    "vwap_deviation (zero variance)"
+    "vwap_deviation (zero variance)",
+    "cross_platform_spread (zero variance)"
   ],
   "models_included": [
     "calibration"
@@ -37,59 +38,98 @@
     "lightgbm"
   ],
   "oof_brier": {
-    "calibration": 0.0724,
-    "xgboost": 0.0847,
-    "lightgbm": 0.0828
+    "calibration": 0.0987,
+    "xgboost": 0.1038,
+    "lightgbm": 0.1035
   },
-  "baseline_brier": 0.0938,
-  "naive_baseline_brier": 0.1504,
-  "calibration_brier": 0.0847,
-  "ensemble_brier": 0.1829,
-  "post_calibrated_brier": 0.0847,
-  "ensemble_auc": 0.8535,
-  "ensemble_logloss": 0.2935,
-  "optimal_threshold": 0.321,
+  "baseline_brier": 0.0689,
+  "naive_baseline_brier": 0.1391,
+  "calibration_brier": 0.0532,
+  "ensemble_brier": 0.0732,
+  "post_calibrated_brier": 0.0532,
+  "ensemble_auc": 0.8854,
+  "ensemble_logloss": 0.1918,
+  "optimal_threshold": 0.514,
   "ablation": {
-    "calibration_only": 0.0847,
-    "full_ensemble": 0.1829
+    "calibration_only": 0.0532,
+    "full_ensemble": 0.0732
   },
   "profit_simulation": {
-    "ungated_pnl": 42.57,
-    "ungated_trades": 500,
-    "ungated_win_rate": 0.842,
-    "gated_pnl": 40.35,
-    "gated_trades": 436,
-    "gated_win_rate": 0.821,
-    "min_net_edge": 0.03
+    "ungated_pnl": 176.7662,
+    "ungated_trades": 1458,
+    "ungated_win_rate": 0.927,
+    "gated_pnl": 155.8933,
+    "gated_trades": 1050,
+    "gated_win_rate": 0.925,
+    "min_net_edge": 0.05,
+    "fee_model": "polymarket_2pct_on_winnings",
+    "slippage": 0.015,
+    "threshold_sweep": {
+      "3%": {
+        "pnl": 172.1264,
+        "trades": 1214,
+        "win_rate": 0.929
+      },
+      "4%": {
+        "pnl": 163.8364,
+        "trades": 1124,
+        "win_rate": 0.929
+      },
+      "5%": {
+        "pnl": 155.8933,
+        "trades": 1050,
+        "win_rate": 0.925
+      },
+      "6%": {
+        "pnl": 145.2565,
+        "trades": 930,
+        "win_rate": 0.924
+      },
+      "7%": {
+        "pnl": 131.4743,
+        "trades": 741,
+        "win_rate": 0.924
+      },
+      "8%": {
+        "pnl": 76.6287,
+        "trades": 523,
+        "win_rate": 0.908
+      },
+      "10%": {
+        "pnl": 49.8772,
+        "trades": 316,
+        "win_rate": 0.899
+      }
+    }
   },
   "brier_by_price_bucket": {
     "0-20% (near NO)": {
-      "n": 397,
-      "brier": 0.0528,
-      "baseline": 0.0509,
-      "improvement_pct": -3.8
+      "n": 1159,
+      "brier": 0.0086,
+      "baseline": 0.0159,
+      "improvement_pct": 45.7
     },
     "20-80% (tradeable)": {
-      "n": 278,
-      "brier": 0.2104,
-      "baseline": 0.1694,
-      "improvement_pct": -24.2
+      "n": 636,
+      "brier": 0.1606,
+      "baseline": 0.1667,
+      "improvement_pct": 3.7
     },
     "80-100% (near YES)": {
-      "n": 59,
-      "brier": 0.9285,
-      "baseline": 0.0268,
-      "improvement_pct": -3363.7
+      "n": 23,
+      "brier": 0.9127,
+      "baseline": 0.0391,
+      "improvement_pct": -2235.3
     }
   },
   "price_distribution": {
-    "pct_near_0": 0.226,
-    "pct_near_1": 0.104
+    "pct_near_0": 0.218,
+    "pct_near_1": 0.042
   },
   "leakage_warnings": [
     "orderbook_snapshots: filtered to as_of timestamp (fixed as of 2026-02-14)",
     "volume_features: correlation check not performed",
-    "price_distribution: 33.0% near-extremes (inflates metrics, real-world harder)",
-    "survivorship_bias: 3667/24638 (14.9%) of resolved markets used (volume>0 filter)"
+    "price_distribution: 26.1% near-extremes (inflates metrics, real-world harder)",
+    "survivorship_bias: 9090/62229 (14.6%) of resolved markets used (volume>0 filter)"
   ]
 }

@@ -25,7 +25,7 @@ sys.path.insert(0, str(project_root))
 import asyncio
 import logging
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sklearn.metrics import brier_score_loss, roc_auc_score, log_loss, precision_recall_curve
 from scipy.stats import wilcoxon
 
@@ -73,15 +73,20 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
         price_at_as_of_map: dict[int, float] = {}
 
         if market_ids:
-            result = await session.execute(
-                select(PriceSnapshot.market_id, PriceSnapshot.timestamp, PriceSnapshot.price_yes)
-                .where(PriceSnapshot.market_id.in_(market_ids))
-                .order_by(PriceSnapshot.market_id, PriceSnapshot.timestamp)
-            )
-
+            # SQLite has a 999-variable limit; chunk IN clauses to avoid it
+            CHUNK = 900
+            all_snapshot_rows = []
+            for i in range(0, len(market_ids), CHUNK):
+                chunk = market_ids[i:i + CHUNK]
+                chunk_result = await session.execute(
+                    select(PriceSnapshot.market_id, PriceSnapshot.timestamp, PriceSnapshot.price_yes)
+                    .where(PriceSnapshot.market_id.in_(chunk))
+                    .order_by(PriceSnapshot.market_id, PriceSnapshot.timestamp)
+                )
+                all_snapshot_rows.extend(chunk_result.all())
             # Group snapshots by market_id
             raw_snapshots: dict[int, list[tuple]] = {}
-            for market_id, timestamp, price in result.all():
+            for market_id, timestamp, price in all_snapshot_rows:
                 if market_id not in raw_snapshots:
                     raw_snapshots[market_id] = []
                 raw_snapshots[market_id].append((timestamp, price))
@@ -135,12 +140,18 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
         orderbook_snapshots_map: dict[int, OrderbookSnapshot] = {}
         if market_ids:
             # Load ALL orderbook snapshots, then filter per-market by as_of
-            result = await session.execute(
-                select(OrderbookSnapshot)
-                .where(OrderbookSnapshot.market_id.in_(market_ids))
-                .order_by(OrderbookSnapshot.market_id, OrderbookSnapshot.timestamp.desc())
-            )
-            all_orderbooks = result.scalars().all()
+            # Chunk IN clause to respect SQLite's 999-variable limit
+            CHUNK = 900
+            all_orderbooks_list = []
+            for i in range(0, len(market_ids), CHUNK):
+                chunk = market_ids[i:i + CHUNK]
+                chunk_result = await session.execute(
+                    select(OrderbookSnapshot)
+                    .where(OrderbookSnapshot.market_id.in_(chunk))
+                    .order_by(OrderbookSnapshot.market_id, OrderbookSnapshot.timestamp.desc())
+                )
+                all_orderbooks_list.extend(chunk_result.scalars().all())
+            all_orderbooks = all_orderbooks_list
 
             # Group by market and filter to as_of
             markets_by_id = {m.id: m for m in markets}
@@ -417,15 +428,32 @@ def profit_simulation(
     y_test: np.ndarray,
     ensemble_preds: np.ndarray,
     market_prices: np.ndarray,
-    min_net_edge: float = 0.03,
-    taker_fee_bps: int = 200,
-    slippage: float = 0.01,
+    min_net_edge: float = 0.05,
+    slippage: float = 0.015,
 ) -> dict:
-    """Walk through test set chronologically, simulate trading with and without gates.
+    """Walk through test set chronologically, simulate trading with realistic Polymarket fees.
 
-    Returns dict with gated vs ungated P&L.
+    Fee model: Polymarket charges 2% on NET WINNINGS only (0% on losses).
+    This is much more favorable than a flat fee model.
+
+    Returns dict with gated vs ungated P&L at multiple thresholds.
     """
-    fees = taker_fee_bps / 10000 + slippage
+    FEE_RATE = 0.02  # Polymarket: 2% on winnings only
+
+    def compute_trade_pnl(direction: str, actual: float, q: float) -> float:
+        """Compute P&L for a single trade with realistic Polymarket fees."""
+        if direction == "yes":
+            gross_pnl = (actual - q)
+        else:
+            gross_pnl = ((1 - actual) - (1 - q))
+
+        gross_pnl -= slippage
+
+        # Fee only charged on net winnings (positive gross P&L)
+        if gross_pnl > 0:
+            fee = FEE_RATE * gross_pnl
+            return gross_pnl - fee
+        return gross_pnl
 
     # Ungated: trade everything
     ungated_pnl = 0.0
@@ -437,16 +465,21 @@ def profit_simulation(
     gated_trades = 0
     gated_wins = 0
 
+    # Multi-threshold analysis
+    thresholds = [0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.10]
+    threshold_results = {t: {"pnl": 0.0, "trades": 0, "wins": 0} for t in thresholds}
+
     for i in range(len(y_test)):
         p = ensemble_preds[i]  # Model probability
         q = market_prices[i]   # Market price
         actual = y_test[i]     # 1.0 or 0.0
 
-        # Directional EV
-        ev_yes = p - q - fees
-        ev_no = (1 - p) - (1 - q) - fees  # = q - p - fees
+        # Fee-aware directional EV (Polymarket: fee only on winning)
+        fee_yes = p * FEE_RATE * (1 - q) + slippage
+        fee_no = (1 - p) * FEE_RATE * q + slippage
+        ev_yes = p * (1 - q) - (1 - p) * q - fee_yes
+        ev_no = (1 - p) * q - p * (1 - q) - fee_no
 
-        # Pick better side
         if ev_yes > ev_no:
             direction = "yes"
             net_ev = ev_yes
@@ -454,12 +487,10 @@ def profit_simulation(
             direction = "no"
             net_ev = ev_no
 
+        trade_pnl = compute_trade_pnl(direction, actual, q)
+
         # Ungated: always trade if any positive EV
         if net_ev > 0:
-            if direction == "yes":
-                trade_pnl = (actual - q) - fees  # Buy YES at q, pays 1 if YES
-            else:
-                trade_pnl = ((1 - actual) - (1 - q)) - fees  # Buy NO
             ungated_pnl += trade_pnl
             ungated_trades += 1
             if trade_pnl > 0:
@@ -467,14 +498,18 @@ def profit_simulation(
 
         # Gated: only trade if edge exceeds threshold
         if net_ev >= min_net_edge:
-            if direction == "yes":
-                trade_pnl = (actual - q) - fees
-            else:
-                trade_pnl = ((1 - actual) - (1 - q)) - fees
             gated_pnl += trade_pnl
             gated_trades += 1
             if trade_pnl > 0:
                 gated_wins += 1
+
+        # Multi-threshold analysis
+        for t in thresholds:
+            if net_ev >= t:
+                threshold_results[t]["pnl"] += trade_pnl
+                threshold_results[t]["trades"] += 1
+                if trade_pnl > 0:
+                    threshold_results[t]["wins"] += 1
 
     return {
         "ungated_pnl": round(ungated_pnl, 4),
@@ -484,6 +519,16 @@ def profit_simulation(
         "gated_trades": gated_trades,
         "gated_win_rate": round(gated_wins / max(1, gated_trades), 3),
         "min_net_edge": min_net_edge,
+        "fee_model": "polymarket_2pct_on_winnings",
+        "slippage": slippage,
+        "threshold_sweep": {
+            f"{t:.0%}": {
+                "pnl": round(threshold_results[t]["pnl"], 4),
+                "trades": threshold_results[t]["trades"],
+                "win_rate": round(threshold_results[t]["wins"] / max(1, threshold_results[t]["trades"]), 3),
+            }
+            for t in thresholds
+        },
     }
 
 
@@ -763,16 +808,25 @@ async def main():
     except (ValueError, IndexError):
         best_threshold = 0.5
 
-    # --- Profit Simulation ---
-    logger.info(f"\n--- Profit Simulation ---")
+    # --- Profit Simulation (Polymarket-accurate fee model) ---
+    logger.info(f"\n--- Profit Simulation (2% on winnings only + 1.5% slippage) ---")
     market_prices_test = X_test_full[:, price_col_full]
     profit_sim = profit_simulation(y_test, post_cal_test_preds, market_prices_test)
     logger.info(f"  Ungated: {profit_sim['ungated_trades']} trades, "
                 f"P&L={profit_sim['ungated_pnl']:.4f}, "
                 f"win rate={profit_sim['ungated_win_rate']:.1%}")
-    logger.info(f"  Gated (>3% edge): {profit_sim['gated_trades']} trades, "
+    logger.info(f"  Gated (>5% edge): {profit_sim['gated_trades']} trades, "
                 f"P&L={profit_sim['gated_pnl']:.4f}, "
                 f"win rate={profit_sim['gated_win_rate']:.1%}")
+
+    if "threshold_sweep" in profit_sim:
+        logger.info("  Threshold sweep:")
+        for threshold, result in profit_sim["threshold_sweep"].items():
+            logger.info(
+                f"    {threshold}: {result['trades']:4d} trades, "
+                f"P&L={result['pnl']:+.4f}, "
+                f"win={result['win_rate']:.1%}"
+            )
 
     if profit_sim["gated_pnl"] < profit_sim["ungated_pnl"] and profit_sim["gated_trades"] > 0:
         logger.warning("  WARNING: Quality gates not adding value (gated P&L < ungated P&L)")
@@ -830,7 +884,7 @@ async def main():
 
     # --- Metrics + Model Card ---
     metrics = {
-        "trained_at": datetime.utcnow().isoformat(),
+        "trained_at": datetime.now(timezone.utc).isoformat(),
         "n_total_resolved": len(markets),
         "n_usable": len(y),
         "n_train": int(len(y_train)),

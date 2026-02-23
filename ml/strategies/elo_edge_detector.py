@@ -30,6 +30,7 @@ MIN_CONFIDENCE = 0.5  # Minimum Elo confidence
 MAX_KELLY = 0.02  # Maximum Kelly fraction (2%)
 SLIPPAGE_BUFFER = 0.01  # 1% default slippage estimate
 SIGNAL_EXPIRY_MINUTES = 60  # Signals expire after 1 hour
+MAX_RD_THRESHOLD = 300  # Skip players with rating deviation > 300 (too uncertain)
 
 
 async def scan_for_edges(
@@ -247,3 +248,137 @@ async def get_active_edges(session: AsyncSession) -> list[dict]:
         }
         for s in signals
     ]
+
+
+async def scan_ufc_edges(
+    session: AsyncSession,
+    engine: Glicko2Engine,
+    min_net_edge: float = MIN_NET_EDGE,
+    min_confidence: float = MIN_CONFIDENCE,
+) -> list[dict]:
+    """Scan active UFC/MMA markets for Elo-based edge signals."""
+    from data_pipeline.collectors.ufc_results import parse_ufc_matchup
+
+    result = await session.execute(
+        select(Market).where(
+            Market.is_active == True,  # noqa: E711
+            Market.price_yes != None,  # noqa: E711
+        ).limit(500)
+    )
+    markets = result.scalars().all()
+
+    if not markets:
+        return []
+
+    known_fighters = list(engine.ratings.keys())
+    if not known_fighters:
+        return []
+
+    edges_found = []
+
+    for market in markets:
+        matchup = parse_ufc_matchup(
+            question=market.question or "",
+            category=market.normalized_category or market.category or "",
+            market_id=market.id,
+        )
+
+        if matchup is None:
+            continue
+
+        matched_a = fuzzy_match_player(matchup["fighter_a"], known_fighters, threshold=0.80)
+        matched_b = fuzzy_match_player(matchup["fighter_b"], known_fighters, threshold=0.80)
+
+        if not matched_a or not matched_b:
+            continue
+
+        rating_a = engine.ratings.get(matched_a, {}).get("cage") or engine.ratings.get(matched_a, {}).get("overall")
+        rating_b = engine.ratings.get(matched_b, {}).get("cage") or engine.ratings.get(matched_b, {}).get("overall")
+        if not rating_a or not rating_b:
+            continue
+        if rating_a.phi > MAX_RD_THRESHOLD or rating_b.phi > MAX_RD_THRESHOLD:
+            continue
+        if rating_a.match_count < 5 or rating_b.match_count < 5:
+            continue
+
+        elo_prob_a, confidence = engine.win_probability(matched_a, matched_b, "cage")
+
+        if confidence < min_confidence:
+            continue
+
+        market_price = market.price_yes or 0.5
+
+        if matchup["yes_side_fighter"] == matchup["fighter_a"]:
+            elo_prob_yes = elo_prob_a
+        else:
+            elo_prob_yes = 1.0 - elo_prob_a
+
+        raw_edge = abs(elo_prob_yes - market_price)
+        direction = "buy_yes" if elo_prob_yes > market_price else "buy_no"
+        extra_fee = (market.taker_fee_bps or 0) / 10000.0
+
+        if direction == "buy_yes":
+            fee_cost = elo_prob_yes * POLYMARKET_FEE_RATE * (1 - market_price) + SLIPPAGE_BUFFER + extra_fee * (1 - market_price)
+            net_edge = elo_prob_yes * (1 - market_price) - (1 - elo_prob_yes) * market_price - fee_cost
+        else:
+            fee_cost = (1 - elo_prob_yes) * POLYMARKET_FEE_RATE * market_price + SLIPPAGE_BUFFER + extra_fee * market_price
+            net_edge = (1 - elo_prob_yes) * market_price - elo_prob_yes * (1 - market_price) - fee_cost
+
+        if net_edge < min_net_edge:
+            continue
+
+        vol_total = float(market.volume_total or 0)
+        if vol_total < 10000:
+            continue
+
+        kelly = compute_kelly(direction, elo_prob_yes, market_price, fee_cost)
+
+        existing = await session.execute(
+            select(EloEdgeSignal).where(
+                EloEdgeSignal.market_id == market.id,
+                EloEdgeSignal.expired_at == None,  # noqa: E711
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue
+
+        signal = EloEdgeSignal(
+            market_id=market.id,
+            sport="mma",
+            detected_at=datetime.utcnow(),
+            player_a=matched_a,
+            player_b=matched_b,
+            surface="cage",
+            elo_prob_a=elo_prob_a,
+            elo_confidence=confidence,
+            market_price_yes=market_price,
+            yes_side_player=matchup["yes_side_fighter"],
+            raw_edge=raw_edge,
+            fee_cost=fee_cost,
+            net_edge=net_edge,
+            kelly_fraction=kelly,
+        )
+        session.add(signal)
+        edges_found.append({
+            "market_id": market.id,
+            "question": market.question,
+            "fighter_a": matched_a,
+            "fighter_b": matched_b,
+            "elo_prob_a": round(elo_prob_a, 4),
+            "confidence": round(confidence, 4),
+            "market_price": round(market_price, 4),
+            "net_edge": round(net_edge, 4),
+            "kelly_fraction": round(kelly, 4),
+            "direction": direction,
+        })
+
+        logger.info(
+            f"UFC Edge: {matched_a} vs {matched_b} | "
+            f"Elo: {elo_prob_a:.1%} | Market: {market_price:.1%} | "
+            f"Net edge: {net_edge:.1%} | Kelly: {kelly:.2%}"
+        )
+
+    if edges_found:
+        await session.commit()
+    logger.info(f"UFC edge scan: {len(edges_found)} edges found")
+    return edges_found

@@ -143,7 +143,7 @@ async def refresh_trader_stats():
                     created += 1
 
             await session.commit()
-            logger.info(f"Trader refresh: {updated} updated, {created} new, {trades_fetched} with real trades")
+            logger.info(f"Trader refresh: {updated} updated, {created} new, {positions_fetched} with real trades")
 
     except Exception as e:
         logger.error(f"Trader stats refresh failed: {e}")
@@ -359,25 +359,82 @@ async def scan_arbitrage():
 # ── Elo Edge Scanning ────────────────────────────────────────────────
 
 async def scan_elo_edges():
-    """Scan active sports markets for Elo-based edge signals."""
-    logger.info("Starting Elo edge scan...")
+    """Scan active sports markets for Elo-based edge signals (Tennis + UFC)."""
+    logger.info("Starting Elo edge scan (Tennis + UFC)...")
     try:
         from ml.strategies.elo_edge_detector import scan_for_edges, get_active_edges
         from ml.models.elo_sports import Glicko2Engine
+        from pathlib import Path
 
-        engine = Glicko2Engine.load("ml/saved_models/elo_atp_ratings.joblib")
+        total_new = 0
+
+        # ATP Tennis
+        try:
+            atp_engine = Glicko2Engine.load("ml/saved_models/elo_atp_ratings.joblib")
+            if atp_engine and atp_engine.ratings:
+                async with async_session() as session:
+                    atp_signals = await scan_for_edges(session, atp_engine)
+                    total_new += len(atp_signals)
+                    logger.info(f"ATP scan: {len(atp_signals)} new signals")
+        except FileNotFoundError:
+            logger.info("ATP ratings not found, skipping")
+
+        # WTA Tennis
+        try:
+            wta_engine = Glicko2Engine.load("ml/saved_models/elo_wta_ratings.joblib")
+            if wta_engine and wta_engine.ratings:
+                async with async_session() as session:
+                    wta_signals = await scan_for_edges(session, wta_engine)
+                    total_new += len(wta_signals)
+                    logger.info(f"WTA scan: {len(wta_signals)} new signals")
+        except FileNotFoundError:
+            logger.info("WTA ratings not found, skipping")
+
+        # UFC/MMA
+        ufc_path = "ml/saved_models/elo_ufc_ratings.joblib"
+        if Path(ufc_path).exists():
+            try:
+                from ml.strategies.elo_edge_detector import scan_ufc_edges
+                ufc_engine = Glicko2Engine.load(ufc_path)
+                if ufc_engine and ufc_engine.ratings:
+                    async with async_session() as session:
+                        ufc_signals = await scan_ufc_edges(session, ufc_engine)
+                        total_new += len(ufc_signals)
+                        logger.info(f"UFC scan: {len(ufc_signals)} new signals")
+            except Exception as e:
+                logger.error(f"UFC scan failed: {e}")
+        else:
+            logger.info("UFC ratings not found (run: python scripts/build_elo_ratings_ufc.py)")
+
+        async with async_session() as session:
+            active = await get_active_edges(session)
+            logger.info(f"Elo total: {total_new} new signals, {len(active)} active edges")
+
+    except Exception as e:
+        logger.error(f"Elo edge scan failed: {e}")
+
+
+async def scan_ufc_edges():
+    """Scan active sports markets for UFC Elo-based edge signals."""
+    logger.info("Starting Elo edge scan (UFC)...")
+    try:
+        from ml.strategies.elo_edge_detector import scan_ufc_edges as _scan_ufc, get_active_edges
+        from ml.models.elo_sports import Glicko2Engine
+
+        engine = Glicko2Engine.load("ml/saved_models/elo_ufc_ratings.joblib")
         if not engine or not engine.ratings:
-            logger.info("No Elo ratings loaded yet, skipping scan")
+            logger.info("No UFC Elo ratings loaded yet, skipping scan")
             return
 
         async with async_session() as session:
-            new_signals = await scan_for_edges(session, engine)
+            new_signals = await _scan_ufc(session, engine)
             active = await get_active_edges(session)
-            logger.info(f"Elo scan: {len(new_signals)} new signals, {len(active)} active edges")
+            ufc_active = sum(1 for a in active if a.get("sport") == "ufc")
+            logger.info(f"Elo (UFC) scan: {len(new_signals)} new signals, {ufc_active} UFC active edges")
     except FileNotFoundError:
-        logger.info("Elo ratings file not found, skipping scan (run build_elo_ratings.py first)")
+        logger.info("UFC Elo ratings not found, skipping (run build_elo_ratings_ufc.py first)")
     except Exception as e:
-        logger.error(f"Elo edge scan failed: {e}")
+        logger.error(f"UFC Elo edge scan failed: {e}")
 
 
 # ── Ensemble Edge Scanning ──────────────────────────────────────────
@@ -450,7 +507,7 @@ async def scan_ensemble_edges():
                     result = ensemble.predict_market(market)
                     edge = detect_edge(market, result)
 
-                    if edge.direction and edge.net_ev > 0.03 and edge.confidence >= 0.4:
+                    if edge.direction and edge.net_ev >= 0.04 and edge.confidence >= 0.50:
                         n_has_edge += 1
 
                         if market.id in open_position_market_ids:

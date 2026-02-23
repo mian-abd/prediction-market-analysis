@@ -27,11 +27,16 @@
 ✅ RAILPACK_DEPLOY_APT_PACKAGES=libgomp1
 ```
 
-### Missing Variable (Add this):
+### Recommended (for full functionality):
 ```
 ⚠️  ANTHROPIC_API_KEY=sk-ant-...
 ```
 **Without this, Claude AI features won't work** (market analysis, etc.)
+
+```
+⚠️  REDIS_URL=${{Redis.REDIS_URL}}
+```
+**Without this, real-time WebSocket price streaming is disabled.** The app still runs; it uses polling only. Add this and start the Redis service on Railway if you want sub-second arbitrage detection.
 
 ---
 
@@ -137,17 +142,48 @@ Check:
 |----------|-------|----------|---------|
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | ✅ Yes | PostgreSQL connection |
 | `FRONTEND_URL` | `https://prediction-market-analysis-one.vercel.app` | ✅ Yes | CORS whitelist |
+| `REDIS_URL` | `${{Redis.REDIS_URL}}` | Optional | Real-time price stream; omit to use polling only |
 | `ANTHROPIC_API_KEY` | `sk-ant-...` | ⚠️  For AI features | Claude API access |
 | `RAILPACK_DEPLOY_APT_PACKAGES` | `libgomp1` | ✅ Yes | XGBoost/LightGBM dependency |
+
+---
+
+## 🚀 Push to GitHub & Bring Everything Online
+
+After you run scripts locally (Elo build, backfill, train_ensemble), deploy to Railway:
+
+1. **Commit and push to GitHub**
+   ```bash
+   git add -A
+   git status   # review changes
+   git commit -m "Sync: trained models, faster confidence learning, Railway/Redis docs"
+   git push origin main
+   ```
+
+2. **On Railway Dashboard**
+   - Ensure **Postgres** is **Online** (primary DB).
+   - Start **Redis** if you use real-time streaming: open the Redis service → start it if stopped.
+   - Start **prediction-market-analy...** (your app): open the service → start it if stopped.
+   - Fix **Postgres-dS8n** if you use it (resolve the warning or remove the service if unused).
+
+3. **Environment variables (app service)**
+   - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (reference your main Postgres).
+   - `REDIS_URL` = `${{Redis.REDIS_URL}}` (only if Redis service is running and you want streaming).
+   - Redeploy the app after changing variables.
+
+4. **Verify**
+   - Health: `https://your-app.up.railway.app/api/v1/system/health`
+   - Auto-trading and positions persist in Postgres across redeploys.
 
 ---
 
 ## 🎯 Next Steps
 
 1. **Add `ANTHROPIC_API_KEY` to Railway** (if you want AI features)
-2. **Wait for auto-redeploy** (or trigger manually)
-3. **Test the deployed app** at both URLs
-4. **Verify data persistence** by making trades and redeploying
+2. **Add `REDIS_URL`** and start Redis (if you want real-time streaming)
+3. **Push to `main`** and ensure app + Postgres (and optionally Redis) are **Online**
+4. **Test the deployed app** at both URLs
+5. **Verify data persistence** by making trades and redeploying
 
 Your deployment should now be rock-solid! 🚀
 

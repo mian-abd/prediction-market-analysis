@@ -7,8 +7,11 @@ Close conditions (checked in order):
 1. Market resolved -> close at resolution value (1.0 or 0.0)
 1b. Effectively resolved -> price near 0/1 (lock in profits immediately)
 1c. Market deactivated -> close at last price
-2. Edge invalidation -> price moved >15% away from entry AND losing (prediction markets)
-3. Stop loss hit -> close at current market price
+2. Edge invalidation -> price moved >10% away from entry AND losing (prediction markets)
+2a. Stale unprofitable -> >24h old and not profitable
+2b. Trailing stop -> position had >8% gain but gave back >50% of peak
+2c. Time-decay exit -> within 1-4 hours of market end date
+3. Stop loss hit -> close at current market price (tighter: 12/8/5% by price tier)
 4. Signal expired -> close at current market price (if close_on_signal_expiry=True)
 """
 
@@ -84,18 +87,50 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
         if exit_price is None and market.price_yes is not None:
             price_deviation = abs(market.price_yes - pos.entry_price)
 
-            # If price moved >15 percentage points away from entry, edge is likely gone
-            if price_deviation > 0.15:
-                # Check if we're losing money (directional mismatch)
+            if pos.side == "yes":
+                unrealized = (market.price_yes - pos.entry_price) * pos.quantity
+            else:
+                unrealized = (pos.entry_price - market.price_yes) * pos.quantity
+
+            # If price moved >10 percentage points AND we're losing, exit
+            if price_deviation > 0.10 and unrealized < 0:
+                exit_price = market.price_yes
+                close_reason = "edge_invalidation"
+
+            # Time-based exit: if position is >24h old and not profitable, cut it
+            if exit_price is None and pos.entry_time:
+                age_hours = (datetime.utcnow() - pos.entry_time).total_seconds() / 3600
+                if age_hours > 24 and unrealized <= 0:
+                    exit_price = market.price_yes
+                    close_reason = "stale_unprofitable"
+
+            # Trailing stop: protect gains once we're in profit
+            # If position has >8% gain, lock in at least 50% of gains
+            if exit_price is None and unrealized > 0:
+                cost_per_share = pos.entry_price if pos.side == "yes" else (1.0 - pos.entry_price)
+                position_cost = cost_per_share * pos.quantity
+                pnl_pct = unrealized / position_cost if position_cost > 0 else 0
+                if pnl_pct > 0.08:
+                    locked_pnl = unrealized * 0.50
+                    if unrealized < locked_pnl:
+                        exit_price = market.price_yes
+                        close_reason = "trailing_stop"
+
+        # 2b. Time-decay exit: close positions approaching market end date
+        # Markets in their final hours are binary — no time for recovery
+        if exit_price is None and market.end_date and market.price_yes is not None:
+            hours_until_close = (market.end_date - datetime.utcnow()).total_seconds() / 3600
+            if hours_until_close < 1 and hours_until_close > 0:
+                exit_price = market.price_yes
+                close_reason = "time_decay_expiry"
+            elif hours_until_close < 4:
                 if pos.side == "yes":
                     unrealized = (market.price_yes - pos.entry_price) * pos.quantity
                 else:
                     unrealized = (pos.entry_price - market.price_yes) * pos.quantity
-
-                # If price deviated AND we're losing, exit immediately
-                if unrealized < 0:
+                if unrealized <= 0:
                     exit_price = market.price_yes
-                    close_reason = "edge_invalidation"
+                    close_reason = "time_decay_losing"
 
         # 3. Stop loss — check AFTER edge invalidation to prevent unbounded losses
         # Scale stop-loss by cost basis: cheap contracts need more room (they're volatile)
@@ -108,23 +143,22 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
                     unrealized = (pos.entry_price - market.price_yes) * pos.quantity
                     position_cost = (1.0 - pos.entry_price) * pos.quantity
 
-                # Scale stop-loss by cost basis (cheap contracts are volatile)
+                # Tighter stop-losses to cut losses faster
                 cost_per_share = pos.entry_price if pos.side == "yes" else (1.0 - pos.entry_price)
                 if cost_per_share < 0.30:
-                    effective_stop = 0.15  # 15% for cheap contracts
+                    effective_stop = 0.12  # 12% for cheap contracts
                 elif cost_per_share < 0.50:
-                    effective_stop = 0.10  # 10% for mid-range
+                    effective_stop = 0.08  # 8% for mid-range
                 else:
-                    effective_stop = config.stop_loss_pct  # default 5% for expensive
+                    effective_stop = min(config.stop_loss_pct, 0.05)  # 5% max for expensive
 
                 if position_cost > 0 and unrealized / position_cost < -effective_stop:
                     exit_price = market.price_yes
                     close_reason = "stop_loss"
                 # Momentum-based close: prediction markets trending toward extremes (0/1) are unlikely to recover
-                # Close if down 5%+ AND price near extreme
                 elif (position_cost > 0 and
-                      unrealized / position_cost < -0.05 and  # Down 5%+
-                      (market.price_yes <= 0.05 or market.price_yes >= 0.95)):  # Near extreme
+                      unrealized / position_cost < -0.05 and
+                      (market.price_yes <= 0.05 or market.price_yes >= 0.95)):
                     exit_price = market.price_yes
                     close_reason = "momentum_downtrend"
 

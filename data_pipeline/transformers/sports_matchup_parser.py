@@ -52,6 +52,14 @@ _TENNIS_INDICATORS = [
     "shanghai masters", "paris masters", "atp finals", "davis cup",
 ]
 
+# UFC/MMA indicators (for detect_ufc_market and parse_ufc_matchup)
+_UFC_INDICATORS = [
+    "ufc", "mma", "fight", "fighter", "octagon", "ppv", "espn",
+    "jon jones", "islam makhachev", "conor mcgregor", "khabib",
+    "heavyweight", "lightweight", "welterweight", "middleweight",
+    "stipe miocic", "alex pereira", "leon edwards",
+]
+
 # Keywords that help determine which side "Yes" maps to
 _YES_SIDE_PATTERNS = [
     # "Will X beat Y?" → Yes = X wins
@@ -93,6 +101,19 @@ def _detect_tennis(question: str, category: str = "") -> bool:
     """Check if a market is about tennis."""
     combined = f"{question} {category}".lower()
     return any(indicator in combined for indicator in _TENNIS_INDICATORS)
+
+
+def detect_ufc_market(question: str, category: str = "") -> bool:
+    """Check if a market is about UFC/MMA. Used for UFC Elo scanning."""
+    combined = f"{question} {category}".lower()
+    if any(indicator in combined for indicator in _UFC_INDICATORS):
+        return True
+    # "Will X beat Y?" with two capitalized names often UFC (combat sports)
+    if re.search(r"will\s+.+\s+beat\s+.+\?", question, re.IGNORECASE):
+        return True
+    if re.search(r".+\s+vs\.?\s+.+", question, re.IGNORECASE) and "sports" in combined:
+        return True
+    return False
 
 
 def _detect_surface(question: str) -> str:
@@ -197,6 +218,51 @@ def parse_matchup(
         sport="tennis",
         surface=surface,
         confidence=confidence * yes_confidence,
+        yes_side_player=yes_side,
+        market_id=market_id,
+        raw_question=question,
+    )
+
+
+def parse_ufc_matchup(
+    question: str,
+    category: str = "",
+    market_id: int | None = None,
+) -> Optional[ParsedMatchup]:
+    """Parse a market question into a UFC/MMA matchup.
+
+    Same patterns as tennis (vs, beat) but for UFC. Returns ParsedMatchup with
+    sport="ufc", surface="cage". Used when detect_ufc_market() is True.
+    """
+    if not detect_ufc_market(question, category):
+        return None
+    if _is_prop_bet(question):
+        return None
+    if _is_tournament_winner(question):
+        return None
+
+    player_a = None
+    player_b = None
+    for pattern in _VS_PATTERNS:
+        match = pattern.search(question)
+        if match:
+            player_a = _clean_player_name(match.group(1))
+            player_b = _clean_player_name(match.group(2))
+            break
+
+    if not player_a or not player_b or len(player_a) < 3 or len(player_b) < 3:
+        return None
+
+    yes_side, yes_confidence = _determine_yes_side(question, player_a, player_b)
+    if yes_confidence < 0.6:
+        return None
+
+    return ParsedMatchup(
+        player_a=player_a,
+        player_b=player_b,
+        sport="ufc",
+        surface="cage",
+        confidence=0.8 * yes_confidence,
         yes_side_player=yes_side,
         market_id=market_id,
         raw_question=question,

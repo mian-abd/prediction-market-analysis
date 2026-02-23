@@ -25,11 +25,11 @@ from db.models import PortfolioPosition, EnsembleEdgeSignal, EloEdgeSignal
 
 logger = logging.getLogger(__name__)
 
-# Minimum samples before applying adjustments (avoid noise)
-MIN_SAMPLES = 20
+# Minimum samples before applying adjustments (faster learning from recent streams)
+MIN_SAMPLES = 8
 
-# EMA smoothing factor (50-signal window: alpha = 2/(N+1) = 2/51 ≈ 0.04)
-EMA_ALPHA = 0.04
+# EMA smoothing factor (~20-signal window for faster adaptation to recent performance)
+EMA_ALPHA = 0.095
 
 
 @dataclass
@@ -304,7 +304,7 @@ async def init_confidence_adjuster(session: AsyncSession):
     global _confidence_adjuster
 
     _confidence_adjuster = ConfidenceAdjuster()
-    await _confidence_adjuster.load_performance_stats(session, lookback_days=30)
+    await _confidence_adjuster.load_performance_stats(session, lookback_days=60)
 
     logger.info("Confidence adjuster initialized")
 
@@ -312,7 +312,7 @@ async def init_confidence_adjuster(session: AsyncSession):
 async def refresh_confidence_adjuster(session: AsyncSession):
     """Refresh performance statistics (call periodically)."""
     if _confidence_adjuster:
-        await _confidence_adjuster.load_performance_stats(session, lookback_days=30)
+        await _confidence_adjuster.load_performance_stats(session, lookback_days=60)
         logger.info("Confidence adjuster refreshed")
 
 

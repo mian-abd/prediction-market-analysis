@@ -195,7 +195,7 @@ async def export_ratings_to_db(engine: Glicko2Engine, sport: str = "tennis"):
                     sigma=rating.sigma,
                     match_count=rating.match_count,
                     last_match_date=str(rating.last_match_date) if rating.last_match_date else None,
-                    updated_at=datetime.utcnow(),
+                    updated_at=datetime.now(timezone.utc),
                 )
                 session.add(elo_row)
                 count += 1
@@ -210,21 +210,32 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Build Glicko-2 tennis ratings")
-    parser.add_argument("--start-year", type=int, default=2015)
+    parser.add_argument("--start-year", type=int, default=1990)
     parser.add_argument("--end-year", type=int, default=2026)
     parser.add_argument("--backtest-months", type=int, default=12)
-    parser.add_argument("--tour", choices=["atp", "wta"], default="atp")
+    parser.add_argument("--tour", choices=["atp", "wta", "all"], default="all")
     parser.add_argument("--export-db", action="store_true", help="Export ratings to database after building")
+    parser.add_argument("--ufc", action="store_true", help="Also build UFC ratings")
     args = parser.parse_args()
 
     async def _main():
-        engine = await build_and_backtest(
-            start_year=args.start_year,
-            end_year=args.end_year,
-            backtest_months=args.backtest_months,
-            tour=args.tour,
-        )
-        if engine and args.export_db:
-            await export_ratings_to_db(engine, sport="tennis")
+        tours = ["atp", "wta"] if args.tour == "all" else [args.tour]
+
+        for tour in tours:
+            engine = await build_and_backtest(
+                start_year=args.start_year,
+                end_year=args.end_year,
+                backtest_months=args.backtest_months,
+                tour=tour,
+            )
+            if engine and args.export_db:
+                await export_ratings_to_db(engine, sport="tennis")
+
+        if args.ufc or args.tour == "all":
+            try:
+                from scripts.build_elo_ratings_ufc import build_and_backtest_ufc
+                await build_and_backtest_ufc(export_db=args.export_db)
+            except Exception as e:
+                logger.warning(f"UFC Elo build failed (non-fatal): {e}")
 
     asyncio.run(_main())

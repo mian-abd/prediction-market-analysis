@@ -340,12 +340,23 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
         if kelly <= 0:
             continue
 
+        # Penalty zone: prices 0.40-0.60 are most efficiently priced
+        if signal.market_price_yes is not None and 0.40 <= signal.market_price_yes <= 0.60:
+            kelly *= 0.5
+
+        # Model execution costs with slippage (same as ensemble)
+        exec_result = compute_execution_cost(
+            direction=direction,
+            market_price=signal.market_price_yes,
+            slippage_bps=200,
+        )
+        entry_price = exec_result["execution_price"]
+
         if direction == "buy_yes":
-            cost_per_share = signal.market_price_yes
+            cost_per_share = entry_price
         else:
-            cost_per_share = 1.0 - signal.market_price_yes
+            cost_per_share = 1.0 - entry_price
         quantity = (config.bankroll * kelly) / max(cost_per_share, 0.01)
-        entry_price = signal.market_price_yes  # always YES price
 
         position_cost = cost_per_share * quantity
         risk_check = await check_risk_limits(session, position_cost, "auto_elo", portfolio_type="auto", strategy="auto_elo")
