@@ -1007,15 +1007,27 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Market matching error: {e}")
 
-            # Data retention: prune old time-series to prevent disk from filling
-            try:
-                async with async_session() as cleanup_session:
-                    deleted = await cleanup_old_data(cleanup_session, days=3)
-                    total = sum(deleted.values())
-                    if total > 0:
-                        logger.info(f"Data cleanup: {total} old rows pruned {deleted}")
-            except Exception as e:
-                logger.error(f"Data cleanup error: {e}")
+            # Data retention: prune old time-series (only when explicitly enabled).
+            # Default is cleanup_enabled=False — run scripts/export_archive_to_local.py
+            # first, then set CLEANUP_ENABLED=true in env to enable batched deletes.
+            if settings.cleanup_enabled:
+                try:
+                    async with async_session() as cleanup_session:
+                        deleted = await cleanup_old_data(
+                            cleanup_session,
+                            days=settings.retention_days,
+                            batch_size=settings.cleanup_batch_size,
+                        )
+                        total = sum(deleted.values())
+                        if total > 0:
+                            logger.info(f"Data cleanup: {total} old rows pruned {deleted}")
+                except Exception as e:
+                    logger.error(f"Data cleanup error: {e}")
+            else:
+                logger.debug(
+                    "Data cleanup skipped (cleanup_enabled=False). "
+                    "Run export_archive_to_local.py first, then set CLEANUP_ENABLED=true."
+                )
 
 
 if __name__ == "__main__":

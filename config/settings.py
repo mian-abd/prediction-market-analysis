@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     elo_max_kelly: float = 0.02  # Maximum Kelly fraction (2%)
     elo_scan_interval_sec: int = 600  # Scan every 10 minutes
 
+    # Data retention (hot/cold split)
+    # cleanup_enabled=False by default: never auto-delete without first running
+    # scripts/export_archive_to_local.py to archive data locally.
+    cleanup_enabled: bool = False
+    retention_days: int = 7
+    cleanup_batch_size: int = 1000
+
     # Redis
     redis_url: str = "redis://localhost:6379"
 

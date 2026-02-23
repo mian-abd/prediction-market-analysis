@@ -191,55 +191,88 @@ async def insert_orderbook_snapshot(
     await session.commit()
 
 
-async def cleanup_old_data(session: AsyncSession, days: int = 3) -> dict[str, int]:
-    """Delete old time-series data to prevent disk from filling up.
+async def _batched_delete(
+    session: AsyncSession,
+    model,
+    timestamp_col,
+    cutoff,
+    batch_size: int,
+) -> int:
+    """Delete rows older than cutoff in small batches to limit WAL growth.
+
+    Each batch is committed independently so a full disk can never be caused
+    by a single enormous DELETE statement.  Returns total rows deleted.
+    """
+    total = 0
+    while True:
+        result = await session.execute(
+            delete(model)
+            .where(timestamp_col < cutoff)
+            .execution_options(synchronize_session=False)
+        )
+        n = result.rowcount
+        await session.commit()
+        total += n
+        if n < batch_size:
+            break
+    return total
+
+
+async def cleanup_old_data(
+    session: AsyncSession,
+    days: int = 7,
+    batch_size: int = 1000,
+) -> dict[str, int]:
+    """Delete old time-series data in small batches to prevent disk-full crashes.
+
+    IMPORTANT: Only call this after running scripts/export_archive_to_local.py
+    for the same cutoff (older_than_days) so no data is deleted before it is
+    safely archived locally.  The scheduler gates this behind cleanup_enabled
+    (default False) to prevent accidental data loss.
 
     Keeps the last `days` worth of data for high-volume tables.
     Returns count of deleted rows per table.
     """
     cutoff = datetime.utcnow() - timedelta(days=days)
-    deleted = {}
+    deleted: dict[str, int] = {}
 
     # Price snapshots — biggest offender (~2000 rows per 20s cycle)
-    result = await session.execute(
-        delete(PriceSnapshot).where(PriceSnapshot.timestamp < cutoff)
+    deleted["price_snapshots"] = await _batched_delete(
+        session, PriceSnapshot, PriceSnapshot.timestamp, cutoff, batch_size
     )
-    deleted["price_snapshots"] = result.rowcount
 
     # Orderbook snapshots (JSON blobs eat space fast)
-    result = await session.execute(
-        delete(OrderbookSnapshot).where(OrderbookSnapshot.timestamp < cutoff)
+    deleted["orderbook_snapshots"] = await _batched_delete(
+        session, OrderbookSnapshot, OrderbookSnapshot.timestamp, cutoff, batch_size
     )
-    deleted["orderbook_snapshots"] = result.rowcount
 
     # Expired arbitrage opportunities older than cutoff
-    result = await session.execute(
-        delete(ArbitrageOpportunity).where(
+    expired_cutoff_result = await session.execute(
+        delete(ArbitrageOpportunity)
+        .where(
             ArbitrageOpportunity.detected_at < cutoff,
             ArbitrageOpportunity.expired_at != None,  # noqa: E711
         )
+        .execution_options(synchronize_session=False)
     )
-    deleted["arbitrage_opportunities"] = result.rowcount
+    await session.commit()
+    deleted["arbitrage_opportunities"] = expired_cutoff_result.rowcount
 
     # Old news events
-    result = await session.execute(
-        delete(NewsEvent).where(NewsEvent.fetched_at < cutoff)
+    deleted["news_events"] = await _batched_delete(
+        session, NewsEvent, NewsEvent.fetched_at, cutoff, batch_size
     )
-    deleted["news_events"] = result.rowcount
 
     # Old system metrics
-    result = await session.execute(
-        delete(SystemMetric).where(SystemMetric.timestamp < cutoff)
+    deleted["system_metrics"] = await _batched_delete(
+        session, SystemMetric, SystemMetric.timestamp, cutoff, batch_size
     )
-    deleted["system_metrics"] = result.rowcount
 
     # Old trader activities
-    result = await session.execute(
-        delete(TraderActivity).where(TraderActivity.created_at < cutoff)
+    deleted["trader_activities"] = await _batched_delete(
+        session, TraderActivity, TraderActivity.created_at, cutoff, batch_size
     )
-    deleted["trader_activities"] = result.rowcount
 
-    await session.commit()
     return deleted
 
 

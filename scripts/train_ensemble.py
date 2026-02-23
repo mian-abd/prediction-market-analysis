@@ -10,17 +10,27 @@ Honest methodology:
 
 Usage:
     python scripts/train_ensemble.py
+    python scripts/train_ensemble.py --archive-dir data/archive
+
+The --archive-dir flag enables loading historical price and orderbook snapshots
+from local Parquet files produced by scripts/export_archive_to_local.py.  When
+provided, training merges DB snapshots (recent) with archive snapshots (old) so
+the model refers to and learns from the complete history.
 
 Prerequisite:
     python scripts/backfill_resolved_markets.py
 """
 
+import argparse
 import sys
 import json
 from pathlib import Path
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+# Set by main() from --archive-dir; used inside load_resolved_markets().
+_ARCHIVE_DIR: Path | None = None
 
 import asyncio
 import logging
@@ -49,6 +59,93 @@ logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _load_archive_price_snapshots(
+    archive_dir: Path,
+    market_ids: set[int],
+    date_start,
+    date_end,
+) -> dict[int, list[tuple]]:
+    """Read price_snapshots Parquet files from the archive for a date range.
+
+    Returns {market_id: [(timestamp, price_yes), ...]} sorted ascending.
+    Only rows whose market_id is in `market_ids` are loaded.
+    """
+    import pandas as pd
+
+    price_dir = archive_dir / "price_snapshots"
+    if not price_dir.exists():
+        return {}
+
+    rows_by_market: dict[int, list[tuple]] = {}
+
+    # Iterate day-by-day across the requested date range
+    current = date_start
+    while current <= date_end:
+        day_str = current.date().isoformat() if hasattr(current, "date") else str(current)[:10]
+        parquet_path = price_dir / f"{day_str}.parquet"
+        if parquet_path.exists():
+            try:
+                df = pd.read_parquet(parquet_path, engine="pyarrow")
+                df = df[df["market_id"].isin(market_ids)]
+                for _, row in df.iterrows():
+                    mid = int(row["market_id"])
+                    ts = row["timestamp"]
+                    price = float(row["price_yes"])
+                    if mid not in rows_by_market:
+                        rows_by_market[mid] = []
+                    rows_by_market[mid].append((ts, price))
+            except Exception as e:
+                logger.warning(f"Archive price read failed ({parquet_path.name}): {e}")
+        current = current + timedelta(days=1)
+
+    # Sort each market's list by timestamp
+    for mid in rows_by_market:
+        rows_by_market[mid].sort(key=lambda x: x[0])
+
+    return rows_by_market
+
+
+def _load_archive_orderbook_snapshots(
+    archive_dir: Path,
+    market_ids: set[int],
+    date_start,
+    date_end,
+) -> dict[int, list[dict]]:
+    """Read orderbook_snapshots Parquet files from the archive for a date range.
+
+    Returns {market_id: [row_dict, ...]} sorted ascending by timestamp.
+    """
+    import pandas as pd
+
+    ob_dir = archive_dir / "orderbook_snapshots"
+    if not ob_dir.exists():
+        return {}
+
+    rows_by_market: dict[int, list[dict]] = {}
+
+    current = date_start
+    while current <= date_end:
+        day_str = current.date().isoformat() if hasattr(current, "date") else str(current)[:10]
+        parquet_path = ob_dir / f"{day_str}.parquet"
+        if parquet_path.exists():
+            try:
+                df = pd.read_parquet(parquet_path, engine="pyarrow")
+                df = df[df["market_id"].isin(market_ids)]
+                for _, row in df.iterrows():
+                    mid = int(row["market_id"])
+                    if mid not in rows_by_market:
+                        rows_by_market[mid] = []
+                    rows_by_market[mid].append(row.to_dict())
+            except Exception as e:
+                logger.warning(f"Archive orderbook read failed ({parquet_path.name}): {e}")
+        current = current + timedelta(days=1)
+
+    for mid in rows_by_market:
+        rows_by_market[mid].sort(key=lambda x: x.get("timestamp", datetime.min))
+
+    return rows_by_market
 
 
 async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]], dict[int, float], dict[int, any]]:
@@ -136,6 +233,56 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
             if skipped_no_snapshots > 0:
                 logger.info(f"  Skipped {skipped_no_snapshots} markets (no snapshots before as_of)")
 
+            # ── Merge from archive (if --archive-dir provided) ─────────────
+            if _ARCHIVE_DIR is not None:
+                markets_needing_archive = set(market_ids) - set(price_snapshots_map.keys())
+                if markets_needing_archive:
+                    # Determine date range: oldest resolved_at - 30d to max as_of
+                    min_resolved = min(
+                        (m.resolved_at or m.end_date)
+                        for m in markets if (m.resolved_at or getattr(m, "end_date", None))
+                    )
+                    max_resolved = max(
+                        (m.resolved_at or m.end_date)
+                        for m in markets if (m.resolved_at or getattr(m, "end_date", None))
+                    )
+                    date_start = min_resolved - timedelta(days=32)
+                    date_end = max_resolved
+
+                    logger.info(
+                        f"  Archive: loading price snapshots for {len(markets_needing_archive)} markets "
+                        f"without DB snapshots  ({date_start.date()} → {date_end.date()})"
+                    )
+                    archive_price = _load_archive_price_snapshots(
+                        _ARCHIVE_DIR, markets_needing_archive, date_start, date_end
+                    )
+
+                    # Merge: apply same as_of filter used for DB snapshots
+                    merged_count = 0
+                    for market_id, snap_list in archive_price.items():
+                        market = markets_by_id.get(market_id)
+                        if not market:
+                            continue
+                        if market.resolved_at:
+                            as_of = market.resolved_at - timedelta(hours=24)
+                        elif getattr(market, "end_date", None):
+                            as_of = market.end_date - timedelta(hours=24)
+                        else:
+                            continue
+                        filtered = [(ts, p) for (ts, p) in snap_list if ts <= as_of]
+                        if not filtered:
+                            continue
+                        price_snapshots_map[market_id] = [p for (ts, p) in filtered]
+                        price_at_as_of_map[market_id] = filtered[-1][1]
+                        merged_count += 1
+
+                    logger.info(
+                        f"  Archive: merged {merged_count} additional markets from Parquet "
+                        f"(total with snapshots: {len(price_snapshots_map)})"
+                    )
+                else:
+                    logger.info("  Archive: all markets already have DB snapshot data, skipping archive load")
+
         # Load latest orderbook snapshot BEFORE as_of for each market (temporal integrity)
         orderbook_snapshots_map: dict[int, OrderbookSnapshot] = {}
         if market_ids:
@@ -194,6 +341,72 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
                     f"  ⚠️  {stale_orderbooks}/{len(orderbook_snapshots_map)} orderbooks are >10min stale "
                     f"(increase collection frequency or backfill historical data)"
                 )
+
+            # ── Merge orderbooks from archive (if --archive-dir provided) ──
+            if _ARCHIVE_DIR is not None:
+                ob_markets_needing_archive = set(market_ids) - set(orderbook_snapshots_map.keys())
+                if ob_markets_needing_archive:
+                    min_resolved = min(
+                        (m.resolved_at or m.end_date)
+                        for m in markets if (m.resolved_at or getattr(m, "end_date", None))
+                    )
+                    max_resolved = max(
+                        (m.resolved_at or m.end_date)
+                        for m in markets if (m.resolved_at or getattr(m, "end_date", None))
+                    )
+                    date_start = min_resolved - timedelta(days=32)
+                    date_end = max_resolved
+
+                    logger.info(
+                        f"  Archive: loading orderbook snapshots for {len(ob_markets_needing_archive)} markets "
+                        f"without DB snapshots  ({date_start.date()} → {date_end.date()})"
+                    )
+                    archive_ob = _load_archive_orderbook_snapshots(
+                        _ARCHIVE_DIR, ob_markets_needing_archive, date_start, date_end
+                    )
+
+                    ob_merged_count = 0
+                    for market_id, ob_list in archive_ob.items():
+                        market = markets_by_id.get(market_id)
+                        if not market:
+                            continue
+                        if market.resolved_at:
+                            as_of = market.resolved_at - timedelta(hours=24)
+                        elif getattr(market, "end_date", None):
+                            as_of = market.end_date - timedelta(hours=24)
+                        else:
+                            continue
+                        # Pick latest orderbook row before as_of
+                        valid = [row for row in ob_list if row.get("timestamp", datetime.min) <= as_of]
+                        if not valid:
+                            continue
+                        latest_row = valid[-1]
+
+                        # Reconstruct an OrderbookSnapshot-compatible object from the dict
+                        ob_obj = OrderbookSnapshot(
+                            market_id=market_id,
+                            side=latest_row.get("side", "yes"),
+                            timestamp=latest_row.get("timestamp"),
+                            best_bid=latest_row.get("best_bid"),
+                            best_ask=latest_row.get("best_ask"),
+                            bid_ask_spread=latest_row.get("bid_ask_spread"),
+                            bid_depth_total=latest_row.get("bid_depth_total"),
+                            ask_depth_total=latest_row.get("ask_depth_total"),
+                            obi_level1=latest_row.get("obi_level1"),
+                            obi_weighted=latest_row.get("obi_weighted"),
+                            depth_ratio=latest_row.get("depth_ratio"),
+                            bids_json=latest_row.get("bids_json"),
+                            asks_json=latest_row.get("asks_json"),
+                        )
+                        orderbook_snapshots_map[market_id] = ob_obj
+                        ob_merged_count += 1
+
+                    logger.info(
+                        f"  Archive: merged {ob_merged_count} additional orderbooks from Parquet "
+                        f"(total with orderbooks: {len(orderbook_snapshots_map)})"
+                    )
+                else:
+                    logger.info("  Archive: all markets already have DB orderbook data, skipping archive load")
 
             session.expunge_all()
 
@@ -946,5 +1159,37 @@ def _pct(score: float, baseline: float) -> str:
     return f"{improvement:+.1f}% vs baseline"
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Train ensemble model on resolved markets.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--archive-dir",
+        default=None,
+        help=(
+            "Path to local Parquet archive produced by export_archive_to_local.py. "
+            "When provided, training merges historical snapshots from archive with "
+            "recent snapshots from DB so the model learns from full history."
+        ),
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    args = _parse_args()
+
+    if args.archive_dir:
+        _archive_path = Path(args.archive_dir)
+        if not _archive_path.is_absolute():
+            _archive_path = project_root / _archive_path
+        if not _archive_path.exists():
+            logger.warning(
+                f"--archive-dir '{_archive_path}' does not exist. "
+                f"Run export_archive_to_local.py first. Continuing without archive."
+            )
+        else:
+            _ARCHIVE_DIR = _archive_path
+            logger.info(f"Archive dir: {_ARCHIVE_DIR}")
+
     asyncio.run(main())

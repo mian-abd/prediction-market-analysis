@@ -63,3 +63,78 @@ python scripts/run_full_retrain.py --skip-elo
 
 - **Live:** The app collects data and learns from closed trades automatically.
 - **Periodic:** Run `scripts/run_full_retrain.py` (and optionally `--export-db`), then commit `ml/saved_models/` and push so Railway uses the latest models.
+
+---
+
+## Hot/cold data split — keep Postgres lean, never lose history
+
+The Railway Postgres volume is limited.  To prevent disk-full crashes the app
+uses a hot/cold split:
+
+- **Hot (Postgres):** keeps only the last `RETENTION_DAYS` (default 7) of
+  `price_snapshots`, `orderbook_snapshots`, `arbitrage_opportunities`,
+  `news_events`, `system_metrics`, `trader_activities`.
+- **Cold (local disk):** old rows are exported to
+  `data/archive/<table>/YYYY-MM-DD.parquet` and read by the training script.
+
+Cleanup is **disabled by default** (`CLEANUP_ENABLED=false`).  You must run
+the export script first so no data is ever deleted before it is safely archived.
+
+### Step 1 — Export old data to local archive (run weekly, before any cleanup)
+
+```bash
+# Export rows older than 7 days to data/archive/
+python scripts/export_archive_to_local.py
+
+# Custom options
+python scripts/export_archive_to_local.py --archive-dir data/archive --older-than-days 7
+python scripts/export_archive_to_local.py --older-than-days 7 --include-arb   # also arb opportunities
+python scripts/export_archive_to_local.py --older-than-days 7 --force          # re-export existing days
+```
+
+After export, check `data/archive/manifest_<run_id>.json` to confirm row counts
+and file list look correct before enabling cleanup.
+
+### Step 2 — Enable cleanup (only after verifying the archive)
+
+Set these environment variables (locally in `.env`, or in Railway Variables):
+
+```
+CLEANUP_ENABLED=true
+RETENTION_DAYS=7
+CLEANUP_BATCH_SIZE=1000
+```
+
+The scheduler will then run **batched** deletes (1 000 rows per commit) every
+~1 hour for rows older than `RETENTION_DAYS`, keeping WAL growth bounded and
+preventing the disk-full panic that occurred previously.
+
+**Important:** Always run `export_archive_to_local.py` before each cleanup
+cycle (i.e. weekly) so new data is archived before being deleted.
+
+### Step 3 — Train with full history (DB + archive)
+
+Pass `--archive-dir` to the training script so it merges archive snapshots with
+DB snapshots.  Markets that have no recent snapshot in DB will be supplemented
+from the Parquet archive, giving the model access to the complete history.
+
+```bash
+python scripts/train_ensemble.py --archive-dir data/archive
+
+# Or as part of the full retrain pipeline:
+python scripts/run_full_retrain.py --export-db  # after exporting and committing models
+```
+
+### Ongoing workflow (no data loss)
+
+```
+1. (weekly) python scripts/export_archive_to_local.py --older-than-days 7
+2. Check manifest — confirm row counts
+3. (first time only) Set CLEANUP_ENABLED=true in .env / Railway
+4. (weekly) python scripts/train_ensemble.py --archive-dir data/archive
+5. git add ml/saved_models/ && git commit -m "Retrain" && git push
+```
+
+Data is never deleted from Postgres without first being archived locally.  The
+archive grows on your local machine and is only read by the training script —
+it is not committed to git and not deployed to Railway.

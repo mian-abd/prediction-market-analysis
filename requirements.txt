@@ -24,6 +24,7 @@ scikit-learn==1.6.1
 pandas==2.2.3
 numpy==2.2.2
 joblib==1.4.2
+pyarrow>=16.0.0  # Parquet read/write for local archive (export_archive_to_local.py, train_ensemble.py)
 
 # Scheduling
 apscheduler==3.10.4
