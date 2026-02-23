@@ -155,7 +155,7 @@ async def export_archive(
     """Run the full export and return the manifest dict."""
     await init_db()
 
-    cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=older_than_days)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     logger.info("=" * 60)
