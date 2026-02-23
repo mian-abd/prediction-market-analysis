@@ -290,6 +290,99 @@ async def unfollow_trader(
     return {"message": "Successfully unfollowed trader", "trader_id": trader_id}
 
 
+@router.post("/unfollow-and-close/{trader_id}")
+async def unfollow_and_close_trader(
+    trader_id: str,
+    current_user: str = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Unfollow a trader and close all open copied positions for that trader.
+
+    This is designed for **manual copy trading**:
+    - Deactivates the FollowedTrader relationship
+    - Finds all open PortfolioPosition rows created via CopyTrade for this trader
+    - Closes them at the latest market price (Polymarket fee model: 2% on winnings)
+    """
+    # Locate active follow record
+    follow_result = await session.execute(
+        select(FollowedTrader).where(
+            FollowedTrader.follower_id == current_user,
+            FollowedTrader.trader_id == trader_id,
+            FollowedTrader.is_active == True,
+        )
+    )
+    follow = follow_result.scalar_one_or_none()
+
+    if not follow:
+        raise HTTPException(status_code=404, detail="Not following this trader")
+
+    # Find all open copied positions for this follower/trader pair
+    open_pos_query = (
+        select(PortfolioPosition)
+        .join(CopyTrade, CopyTrade.follower_position_id == PortfolioPosition.id)
+        .where(
+            CopyTrade.follower_id == current_user,
+            CopyTrade.trader_id == trader_id,
+            PortfolioPosition.exit_time == None,  # noqa: E711
+        )
+    )
+    open_pos_result = await session.execute(open_pos_query)
+    open_positions = open_pos_result.scalars().all()
+
+    closed_ids: list[int] = []
+    total_pnl = 0.0
+    now = datetime.utcnow()
+
+    for pos in open_positions:
+        if pos.exit_time is not None:
+            continue
+
+        market = await session.get(Market, pos.market_id)
+        base_yes = market.price_yes if market and market.price_yes is not None else pos.entry_price
+
+        # Compute exit price depending on side
+        if pos.side == "yes":
+            exit_price = base_yes
+        else:
+            exit_price = 1.0 - base_yes
+
+        pos.exit_price = exit_price
+        pos.exit_time = now
+
+        if pos.side == "yes":
+            gross_pnl = (exit_price - pos.entry_price) * pos.quantity
+        else:
+            gross_pnl = (pos.entry_price - exit_price) * pos.quantity
+
+        # Polymarket 2% fee on net winnings only
+        fee = 0.02 * max(gross_pnl, 0.0)
+        pos.realized_pnl = gross_pnl - fee
+
+        total_pnl += pos.realized_pnl or 0.0
+        closed_ids.append(pos.id)
+
+    # Deactivate follow relationship
+    follow.is_active = False
+    follow.unfollowed_at = now
+
+    # Update follower count
+    trader_result = await session.execute(
+        select(TraderProfile).where(TraderProfile.user_id == trader_id)
+    )
+    trader = trader_result.scalar_one_or_none()
+    if trader and trader.follower_count > 0:
+        trader.follower_count -= 1
+
+    await session.commit()
+
+    return {
+        "message": "Successfully unfollowed trader and closed copied positions",
+        "trader_id": trader_id,
+        "positions_closed": len(closed_ids),
+        "total_realized_pnl": round(total_pnl, 2),
+    }
+
+
 # ============================================================================
 # USER'S FOLLOWING LIST & PERFORMANCE
 # ============================================================================

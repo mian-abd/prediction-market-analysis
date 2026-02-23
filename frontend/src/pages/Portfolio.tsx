@@ -12,7 +12,7 @@
 
 import { useState } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { Briefcase, AlertCircle, Bot, X, Plus, Loader2 } from 'lucide-react'
+import { Briefcase, AlertCircle, Bot, X, Plus, Loader2, UserX } from 'lucide-react'
 import apiClient from '../api/client'
 import ErrorState from '../components/ErrorState'
 import { TableSkeleton, Skeleton } from '../components/LoadingSkeleton'
@@ -57,12 +57,24 @@ interface Position {
   portfolio_type: string
 }
 
+interface FollowingTrader {
+  trader_id: string
+  display_name: string
+  allocation_amount: number
+  copy_percentage: number
+  auto_copy: boolean
+  followed_at: string
+  copied_trades: number
+  copy_pnl: number
+}
+
 type PortfolioType = 'all' | 'manual' | 'auto'
 
 export default function Portfolio() {
   const [portfolioType, setPortfolioType] = useState<PortfolioType>('all')
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d' | 'all'>('30d')
   const [positionStatus, setPositionStatus] = useState<'open' | 'closed' | 'all'>('open')
+  const [pnlView, setPnlView] = useState<'total' | 'realized' | 'open'>('total')
   const [showOpenForm, setShowOpenForm] = useState(false)
   const [closingId, setClosingId] = useState<number | null>(null)
 
@@ -119,6 +131,36 @@ export default function Portfolio() {
     onSuccess: () => {
       invalidatePortfolio()
       setClosingId(null)
+    },
+  })
+
+  // Copy trading: currently followed traders (for unfollow / unfollow+close)
+  const { data: followingData } = useQuery<FollowingTrader[]>({
+    queryKey: ['following'],
+    queryFn: async () => {
+      const response = await apiClient.get('/copy-trading/following')
+      return response.data
+    },
+    staleTime: 60_000,
+  })
+
+  const unfollowMutation = useMutation({
+    mutationFn: async (traderId: string) => {
+      await apiClient.delete(`/copy-trading/follow/${traderId}`)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['following'] })
+    },
+  })
+
+  const unfollowAndCloseMutation = useMutation({
+    mutationFn: async (traderId: string) => {
+      const res = await apiClient.post(`/copy-trading/unfollow-and-close/${traderId}`)
+      return res.data
+    },
+    onSuccess: () => {
+      invalidatePortfolio()
+      queryClient.invalidateQueries({ queryKey: ['following'] })
     },
   })
 
@@ -386,21 +428,54 @@ export default function Portfolio() {
         </div>
       ) : summary ? (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          {/* P&L Card with view toggles (Total / Realized / Open) */}
           <div className="card p-4">
-            <p className="text-[10px] uppercase mb-1" style={{ color: 'var(--text-3)' }}>
-              Total P&L
-            </p>
-            <p
-              className="text-[20px] font-mono font-bold"
-              style={{ color: (summary.total_pnl ?? summary.total_realized_pnl) >= 0 ? 'var(--green)' : 'var(--red)' }}
-            >
-              ${(summary.total_pnl ?? summary.total_realized_pnl ?? 0).toFixed(2)}
-            </p>
-            {summary.total_unrealized_pnl != null && summary.total_unrealized_pnl !== 0 && (
-              <p className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--text-3)' }}>
-                Unrealized: ${(summary.total_unrealized_pnl ?? 0).toFixed(2)}
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>
+                {pnlView === 'total'
+                  ? 'Total P&L'
+                  : pnlView === 'realized'
+                  ? 'Realized P&L'
+                  : 'Open P&L (current trades)'}
               </p>
-            )}
+              <div className="flex gap-1">
+                {(['total', 'realized', 'open'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setPnlView(mode)}
+                    className="px-2 py-0.5 rounded text-[9px] font-semibold uppercase"
+                    style={{
+                      background: pnlView === mode ? 'var(--accent-dim)' : 'transparent',
+                      color: pnlView === mode ? 'var(--accent)' : 'var(--text-3)',
+                    }}
+                  >
+                    {mode === 'total' ? 'All' : mode === 'realized' ? 'Real.' : 'Open'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {(() => {
+              const total = summary.total_pnl ?? summary.total_realized_pnl ?? 0
+              const realized = summary.total_realized_pnl ?? 0
+              const open = summary.total_unrealized_pnl ?? 0
+              const value = pnlView === 'total' ? total : pnlView === 'realized' ? realized : open
+              const color = value >= 0 ? 'var(--green)' : 'var(--red)'
+              return (
+                <>
+                  <p
+                    className="text-[20px] font-mono font-bold"
+                    style={{ color }}
+                  >
+                    ${value.toFixed(2)}
+                  </p>
+                  {pnlView === 'total' && (
+                    <p className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--text-3)' }}>
+                      Realized: ${realized.toFixed(2)} • Open: ${open.toFixed(2)}
+                    </p>
+                  )}
+                </>
+              )
+            })()}
           </div>
 
           <div className="card p-4">
@@ -500,6 +575,73 @@ export default function Portfolio() {
         </h2>
         <PositionHeatmap portfolioType={portfolioType} />
       </div>
+
+      {/* Copy Trading Following (controls live in Portfolio so manual copy users can manage risk) */}
+      {followingData && followingData.length > 0 && (
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <UserX className="h-4 w-4" style={{ color: 'var(--text-3)' }} />
+              <h2 className="text-[14px] font-semibold" style={{ color: 'var(--text)' }}>
+                Copy Trading — Following
+              </h2>
+            </div>
+            <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+              Manage who you follow and quickly exit copied trades
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            {followingData.map((t) => (
+              <div
+                key={t.trader_id}
+                className="flex flex-col md:flex-row md:items-center justify-between gap-2 py-2 px-2 rounded-lg"
+                style={{ background: 'rgba(255,255,255,0.02)' }}
+              >
+                <div>
+                  <p className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>
+                    {t.display_name}
+                  </p>
+                  <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
+                    Copied trades: {t.copied_trades} • Copy P&L:{' '}
+                    <span
+                      className="font-mono font-semibold"
+                      style={{ color: t.copy_pnl >= 0 ? 'var(--green)' : 'var(--red)' }}
+                    >
+                      {t.copy_pnl >= 0 ? '+' : '-'}${Math.abs(t.copy_pnl).toFixed(2)}
+                    </span>
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => unfollowMutation.mutate(t.trader_id)}
+                    disabled={unfollowMutation.isPending || unfollowAndCloseMutation.isPending}
+                    className="px-3 py-1.5 rounded-lg text-[11px] font-semibold"
+                    style={{
+                      border: '1px solid var(--border)',
+                      color: 'var(--text-3)',
+                      background: 'transparent',
+                    }}
+                  >
+                    Unfollow
+                  </button>
+                  <button
+                    onClick={() => unfollowAndCloseMutation.mutate(t.trader_id)}
+                    disabled={unfollowAndCloseMutation.isPending || unfollowMutation.isPending}
+                    className="px-3 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1.5"
+                    style={{
+                      background: 'rgba(207,102,121,0.15)',
+                      color: 'var(--red)',
+                    }}
+                  >
+                    <UserX className="h-3 w-3" />
+                    Unfollow & Close All
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Positions table */}
       <div className="card p-6">
