@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import PortfolioPosition, EnsembleEdgeSignal, EloEdgeSignal
+from db.models import PortfolioPosition, EnsembleEdgeSignal, EloEdgeSignal, StrategySignal
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +120,30 @@ class ConfidenceAdjuster:
         )
         elo_trades = elo_result.all()
 
+        # New strategy positions (auto_longshot_bias, auto_llm_forecast, etc.)
+        new_strat_result = await session.execute(
+            select(
+                PortfolioPosition.entry_price,
+                PortfolioPosition.side,
+                PortfolioPosition.realized_pnl,
+                PortfolioPosition.entry_time,
+                StrategySignal.confidence,
+            )
+            .join(StrategySignal, PortfolioPosition.market_id == StrategySignal.market_id)
+            .where(
+                and_(
+                    PortfolioPosition.exit_time.isnot(None),
+                    PortfolioPosition.entry_time >= cutoff,
+                    PortfolioPosition.strategy.like("auto_%"),
+                    PortfolioPosition.strategy.notin_(["auto_ensemble", "auto_elo"]),
+                    StrategySignal.confidence.isnot(None),
+                )
+            )
+        )
+        new_strat_trades = new_strat_result.all()
+
         # Combine trades
-        trades = list(ensemble_trades) + list(elo_trades)
+        trades = list(ensemble_trades) + list(elo_trades) + list(new_strat_trades)
 
         if not trades:
             logger.info("No closed trades found for confidence adjustment")

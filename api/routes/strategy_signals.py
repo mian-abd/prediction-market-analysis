@@ -331,6 +331,78 @@ async def get_new_strategy_signals(
         }
 
 
+@router.get("/strategies/performance-by-strategy")
+async def get_performance_by_strategy():
+    """P&L, hit rate, and trade count broken down by auto-trading strategy.
+
+    Covers ensemble, elo, AND all new strategies in a single response.
+    Used by the frontend to show which strategies are actually making money.
+    """
+    from collections import defaultdict
+    from db.models import PortfolioPosition
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(PortfolioPosition)
+            .where(
+                PortfolioPosition.portfolio_type == "auto",
+                PortfolioPosition.exit_time.isnot(None),
+            )
+            .order_by(PortfolioPosition.exit_time.desc())
+        )
+        positions = result.scalars().all()
+
+        if not positions:
+            return {"strategies": {}, "total_trades": 0, "total_pnl": 0.0}
+
+        by_strategy: dict[str, dict] = defaultdict(lambda: {
+            "trades": 0, "wins": 0, "pnl": 0.0,
+            "best_trade": 0.0, "worst_trade": 0.0,
+            "total_exposure": 0.0,
+        })
+
+        for p in positions:
+            strat = p.strategy or "unknown"
+            pnl = p.realized_pnl or 0.0
+            cost = (p.entry_price if p.side == "yes" else (1.0 - p.entry_price)) * p.quantity
+
+            by_strategy[strat]["trades"] += 1
+            by_strategy[strat]["pnl"] += pnl
+            by_strategy[strat]["total_exposure"] += cost
+            if pnl > 0:
+                by_strategy[strat]["wins"] += 1
+            by_strategy[strat]["best_trade"] = max(by_strategy[strat]["best_trade"], pnl)
+            by_strategy[strat]["worst_trade"] = min(by_strategy[strat]["worst_trade"], pnl)
+
+        strategies = {}
+        for strat, data in by_strategy.items():
+            trades = data["trades"]
+            strategies[strat] = {
+                "trades": trades,
+                "wins": data["wins"],
+                "losses": trades - data["wins"],
+                "hit_rate": round(data["wins"] / trades, 4) if trades > 0 else 0,
+                "total_pnl": round(data["pnl"], 2),
+                "avg_pnl_per_trade": round(data["pnl"] / trades, 2) if trades > 0 else 0,
+                "roi_pct": round((data["pnl"] / data["total_exposure"]) * 100, 2) if data["total_exposure"] > 0 else 0,
+                "best_trade": round(data["best_trade"], 2),
+                "worst_trade": round(data["worst_trade"], 2),
+            }
+
+        total_pnl = sum(s["total_pnl"] for s in strategies.values())
+        total_trades = sum(s["trades"] for s in strategies.values())
+
+        return {
+            "strategies": strategies,
+            "total_trades": total_trades,
+            "total_pnl": round(total_pnl, 2),
+            "total_wins": sum(s["wins"] for s in strategies.values()),
+            "overall_hit_rate": round(
+                sum(s["wins"] for s in strategies.values()) / total_trades, 4
+            ) if total_trades > 0 else 0,
+        }
+
+
 @router.get("/strategies/ensemble-edges")
 async def get_ensemble_edges(
     limit: int = Query(default=50, le=200),

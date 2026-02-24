@@ -791,6 +791,17 @@ async def scan_new_strategies():
         except Exception as e:
             logger.error(f"Smart money scan failed: {e}")
 
+    # Run consensus scan after all individual strategies
+    try:
+        from ml.strategies.signal_consensus import compute_signal_consensus, persist_consensus_signals
+        async with async_session() as cons_session:
+            consensus = await compute_signal_consensus(cons_session)
+            if consensus:
+                await persist_consensus_signals(cons_session, consensus)
+                total_signals += len(consensus)
+    except Exception as e:
+        logger.error(f"Consensus scan failed: {e}")
+
     logger.info(f"New strategy scans complete: {total_signals} total signals")
     return total_signals
 
@@ -834,7 +845,10 @@ async def scan_llm_strategy():
     from config.settings import settings
     from db.models import StrategySignal
 
-    if not settings.llm_forecast_enabled or not settings.anthropic_api_key:
+    if not settings.llm_forecast_enabled:
+        return
+    if not settings.anthropic_api_key:
+        logger.debug("LLM forecast skipped: ANTHROPIC_API_KEY not set")
         return
 
     try:

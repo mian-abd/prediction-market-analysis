@@ -477,7 +477,9 @@ async def _execute_new_strategy_trades(session: AsyncSession) -> list[int]:
 
         # Strategy-specific Kelly adjustments
         strategy = signal.strategy or ""
-        if strategy == "resolution_convergence":
+        if strategy == "consensus":
+            kelly *= 1.5  # Multi-strategy agreement = highest conviction
+        elif strategy == "resolution_convergence":
             kelly *= 1.2  # Slightly more aggressive for high win-rate strategy
         elif strategy == "longshot_bias":
             kelly *= 1.0  # Standard — well-documented structural edge

@@ -58,6 +58,78 @@ CALIBRATION_CURVE = {
     0.95: 0.98,   # 95% → 98% (near-certain events are underpriced)
 }
 
+_dynamic_calibration: dict[float, float] | None = None
+_calibration_loaded_at: datetime | None = None
+CALIBRATION_REFRESH_HOURS = 12
+
+
+async def learn_calibration_curve(session: AsyncSession) -> dict[float, float]:
+    """Learn calibration from historical resolved markets.
+
+    Groups resolved markets into price buckets and computes the actual resolution
+    rate per bucket. Blends with the academic curve (50/50 initially, shifting
+    toward data as sample size grows).
+    """
+    global _dynamic_calibration, _calibration_loaded_at
+
+    result = await session.execute(
+        select(Market.price_yes, Market.resolution_value).where(
+            Market.is_resolved == True,  # noqa
+            Market.resolution_value != None,  # noqa
+            Market.price_yes != None,  # noqa
+        )
+    )
+    resolved = result.all()
+
+    if len(resolved) < 50:
+        logger.info(f"Only {len(resolved)} resolved markets, using academic curve only")
+        _dynamic_calibration = dict(CALIBRATION_CURVE)
+        _calibration_loaded_at = datetime.utcnow()
+        return _dynamic_calibration
+
+    # Bucket markets by price (5% buckets)
+    buckets: dict[float, list[float]] = {}
+    for bucket_center in [k for k in CALIBRATION_CURVE]:
+        buckets[bucket_center] = []
+
+    for price_yes, resolution_value in resolved:
+        if price_yes is None or resolution_value is None:
+            continue
+        # Find nearest bucket
+        best_bucket = min(CALIBRATION_CURVE.keys(), key=lambda b: abs(b - price_yes))
+        buckets[best_bucket].append(float(resolution_value))
+
+    learned = {}
+    for bucket_center, outcomes in buckets.items():
+        n = len(outcomes)
+        if n >= 5:
+            empirical_rate = sum(outcomes) / n
+            academic_rate = CALIBRATION_CURVE[bucket_center]
+            # Blend: more data = more weight to empirical
+            data_weight = min(0.8, n / 200)
+            blended = empirical_rate * data_weight + academic_rate * (1 - data_weight)
+            learned[bucket_center] = round(blended, 4)
+            if abs(blended - academic_rate) > 0.03:
+                logger.info(
+                    f"  Bucket {bucket_center:.0%}: empirical={empirical_rate:.1%} "
+                    f"(n={n}), academic={academic_rate:.1%}, blended={blended:.1%}"
+                )
+        else:
+            learned[bucket_center] = CALIBRATION_CURVE[bucket_center]
+
+    _dynamic_calibration = learned
+    _calibration_loaded_at = datetime.utcnow()
+    logger.info(f"Learned calibration from {len(resolved)} resolved markets ({len(buckets)} buckets)")
+    return learned
+
+
+def _get_calibration_curve() -> dict[float, float]:
+    """Get the best available calibration curve (dynamic or static)."""
+    if _dynamic_calibration:
+        return _dynamic_calibration
+    return CALIBRATION_CURVE
+
+
 MIN_VOLUME_TOTAL = 20_000  # Higher volume requirement for bias strategy
 MIN_VOLUME_24H = 2_000
 MIN_LIQUIDITY = 5_000
@@ -67,20 +139,25 @@ KELLY_FRACTION = 0.25
 
 
 def interpolate_calibrated_prob(market_price: float) -> float:
-    """Interpolate the calibration curve to get true probability for any market price."""
-    if market_price <= 0.05:
-        return market_price * 0.4  # Extrapolate: longshots more overpriced
-    if market_price >= 0.95:
-        return 0.95 + (market_price - 0.95) * 1.6  # Extrapolate: favorites underpriced
+    """Interpolate the calibration curve to get true probability for any market price.
 
-    sorted_prices = sorted(CALIBRATION_CURVE.keys())
+    Uses dynamic (data-learned) curve if available, otherwise falls back to academic.
+    """
+    curve = _get_calibration_curve()
+
+    if market_price <= 0.05:
+        return market_price * 0.4
+    if market_price >= 0.95:
+        return 0.95 + (market_price - 0.95) * 1.6
+
+    sorted_prices = sorted(curve.keys())
     for i in range(len(sorted_prices) - 1):
         p_low, p_high = sorted_prices[i], sorted_prices[i + 1]
         if p_low <= market_price <= p_high:
             t = (market_price - p_low) / (p_high - p_low)
-            return CALIBRATION_CURVE[p_low] + t * (CALIBRATION_CURVE[p_high] - CALIBRATION_CURVE[p_low])
+            return curve[p_low] + t * (curve[p_high] - curve[p_low])
 
-    return market_price  # Fallback: no bias
+    return market_price
 
 
 def compute_bias_edge(market_price: float) -> dict:
@@ -171,6 +248,18 @@ async def scan_longshot_bias(
     - Longshot zone: price < 20% (overpriced, sell/buy_no)
     - Favorite zone: price > 80% (underpriced, buy/buy_yes)
     """
+    # Learn/refresh calibration from historical data
+    global _calibration_loaded_at
+    needs_refresh = (
+        _calibration_loaded_at is None
+        or (datetime.utcnow() - _calibration_loaded_at).total_seconds() > CALIBRATION_REFRESH_HOURS * 3600
+    )
+    if needs_refresh:
+        try:
+            await learn_calibration_curve(session)
+        except Exception as e:
+            logger.warning(f"Calibration learning failed, using static curve: {e}")
+
     result = await session.execute(
         select(Market).where(
             Market.is_active == True,  # noqa: E711

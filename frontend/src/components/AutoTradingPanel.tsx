@@ -89,9 +89,21 @@ export default function AutoTradingPanel() {
 
   const ensembleConfig = status.configs.find(c => c.strategy === 'ensemble')
   const eloConfig = status.configs.find(c => c.strategy === 'elo')
+  const newStrategiesConfig = status.configs.find(c => c.strategy === 'new_strategies')
+
+  // Aggregate new strategy positions (auto_longshot_bias, auto_llm_forecast, etc.)
+  const newStratOpenPositions = Object.entries(status.open_positions)
+    .filter(([k]) => k.startsWith('auto_') && k !== 'auto_ensemble' && k !== 'auto_elo')
+    .reduce((sum, [, v]) => sum + v, 0)
+  const newStratExposure = Object.entries(status.exposure_by_strategy || {})
+    .filter(([k]) => k.startsWith('auto_') && k !== 'auto_ensemble' && k !== 'auto_elo')
+    .reduce((sum, [, v]) => sum + v, 0)
+  const newStratPnl = Object.entries(status.pnl_by_strategy || {})
+    .filter(([k]) => k.startsWith('auto_') && k !== 'auto_ensemble' && k !== 'auto_elo')
+    .reduce((sum, [, v]) => sum + v, 0)
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       <StrategyCard
         title="ML Ensemble"
         strategyKey="ensemble"
@@ -110,6 +122,16 @@ export default function AutoTradingPanel() {
         totalExposure={status.exposure_by_strategy?.auto_elo ?? 0}
         todayPnl={status.pnl_by_strategy?.auto_elo ?? 0}
         onToggle={(enabled) => toggleMutation.mutate({ strategy: 'elo', enabled })}
+        toggleLoading={toggleMutation.isPending}
+      />
+      <StrategyCard
+        title="New Strategies"
+        strategyKey="new_strategies"
+        config={newStrategiesConfig}
+        openPositions={newStratOpenPositions}
+        totalExposure={newStratExposure}
+        todayPnl={newStratPnl}
+        onToggle={(enabled) => toggleMutation.mutate({ strategy: 'new_strategies', enabled })}
         toggleLoading={toggleMutation.isPending}
       />
       {/* Surface that the system learns from past auto-trades */}
