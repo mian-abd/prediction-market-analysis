@@ -202,6 +202,42 @@ async def close_position(
     }
 
 
+@router.post("/portfolio/positions/close-all")
+async def close_all_positions(
+    portfolio_type: str = Query(..., pattern="^(manual|auto)$"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Close all open positions for the given portfolio type (manual = manual + copy, auto = ensemble/elo). Uses current market price for exit."""
+    query = (
+        select(PortfolioPosition)
+        .where(PortfolioPosition.exit_time == None)  # noqa: E711
+        .where(PortfolioPosition.portfolio_type == portfolio_type)
+    )
+    result = await session.execute(query)
+    positions = result.scalars().all()
+    closed_count = 0
+    for pos in positions:
+        market = await session.get(Market, pos.market_id)
+        exit_price = None
+        if market:
+            if pos.side == "yes" and market.price_yes is not None:
+                exit_price = market.price_yes
+            elif pos.side == "no" and market.price_no is not None:
+                exit_price = market.price_no
+        if exit_price is None:
+            continue
+        pos.exit_price = exit_price
+        pos.exit_time = datetime.utcnow()
+        if pos.side == "yes":
+            pos.realized_pnl = (exit_price - pos.entry_price) * pos.quantity
+        else:
+            pos.realized_pnl = (pos.entry_price - exit_price) * pos.quantity
+        await on_position_closed(pos, session)
+        closed_count += 1
+    await session.commit()
+    return {"closed_count": closed_count, "message": f"Closed {closed_count} {portfolio_type} position(s)"}
+
+
 @router.get("/portfolio/summary")
 async def portfolio_summary(
     portfolio_type: str | None = Query(default=None, pattern="^(manual|auto)$"),

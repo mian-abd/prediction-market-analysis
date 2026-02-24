@@ -11,6 +11,7 @@
  */
 
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { Briefcase, AlertCircle, Bot, X, Plus, Loader2, UserX } from 'lucide-react'
 import apiClient from '../api/client'
@@ -71,6 +72,7 @@ interface FollowingTrader {
 type PortfolioType = 'all' | 'manual' | 'auto'
 
 export default function Portfolio() {
+  const navigate = useNavigate()
   const [portfolioType, setPortfolioType] = useState<PortfolioType>('all')
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d' | 'all'>('30d')
   const [positionStatus, setPositionStatus] = useState<'open' | 'closed' | 'all'>('open')
@@ -161,6 +163,18 @@ export default function Portfolio() {
     onSuccess: () => {
       invalidatePortfolio()
       queryClient.invalidateQueries({ queryKey: ['following'] })
+    },
+  })
+
+  // Close all open manual/copy positions in one action
+  const closeAllManualMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post('/portfolio/positions/close-all?portfolio_type=manual')
+      if (res.data.error) throw new Error(res.data.error)
+      return res.data
+    },
+    onSuccess: () => {
+      invalidatePortfolio()
     },
   })
 
@@ -428,31 +442,25 @@ export default function Portfolio() {
         </div>
       ) : summary ? (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          {/* P&L Card with view toggles (Total / Realized / Open) */}
+          {/* P&L Card — Robinhood/Webull style: prominent number + Total / Realized / Open toggle */}
           <div className="card p-4">
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>
-                {pnlView === 'total'
-                  ? 'Total P&L'
-                  : pnlView === 'realized'
-                  ? 'Realized P&L'
-                  : 'Open P&L (current trades)'}
-              </p>
-              <div className="flex gap-1">
-                {(['total', 'realized', 'open'] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() => setPnlView(mode)}
-                    className="px-2 py-0.5 rounded text-[9px] font-semibold uppercase"
-                    style={{
-                      background: pnlView === mode ? 'var(--accent-dim)' : 'transparent',
-                      color: pnlView === mode ? 'var(--accent)' : 'var(--text-3)',
-                    }}
-                  >
-                    {mode === 'total' ? 'All' : mode === 'realized' ? 'Real.' : 'Open'}
-                  </button>
-                ))}
-              </div>
+            <p className="text-[10px] uppercase mb-2" style={{ color: 'var(--text-3)' }}>
+              P&L
+            </p>
+            <div className="flex gap-2 mb-2">
+              {(['total', 'realized', 'open'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setPnlView(mode)}
+                  className="px-3 py-1.5 rounded-lg text-[11px] font-semibold uppercase transition-colors"
+                  style={{
+                    background: pnlView === mode ? 'var(--accent)' : 'rgba(255,255,255,0.06)',
+                    color: pnlView === mode ? 'var(--bg)' : 'var(--text-3)',
+                  }}
+                >
+                  {mode === 'total' ? 'Total' : mode === 'realized' ? 'Realized' : 'Open'}
+                </button>
+              ))}
             </div>
             {(() => {
               const total = summary.total_pnl ?? summary.total_realized_pnl ?? 0
@@ -462,15 +470,12 @@ export default function Portfolio() {
               const color = value >= 0 ? 'var(--green)' : 'var(--red)'
               return (
                 <>
-                  <p
-                    className="text-[20px] font-mono font-bold"
-                    style={{ color }}
-                  >
+                  <p className="text-[26px] font-mono font-bold tracking-tight" style={{ color }}>
                     ${value.toFixed(2)}
                   </p>
                   {pnlView === 'total' && (
-                    <p className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--text-3)' }}>
-                      Realized: ${realized.toFixed(2)} • Open: ${open.toFixed(2)}
+                    <p className="text-[11px] font-mono mt-1" style={{ color: 'var(--text-3)' }}>
+                      Realized ${realized.toFixed(2)} · Open ${open.toFixed(2)}
                     </p>
                   )}
                 </>
@@ -576,8 +581,8 @@ export default function Portfolio() {
         <PositionHeatmap portfolioType={portfolioType} />
       </div>
 
-      {/* Copy Trading Following (controls live in Portfolio so manual copy users can manage risk) */}
-      {followingData && followingData.length > 0 && (
+      {/* Copy Trading — Following (always visible on All / Manual so users see unfollow + close-all) */}
+      {(portfolioType === 'all' || portfolioType === 'manual') && (
         <div className="card p-5">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
@@ -590,7 +595,8 @@ export default function Portfolio() {
               Manage who you follow and quickly exit copied trades
             </p>
           </div>
-          <div className="flex flex-col gap-2">
+          {followingData && followingData.length > 0 ? (
+            <div className="flex flex-col gap-2">
             {followingData.map((t) => (
               <div
                 key={t.trader_id}
@@ -639,17 +645,31 @@ export default function Portfolio() {
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+          ) : (
+            <p className="text-[12px] py-2" style={{ color: 'var(--text-3)' }}>
+              Not following any traders.{' '}
+              <button
+                type="button"
+                onClick={() => navigate('/copy-trading')}
+                className="font-semibold underline"
+                style={{ color: 'var(--accent)' }}
+              >
+                Go to Copy Trading
+              </button>
+              {' '}to follow.
+            </p>
+          )}
         </div>
       )}
 
       {/* Positions table */}
       <div className="card p-6">
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
           <h2 className="text-[16px] font-semibold" style={{ color: 'var(--text)' }}>
             Positions
           </h2>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {(['open', 'closed', 'all'] as const).map((status) => (
               <button
                 key={status}
@@ -661,6 +681,25 @@ export default function Portfolio() {
                 {status}
               </button>
             ))}
+            {/* Close all manual/copy open positions — visible when viewing open and there are manual positions */}
+            {positionStatus === 'open' &&
+              (portfolioType === 'all' || portfolioType === 'manual') &&
+              positions.some((p) => p.portfolio_type === 'manual') && (
+                <button
+                  onClick={() => closeAllManualMutation.mutate()}
+                  disabled={closeAllManualMutation.isPending}
+                  className="px-3 py-1.5 rounded-lg text-[12px] font-semibold flex items-center gap-1.5"
+                  style={{
+                    background: 'rgba(239,68,68,0.15)',
+                    color: 'var(--red)',
+                  }}
+                >
+                  {closeAllManualMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : null}
+                  Close all (Manual & Copy)
+                </button>
+              )}
           </div>
         </div>
 
