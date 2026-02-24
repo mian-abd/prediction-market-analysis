@@ -536,3 +536,33 @@ class EloEdgeSignal(Base):
         Index("ix_edge_sport_time", "sport", "detected_at"),
         Index("ix_edge_net_edge", "net_edge"),
     )
+
+
+class FavoriteLongshotEdgeSignal(Base):
+    """Favorite-longshot bias edge signals (research-backed strategy)."""
+    __tablename__ = "favorite_longshot_edge_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(Integer, ForeignKey("markets.id"), nullable=False)
+    detected_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expired_at = Column(DateTime)  # NULL = still active
+
+    direction = Column(String(10), nullable=False)  # "buy_yes" or "buy_no"
+    calibrated_prob = Column(Float, nullable=False)
+    market_price = Column(Float, nullable=False)
+    raw_edge = Column(Float, nullable=False)
+    fee_cost = Column(Float, default=0.0)
+    net_ev = Column(Float, nullable=False)
+    kelly_fraction = Column(Float)
+    category = Column(String(50))
+    efficiency_gap = Column(Float)
+    signal_type = Column(String(30))  # underpriced_favorite, overpriced_favorite, fade_longshot
+
+    was_correct = Column(Boolean)
+    actual_pnl = Column(Float)
+
+    __table_args__ = (
+        Index("ix_fl_edge_market", "market_id"),
+        Index("ix_fl_edge_time", "detected_at"),
+        Index("ix_fl_edge_net_ev", "net_ev"),
+    )

@@ -31,6 +31,7 @@ sys.path.insert(0, str(project_root))
 
 # Set by main() from --archive-dir; used inside load_resolved_markets().
 _ARCHIVE_DIR: Path | None = None
+_SNAPSHOT_ONLY: bool = False  # Set by --snapshot-only flag: train only on as_of snapshot markets
 
 import asyncio
 import logging
@@ -758,12 +759,21 @@ async def main():
     logger.info(f"Loaded {len(markets)} resolved markets")
 
     # --- Build feature matrix (with as_of enforcement) ---
-    logger.info("\nExtracting features (as_of = resolved_at - 24h)...")
+    snapshot_only = _SNAPSHOT_ONLY
+
+    if snapshot_only:
+        logger.info(
+            "\nExtracting features (snapshot_only=True - only markets with as_of snapshot prices)..."
+        )
+    else:
+        logger.info("\nExtracting features (as_of = resolved_at - 24h)...")
+
     X, y = build_training_matrix(
         markets,
         price_snapshots_map=price_snapshots_map,
         price_at_as_of_map=price_at_as_of_map,
         orderbook_snapshots_map=orderbook_snapshots_map,
+        snapshot_only=snapshot_only,
     )
     logger.info(f"Feature matrix: {X.shape} ({N_FEATURES} features)")
     logger.info(f"Features: {ENSEMBLE_FEATURE_NAMES}")
@@ -1096,12 +1106,26 @@ async def main():
             logger.info("  Skipped post_calibrator (raw ensemble is better)")
 
     # --- Metrics + Model Card ---
+    n_with_snapshots = len(price_at_as_of_map)
+    n_total_usable = len(y)
+    coverage_pct = round(n_with_snapshots / n_total_usable * 100, 1) if n_total_usable else 0.0
+    logger.info(
+        f"Snapshot coverage: {n_with_snapshots}/{n_total_usable} "
+        f"({coverage_pct}%) markets have as_of price history"
+    )
+
     metrics = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "n_total_resolved": len(markets),
         "n_usable": len(y),
         "n_train": int(len(y_train)),
         "n_test": int(len(y_test)),
+        "snapshot_coverage": {
+            "n_with_snapshots": n_with_snapshots,
+            "n_total": n_total_usable,
+            "coverage_pct": coverage_pct,
+            "snapshot_only_mode": snapshot_only,
+        },
         "class_balance_yes_pct": round(float(y.mean()) * 100, 1),
         "temporal_split_date": cutoff_date,
         "feature_names": active_features,
@@ -1173,11 +1197,28 @@ def _parse_args() -> argparse.Namespace:
             "recent snapshots from DB so the model learns from full history."
         ),
     )
+    parser.add_argument(
+        "--snapshot-only",
+        action="store_true",
+        default=False,
+        dest="snapshot_only",
+        help=(
+            "Only train on markets that have a real as_of snapshot price "
+            "(eliminates market.price_yes leakage for resolved markets). "
+            "Reduces training set size but produces cleaner calibration and "
+            "enables all momentum/price features. Recommended when as_of "
+            "coverage >= 20%% (currently ~19%%)."
+        ),
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
+
+    if args.snapshot_only:
+        _SNAPSHOT_ONLY = True
+        logger.info("Snapshot-only mode: training on markets with real as_of prices only (no leakage fallback).")
 
     if args.archive_dir:
         _archive_path = Path(args.archive_dir)

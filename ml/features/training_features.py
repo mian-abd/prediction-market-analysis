@@ -394,6 +394,7 @@ def build_training_matrix(
     price_snapshots_map: dict[int, list[float]] | None = None,
     price_at_as_of_map: dict[int, float] | None = None,
     orderbook_snapshots_map: dict[int, any] | None = None,
+    snapshot_only: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build X (features) and y (labels) from resolved markets.
 
@@ -411,13 +412,17 @@ def build_training_matrix(
                             Markets without an as_of price are skipped (strict mode).
         orderbook_snapshots_map: Optional {market_id: OrderbookSnapshot} for orderbook features.
                                  If None, orderbook features default to 0.0/neutral.
+        snapshot_only: If True, ONLY include markets with a real as_of snapshot price
+                       (skips the market.price_yes fallback entirely). This eliminates
+                       leakage from resolved-market prices at the cost of fewer samples.
+                       Recommended once as_of coverage exceeds ~20%.
 
     Returns:
         (X, y) where X is (n_samples, n_features), y is (n_samples,) binary
     """
     X_rows = []
     y_rows = []
-    skipped = {"no_resolution": 0, "no_price": 0, "zero_volume": 0, "fallback_price": 0}
+    skipped = {"no_resolution": 0, "no_price": 0, "zero_volume": 0, "fallback_price": 0, "no_snapshot": 0}
     as_of_used = 0  # Count markets that used clean as_of price (not fallback)
     snapshots_map = price_snapshots_map or {}
     as_of_map = price_at_as_of_map or {}
@@ -428,11 +433,15 @@ def build_training_matrix(
             skipped["no_resolution"] += 1
             continue
 
-        # Graceful as_of mode: use backfilled price when available,
-        # fall back to market.price_yes for non-backfilled markets.
-        # This maintains class diversity while using clean prices where possible.
         if as_of_map and m.id not in as_of_map:
-            # No backfilled snapshot — fall back to market.price_yes
+            if snapshot_only:
+                # Strict mode: skip markets without real as_of price to avoid leakage.
+                # market.price_yes for resolved markets reflects the outcome (≈0 or ≈1),
+                # which contaminates training with spurious signal.
+                skipped["no_snapshot"] += 1
+                continue
+            # Graceful fallback: use market.price_yes for non-backfilled markets.
+            # Useful when as_of coverage is low (<20%), but introduces leakage.
             if m.price_yes is None:
                 skipped["no_price"] += 1
                 continue
@@ -474,9 +483,14 @@ def build_training_matrix(
         skip_msg += f"{skipped['zero_volume']} zero-volume, "
         skip_msg += f"{skipped['no_resolution']} no-resolution, "
         skip_msg += f"{skipped['no_price']} no-price"
+        if skipped.get("no_snapshot"):
+            skip_msg += f", {skipped['no_snapshot']} no-snapshot (snapshot_only=True)"
         if as_of_map:
             n_fallback = len(X_rows) - as_of_used
-            skip_msg += f" | {as_of_used} with as_of price, {n_fallback} using market.price_yes fallback"
+            if n_fallback > 0:
+                skip_msg += f" | {as_of_used} with as_of price, {n_fallback} using market.price_yes fallback"
+            else:
+                skip_msg += f" | {as_of_used} with as_of price, 0 fallbacks (clean)"
         logger.info(skip_msg)
         if snapshots_map:
             with_momentum = sum(1 for m in markets if m.id in snapshots_map and len(snapshots_map[m.id]) >= 2)

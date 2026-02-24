@@ -18,7 +18,7 @@ from data_pipeline.collectors.polymarket_gamma import parse_gamma_market
 from data_pipeline.collectors.kalshi_markets import parse_kalshi_market
 from data_pipeline.collectors import polymarket_clob
 
-from db.models import TraderProfile, EloEdgeSignal, EnsembleEdgeSignal
+from db.models import TraderProfile, EloEdgeSignal, EnsembleEdgeSignal, FavoriteLongshotEdgeSignal
 
 # Real-time WebSocket streaming
 from data_pipeline.streams import PriceCache, PolymarketStream
@@ -545,6 +545,92 @@ async def scan_ensemble_edges():
         logger.error(f"Ensemble edge scan failed: {e}")
 
 
+# ── Favorite-Longshot Edge Scanning ──────────────────────────────────
+
+async def scan_favorite_longshot_edges():
+    """Scan active markets for favorite-longshot bias edges (research-backed strategy)."""
+    logger.info("Starting favorite-longshot edge scan...")
+    try:
+        from ml.strategies.favorite_longshot_detector import (
+            detect_favorite_longshot_edge,
+        )
+        from db.models import PortfolioPosition
+        from sqlalchemy import update as sa_update
+
+        async with async_session() as session:
+            # Expire old signals (>4 hrs)
+            cutoff = datetime.utcnow() - timedelta(hours=4)
+            await session.execute(
+                sa_update(FavoriteLongshotEdgeSignal).where(
+                    FavoriteLongshotEdgeSignal.expired_at == None,  # noqa
+                    FavoriteLongshotEdgeSignal.detected_at < cutoff,
+                ).values(expired_at=datetime.utcnow())
+            )
+            await session.commit()
+
+            # Open position market IDs (don't overwrite their signals)
+            open_pos_result = await session.execute(
+                select(PortfolioPosition.market_id)
+                .where(
+                    PortfolioPosition.exit_time == None,  # noqa
+                    PortfolioPosition.portfolio_type == "auto",
+                )
+            )
+            open_position_market_ids = {row[0] for row in open_pos_result.all()}
+
+            # Query liquid active markets
+            markets = (await session.execute(
+                select(Market)
+                .where(Market.is_active == True, Market.price_yes != None)  # noqa
+                .order_by(Market.volume_24h.desc())
+                .limit(2000)
+            )).scalars().all()
+
+            edges_found = 0
+            for market in markets:
+                try:
+                    signal = detect_favorite_longshot_edge(market)
+                    if not signal:
+                        continue
+                    if market.id in open_position_market_ids:
+                        continue
+
+                    existing = (await session.execute(
+                        select(FavoriteLongshotEdgeSignal)
+                        .where(
+                            FavoriteLongshotEdgeSignal.market_id == market.id,
+                            FavoriteLongshotEdgeSignal.expired_at == None,  # noqa
+                        )
+                    )).scalar_one_or_none()
+                    if existing:
+                        continue
+
+                    db_signal = FavoriteLongshotEdgeSignal(
+                        market_id=signal.market_id,
+                        detected_at=datetime.utcnow(),
+                        direction=signal.direction,
+                        calibrated_prob=signal.calibrated_prob,
+                        market_price=signal.market_price,
+                        raw_edge=signal.raw_edge,
+                        fee_cost=signal.fee_cost,
+                        net_ev=signal.net_ev,
+                        kelly_fraction=signal.kelly_fraction,
+                        category=signal.category,
+                        efficiency_gap=signal.efficiency_gap,
+                        signal_type=signal.signal_type,
+                    )
+                    session.add(db_signal)
+                    edges_found += 1
+                except Exception as e:
+                    logger.debug(f"Favorite-longshot detection failed for market {market.id}: {e}")
+
+            await session.commit()
+            logger.info(f"Favorite-longshot scan: {edges_found} new signals from {len(markets)} markets")
+
+    except Exception as e:
+        logger.error(f"Favorite-longshot edge scan failed: {e}")
+
+
 # ── Real-Time Streaming ──────────────────────────────────────────────
 
 async def init_realtime_streams():
@@ -793,6 +879,11 @@ async def run_pipeline_loop():
     except Exception as e:
         logger.error(f"Initial elo scan failed: {e}")
 
+    try:
+        await scan_favorite_longshot_edges()
+    except Exception as e:
+        logger.error(f"Initial favorite-longshot scan failed: {e}")
+
     # ── Initial auto-trade (execute any signals found above) ──
     try:
         from execution.paper_executor import execute_paper_trades
@@ -812,6 +903,7 @@ async def run_pipeline_loop():
     cycles_per_trader_refresh = max(1, 1800 // price_interval)  # Every ~30 min
     cycles_per_elo_scan = max(1, settings.elo_scan_interval_sec // price_interval)  # Every ~10 min
     cycles_per_ensemble_scan = 5   # Every 5 cycles (~2-3 min) - faster for more trades
+    cycles_per_favorite_longshot_scan = 5  # Same cadence as ensemble
     cycles_per_auto_trade = 5      # Every 5 cycles - matches ensemble scan
     cycles_per_resolution_score = max(1, 1800 // price_interval)  # Every ~30 min
 
@@ -870,6 +962,13 @@ async def run_pipeline_loop():
                 await scan_ensemble_edges()
             except Exception as e:
                 logger.error(f"Ensemble edge scan error: {e}")
+
+        # ── Favorite-longshot edge scan every ~2 min ──
+        if cycle % cycles_per_favorite_longshot_scan == 0:
+            try:
+                await scan_favorite_longshot_edges()
+            except Exception as e:
+                logger.error(f"Favorite-longshot edge scan error: {e}")
 
         # ── Auto-trade every ~2 min (same cadence as ensemble scan) ──
         if cycle % cycles_per_auto_trade == 0:

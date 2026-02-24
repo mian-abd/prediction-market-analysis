@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_session, async_session
 from db.models import (
-    PortfolioPosition, EnsembleEdgeSignal, EloEdgeSignal, AutoTradingConfig,
-    TraderProfile,
+    PortfolioPosition, EnsembleEdgeSignal, EloEdgeSignal, FavoriteLongshotEdgeSignal,
+    AutoTradingConfig, TraderProfile,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,15 +74,27 @@ async def reset_auto_portfolio(session: AsyncSession = Depends(get_session)):
         )
         elo_archived = elo_result.rowcount
 
+        # Archive old favorite-longshot signals
+        fl_result = await session.execute(
+            update(FavoriteLongshotEdgeSignal)
+            .where(FavoriteLongshotEdgeSignal.expired_at == None)
+            .values(expired_at=datetime.utcnow())
+        )
+        fl_archived = fl_result.rowcount
+
         await session.commit()
 
-        logger.info(f"Portfolio reset: {closed_count} positions closed, {ensemble_archived} ensemble signals archived, {elo_archived} elo signals archived")
+        logger.info(
+            f"Portfolio reset: {closed_count} positions closed, "
+            f"{ensemble_archived} ensemble, {elo_archived} elo, {fl_archived} favorite-longshot signals archived"
+        )
 
         return {
             "success": True,
             "positions_closed": closed_count,
             "ensemble_signals_archived": ensemble_archived,
             "elo_signals_archived": elo_archived,
+            "favorite_longshot_signals_archived": fl_archived,
             "message": "Auto portfolio reset complete. All positions closed and signals archived."
         }
 

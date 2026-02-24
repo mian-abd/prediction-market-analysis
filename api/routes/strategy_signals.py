@@ -6,7 +6,8 @@ from sqlalchemy import select, func
 
 from db.database import async_session
 from db.models import (
-    EnsembleEdgeSignal, EloEdgeSignal, ArbitrageOpportunity, Market,
+    EnsembleEdgeSignal, EloEdgeSignal, FavoriteLongshotEdgeSignal,
+    ArbitrageOpportunity, Market,
 )
 
 router = APIRouter(tags=["strategies"])
@@ -88,6 +89,34 @@ async def get_all_strategy_signals(
                 "elo_confidence": round(signal.elo_confidence, 3),
             })
 
+        # --- Favorite-Longshot Edge Signals ---
+        fl_result = await session.execute(
+            select(FavoriteLongshotEdgeSignal, Market.question, Market.slug)
+            .join(Market, FavoriteLongshotEdgeSignal.market_id == Market.id)
+            .where(FavoriteLongshotEdgeSignal.expired_at == None)  # noqa: E711
+            .order_by(FavoriteLongshotEdgeSignal.net_ev.desc())
+            .limit(limit)
+        )
+        fl_rows = fl_result.all()
+
+        favorite_longshot_edges = []
+        for signal, question, slug in fl_rows:
+            favorite_longshot_edges.append({
+                "id": signal.id,
+                "market_id": signal.market_id,
+                "market_question": question,
+                "market_slug": slug,
+                "detected_at": signal.detected_at.isoformat() if signal.detected_at else None,
+                "direction": signal.direction,
+                "calibrated_prob": round(signal.calibrated_prob, 4),
+                "market_price": round(signal.market_price, 4),
+                "raw_edge_pct": round(signal.raw_edge * 100, 2),
+                "net_ev_pct": round(signal.net_ev * 100, 2),
+                "kelly_fraction": round(signal.kelly_fraction, 4) if signal.kelly_fraction else 0,
+                "category": signal.category,
+                "signal_type": signal.signal_type,
+            })
+
         # --- Arbitrage Opportunities ---
         arb_result = await session.execute(
             select(ArbitrageOpportunity)
@@ -109,21 +138,24 @@ async def get_all_strategy_signals(
             })
 
         # --- Summary stats ---
-        total_signals = len(ensemble_edges) + len(elo_edges) + len(arbitrage_opps)
+        total_signals = len(ensemble_edges) + len(elo_edges) + len(favorite_longshot_edges) + len(arbitrage_opps)
         high_confidence = sum(1 for e in ensemble_edges if e["quality_tier"] == "high")
         avg_kelly = 0.0
         kelly_values = [e["kelly_fraction"] for e in ensemble_edges if e["kelly_fraction"] > 0]
+        kelly_values.extend(e["kelly_fraction"] for e in favorite_longshot_edges if e["kelly_fraction"] > 0)
         if kelly_values:
             avg_kelly = round(sum(kelly_values) / len(kelly_values), 4)
 
         return {
             "ensemble_edges": ensemble_edges,
             "elo_edges": elo_edges,
+            "favorite_longshot_edges": favorite_longshot_edges,
             "arbitrage_opportunities": arbitrage_opps,
             "summary": {
                 "total_signals": total_signals,
                 "ensemble_count": len(ensemble_edges),
                 "elo_count": len(elo_edges),
+                "favorite_longshot_count": len(favorite_longshot_edges),
                 "arbitrage_count": len(arbitrage_opps),
                 "high_confidence_count": high_confidence,
                 "avg_kelly_fraction": avg_kelly,

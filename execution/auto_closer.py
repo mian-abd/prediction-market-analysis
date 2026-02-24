@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import (
     PortfolioPosition, Market, AutoTradingConfig,
-    EnsembleEdgeSignal, EloEdgeSignal,
+    EnsembleEdgeSignal, EloEdgeSignal, FavoriteLongshotEdgeSignal,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,14 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
             continue
 
         # Determine which config applies
-        strategy_key = "ensemble" if pos.strategy == "auto_ensemble" else "elo"
+        if pos.strategy == "auto_ensemble":
+            strategy_key = "ensemble"
+        elif pos.strategy == "auto_elo":
+            strategy_key = "elo"
+        elif pos.strategy == "auto_favorite_longshot":
+            strategy_key = "favorite_longshot"
+        else:
+            strategy_key = "ensemble"  # fallback
         config = configs.get(strategy_key)
 
         exit_price = None
@@ -227,6 +234,15 @@ async def _has_active_signal(session: AsyncSession, market_id: int, strategy: st
             .where(
                 EloEdgeSignal.market_id == market_id,
                 EloEdgeSignal.expired_at == None,  # noqa: E711
+            )
+            .limit(1)
+        )
+    elif strategy == "auto_favorite_longshot":
+        result = await session.execute(
+            select(FavoriteLongshotEdgeSignal.id)
+            .where(
+                FavoriteLongshotEdgeSignal.market_id == market_id,
+                FavoriteLongshotEdgeSignal.expired_at == None,  # noqa: E711
             )
             .limit(1)
         )

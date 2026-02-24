@@ -169,7 +169,8 @@ def compute_kelly(
         ev = (1 - p) * q - p * (1 - q) - fee_cost
         kelly_raw = ev / max(0.01, q)
 
-    # Fractional Kelly: cap raw at 8%, then multiply by 0.25 → 2% max
+    # Fractional Kelly: cap raw Kelly at MAX_KELLY/KELLY_FRACTION, then scale down.
+    # Effective max position = MAX_KELLY (4%) when raw Kelly >= MAX_KELLY/KELLY_FRACTION (16%).
     kelly_capped = min(kelly_raw, MAX_KELLY / KELLY_FRACTION)
     return max(0.0, kelly_capped * KELLY_FRACTION)
 

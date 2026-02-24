@@ -6,6 +6,7 @@ to enable momentum features that currently train on constant zeros.
 Usage:
     python scripts/backfill_price_history.py --limit 1000
     python scripts/backfill_price_history.py --limit 500 --days 14
+    python scripts/backfill_price_history.py --market-ids data/backfill_priority_list.json --limit 2000 --days 60
 """
 
 import sys
@@ -115,7 +116,11 @@ async def backfill_market_history(
         return {"market_id": market.id, "snapshots_added": 0, "error": str(e)}
 
 
-async def backfill_all_markets(limit: int = 1000, days: int = 30):
+async def backfill_all_markets(
+    limit: int = 1000,
+    days: int = 30,
+    market_ids_path: str | None = None,
+):
     """Backfill price history for pipeline-tracked resolved markets.
 
     This ensures backfilled historical data aligns with markets the pipeline
@@ -124,24 +129,57 @@ async def backfill_all_markets(limit: int = 1000, days: int = 30):
     Args:
         limit: Maximum number of markets to backfill (default 1000)
         days: Number of days to backfill per market (default 30)
+        market_ids_path: Optional path to JSON file of market IDs to backfill.
+            When provided, overrides the default volume-ordered query — only the
+            listed markets are backfilled (up to `limit`). This enables targeted
+            backfill from the output of prioritize_backfill.py.
     """
     await init_db()
 
     # Query markets first (separate session)
     async with async_session() as query_session:
-        # Get ALL resolved markets with token IDs (not just tracked ones)
-        # This ensures we backfill historical data for training, not just live markets
-        logger.info("Finding resolved markets with token IDs...")
-        result = await query_session.execute(
-            select(Market)
-            .where(
-                Market.resolution_value.isnot(None),  # Resolved markets
-                Market.token_id_yes.isnot(None),  # With token IDs for API
+        if market_ids_path:
+            import json as _json
+            ids_file = Path(market_ids_path)
+            if not ids_file.exists():
+                logger.error(f"--market-ids file not found: {ids_file}")
+                return
+            with open(ids_file) as f:
+                target_ids: list[int] = _json.load(f)
+            if not target_ids:
+                logger.info("--market-ids file is empty, nothing to backfill.")
+                return
+            # Apply limit (first N from priority-sorted list)
+            target_ids = target_ids[:limit]
+            logger.info(
+                f"Using targeted backfill from {ids_file.name}: "
+                f"{len(target_ids)} markets (limit={limit})"
             )
-            .order_by(Market.volume_total.desc())  # Prioritize high-volume
-            .limit(limit)
-        )
-        markets = result.scalars().all()
+            result = await query_session.execute(
+                select(Market)
+                .where(
+                    Market.id.in_(target_ids),
+                    Market.token_id_yes.isnot(None),  # Must have token for API
+                )
+            )
+            markets = result.scalars().all()
+            # Re-sort to match original priority order
+            id_order = {mid: i for i, mid in enumerate(target_ids)}
+            markets = sorted(markets, key=lambda m: id_order.get(m.id, 999999))
+        else:
+            # Get ALL resolved markets with token IDs (not just tracked ones)
+            # This ensures we backfill historical data for training, not just live markets
+            logger.info("Finding resolved markets with token IDs...")
+            result = await query_session.execute(
+                select(Market)
+                .where(
+                    Market.resolution_value.isnot(None),  # Resolved markets
+                    Market.token_id_yes.isnot(None),  # With token IDs for API
+                )
+                .order_by(Market.volume_total.desc())  # Prioritize high-volume
+                .limit(limit)
+            )
+            markets = result.scalars().all()
 
     logger.info("=" * 60)
     logger.info("BACKFILL SUMMARY:")
@@ -237,12 +275,32 @@ def main():
         default=30,
         help="Number of days to backfill per market (default: 30)",
     )
+    parser.add_argument(
+        "--market-ids",
+        type=str,
+        default=None,
+        dest="market_ids",
+        help=(
+            "Path to JSON file containing list of market IDs to backfill "
+            "(overrides default volume-ordered query). Typically produced by "
+            "scripts/prioritize_backfill.py."
+        ),
+    )
     args = parser.parse_args()
 
     logger.info("Starting price history backfill...")
-    logger.info(f"Config: limit={args.limit}, days={args.days}")
+    logger.info(
+        f"Config: limit={args.limit}, days={args.days}"
+        + (f", market-ids={args.market_ids}" if args.market_ids else "")
+    )
 
-    asyncio.run(backfill_all_markets(limit=args.limit, days=args.days))
+    asyncio.run(
+        backfill_all_markets(
+            limit=args.limit,
+            days=args.days,
+            market_ids_path=args.market_ids,
+        )
+    )
 
 
 if __name__ == "__main__":

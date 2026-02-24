@@ -68,6 +68,13 @@ async def lifespan(app: FastAPI):
                 max_position_usd=100.0, max_total_exposure_usd=500.0,
                 max_loss_per_day_usd=25.0, max_daily_trades=20,
             ),
+            "favorite_longshot": dict(
+                is_enabled=False, bankroll=500.0,
+                min_confidence=0.5, min_net_ev=0.03, max_kelly_fraction=0.03,
+                stop_loss_pct=0.05, min_quality_tier="medium", close_on_signal_expiry=True,
+                max_position_usd=100.0, max_total_exposure_usd=500.0,
+                max_loss_per_day_usd=25.0, max_daily_trades=20,
+            ),
         }
 
         # Migration fields: pushed to DB on every restart so code is source of truth.

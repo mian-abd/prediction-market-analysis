@@ -112,8 +112,11 @@ def parse_resolved_market(raw: dict) -> dict:
 
     # If market is closed, final price = resolution
     if outcome_prices and len(outcome_prices) >= 2:
-        # YES outcome is first element (typically)
-        yes_outcome = float(outcome_prices[0]) if outcome_prices[0] else None
+        # YES outcome is first element (typically).
+        # IMPORTANT: use `is not None` check, NOT truthiness — 0.0 is falsy
+        # but it IS a valid resolution value (means YES token lost, i.e. NO won).
+        raw_val = outcome_prices[0]
+        yes_outcome = float(raw_val) if raw_val is not None else None
         market["resolution_value"] = yes_outcome  # 1.0 = YES won, 0.0 = NO won
     else:
         # Fallback: use current price as proxy (less accurate)

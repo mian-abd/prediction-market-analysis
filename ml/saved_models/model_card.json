@@ -1,25 +1,31 @@
 {
-  "trained_at": "2026-02-23T17:54:15.501425+00:00",
-  "n_total_resolved": 62229,
-  "n_usable": 9090,
-  "n_train": 7272,
-  "n_test": 1818,
-  "class_balance_yes_pct": 16.7,
+  "trained_at": "2026-02-24T11:22:42.046120+00:00",
+  "n_total_resolved": 67029,
+  "n_usable": 6116,
+  "n_train": 4892,
+  "n_test": 1224,
+  "snapshot_coverage": {
+    "n_with_snapshots": 6116,
+    "n_total": 6116,
+    "coverage_pct": 100.0,
+    "snapshot_only_mode": true
+  },
+  "class_balance_yes_pct": 49.6,
   "temporal_split_date": "2026-02-13",
   "feature_names": [
+    "price_yes",
+    "price_distance_from_50",
     "log_open_interest",
-    "time_to_resolution_hrs"
+    "calibration_bias",
+    "time_to_resolution_hrs",
+    "return_1h",
+    "volatility_20",
+    "zscore_24h"
   ],
   "features_dropped": [
-    "price_yes (near-constant, 190 unique/7272)",
-    "price_bucket (near-constant, 20 unique/7272)",
-    "price_distance_from_50 (near-constant, 147 unique/7272)",
-    "calibration_bias (near-constant, 140 unique/7272)",
-    "category_encoded (near-constant, 7 unique/7272)",
-    "is_weekend (near-constant, 2 unique/7272)",
-    "return_1h (near-constant, 107 unique/7272)",
-    "volatility_20 (near-constant, 198 unique/7272)",
-    "zscore_24h (near-constant, 220 unique/7272)",
+    "price_bucket (near-constant, 20 unique/4892)",
+    "category_encoded (near-constant, 9 unique/4892)",
+    "is_weekend (near-constant, 2 unique/4892)",
     "obi_level1 (zero variance)",
     "obi_weighted_5 (zero variance)",
     "bid_ask_spread_abs (zero variance)",
@@ -31,105 +37,126 @@
     "cross_platform_spread (zero variance)"
   ],
   "models_included": [
-    "calibration"
-  ],
-  "models_excluded": [
+    "calibration",
     "xgboost",
     "lightgbm"
   ],
+  "models_excluded": [],
   "oof_brier": {
-    "calibration": 0.0987,
-    "xgboost": 0.1038,
-    "lightgbm": 0.1035
+    "calibration": 0.1132,
+    "xgboost": 0.0848,
+    "lightgbm": 0.0805
   },
-  "baseline_brier": 0.0689,
-  "naive_baseline_brier": 0.1391,
-  "calibration_brier": 0.0532,
-  "ensemble_brier": 0.0732,
-  "post_calibrated_brier": 0.0532,
-  "ensemble_auc": 0.8854,
-  "ensemble_logloss": 0.1918,
-  "optimal_threshold": 0.514,
+  "baseline_brier": 0.0889,
+  "naive_baseline_brier": 0.25,
+  "calibration_brier": 0.037,
+  "ensemble_brier": 0.0001,
+  "post_calibrated_brier": 0.0001,
+  "ensemble_auc": 1.0,
+  "ensemble_logloss": 0.0101,
+  "optimal_threshold": 0.99,
   "ablation": {
-    "calibration_only": 0.0532,
-    "full_ensemble": 0.0732
+    "calibration_only": 0.037,
+    "cal_plus_xgb": 0.0097,
+    "cal_plus_lgb": 0.0094,
+    "full_ensemble": 0.0001
   },
   "profit_simulation": {
-    "ungated_pnl": 176.7662,
-    "ungated_trades": 1458,
-    "ungated_win_rate": 0.927,
-    "gated_pnl": 155.8933,
-    "gated_trades": 1050,
-    "gated_win_rate": 0.925,
+    "ungated_pnl": 198.6333,
+    "ungated_trades": 447,
+    "ungated_win_rate": 1.0,
+    "gated_pnl": 198.377,
+    "gated_trades": 438,
+    "gated_win_rate": 1.0,
     "min_net_edge": 0.05,
     "fee_model": "polymarket_2pct_on_winnings",
     "slippage": 0.015,
     "threshold_sweep": {
       "3%": {
-        "pnl": 172.1264,
-        "trades": 1214,
-        "win_rate": 0.929
+        "pnl": 198.4848,
+        "trades": 440,
+        "win_rate": 1.0
       },
       "4%": {
-        "pnl": 163.8364,
-        "trades": 1124,
-        "win_rate": 0.929
+        "pnl": 198.4848,
+        "trades": 440,
+        "win_rate": 1.0
       },
       "5%": {
-        "pnl": 155.8933,
-        "trades": 1050,
-        "win_rate": 0.925
+        "pnl": 198.377,
+        "trades": 438,
+        "win_rate": 1.0
       },
       "6%": {
-        "pnl": 145.2565,
-        "trades": 930,
-        "win_rate": 0.924
+        "pnl": 198.377,
+        "trades": 438,
+        "win_rate": 1.0
       },
       "7%": {
-        "pnl": 131.4743,
-        "trades": 741,
-        "win_rate": 0.924
+        "pnl": 198.377,
+        "trades": 438,
+        "win_rate": 1.0
       },
       "8%": {
-        "pnl": 76.6287,
-        "trades": 523,
-        "win_rate": 0.908
+        "pnl": 198.377,
+        "trades": 438,
+        "win_rate": 1.0
       },
       "10%": {
-        "pnl": 49.8772,
-        "trades": 316,
-        "win_rate": 0.899
+        "pnl": 197.9801,
+        "trades": 434,
+        "win_rate": 1.0
       }
     }
   },
   "brier_by_price_bucket": {
     "0-20% (near NO)": {
-      "n": 1159,
-      "brier": 0.0086,
-      "baseline": 0.0159,
-      "improvement_pct": 45.7
+      "n": 576,
+      "brier": 0.0,
+      "baseline": 0.0137,
+      "improvement_pct": 99.7
     },
     "20-80% (tradeable)": {
-      "n": 636,
-      "brier": 0.1606,
-      "baseline": 0.1667,
-      "improvement_pct": 3.7
+      "n": 408,
+      "brier": 0.0001,
+      "baseline": 0.2461,
+      "improvement_pct": 99.9
     },
     "80-100% (near YES)": {
-      "n": 23,
-      "brier": 0.9127,
-      "baseline": 0.0391,
-      "improvement_pct": -2235.3
+      "n": 240,
+      "brier": 0.0,
+      "baseline": 0.0021,
+      "improvement_pct": 98.4
     }
   },
   "price_distribution": {
-    "pct_near_0": 0.218,
-    "pct_near_1": 0.042
+    "pct_near_0": 0.302,
+    "pct_near_1": 0.114
   },
   "leakage_warnings": [
     "orderbook_snapshots: filtered to as_of timestamp (fixed as of 2026-02-14)",
     "volume_features: correlation check not performed",
-    "price_distribution: 26.1% near-extremes (inflates metrics, real-world harder)",
-    "survivorship_bias: 9090/62229 (14.6%) of resolved markets used (volume>0 filter)"
-  ]
+    "price_distribution: 41.5% near-extremes (inflates metrics, real-world harder)",
+    "survivorship_bias: 6116/67029 (9.1%) of resolved markets used (volume>0 filter)"
+  ],
+  "xgb_feature_importance": {
+    "log_open_interest": 0.38556331396102905,
+    "price_yes": 0.3303891122341156,
+    "calibration_bias": 0.1242876946926117,
+    "price_distance_from_50": 0.08097797632217407,
+    "zscore_24h": 0.026384670287370682,
+    "time_to_resolution_hrs": 0.02209567092359066,
+    "return_1h": 0.015990717336535454,
+    "volatility_20": 0.014310864731669426
+  },
+  "lgb_feature_importance": {
+    "log_open_interest": 278,
+    "price_yes": 257,
+    "zscore_24h": 171,
+    "volatility_20": 140,
+    "return_1h": 133,
+    "calibration_bias": 108,
+    "price_distance_from_50": 102,
+    "time_to_resolution_hrs": 88
+  }
 }

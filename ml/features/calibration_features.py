@@ -7,6 +7,7 @@ import numpy as np
 # Historical calibration data from published research
 # (price_bucket_center, actual_resolution_rate)
 # Source: Multiple studies on Polymarket/Kalshi calibration
+# Used as the final fallback when no platform-specific curves are available.
 HISTORICAL_CALIBRATION = {
     0.05: 0.08,   # 5% priced events resolve YES 8% of the time
     0.10: 0.13,
@@ -30,36 +31,62 @@ HISTORICAL_CALIBRATION = {
 }
 
 
-def get_calibration_estimate(market_price: float) -> float:
-    """Get historical resolution rate for a given market price.
-    Uses linear interpolation between known calibration points.
+def get_calibration_estimate(
+    market_price: float,
+    platform: str | None = None,
+    category: str | None = None,
+) -> float:
+    """Get calibrated resolution probability for a given market price.
+
+    Prefers platform- and category-specific curves from
+    ml/features/calibration_lookup.py when available.  Falls back to the
+    static HISTORICAL_CALIBRATION table if no curves file exists.
+
+    Args:
+        market_price: Market-implied YES probability (0–1).
+        platform:     Platform name, e.g. "polymarket". Optional.
+        category:     Normalised market category, e.g. "politics". Optional.
+
+    Returns:
+        Calibrated resolution probability in [0, 1].
     """
+    if platform is not None or category is not None:
+        # Delegate to the data-driven lookup (which falls back to static table)
+        try:
+            from ml.features.calibration_lookup import (
+                get_calibration_estimate as _lookup,
+            )
+            return _lookup(market_price, platform=platform, category=category)
+        except Exception:
+            pass  # Import failure — fall through to static table below
+
+    # Static HISTORICAL_CALIBRATION (original behaviour; final fallback)
     if market_price <= 0.05:
         return HISTORICAL_CALIBRATION[0.05]
     if market_price >= 0.95:
         return HISTORICAL_CALIBRATION[0.95]
 
-    # Find surrounding buckets
     buckets = sorted(HISTORICAL_CALIBRATION.keys())
     for i in range(len(buckets) - 1):
         if buckets[i] <= market_price <= buckets[i + 1]:
-            # Linear interpolation
             t = (market_price - buckets[i]) / (buckets[i + 1] - buckets[i])
             low_val = HISTORICAL_CALIBRATION[buckets[i]]
             high_val = HISTORICAL_CALIBRATION[buckets[i + 1]]
             return low_val + t * (high_val - low_val)
 
-    return market_price  # Fallback
+    return market_price  # Final fallback
 
 
 def compute_calibration_features(
     market_price: float,
     price_history_24h: list[float] | None = None,
     market_age_days: float = 0,
+    platform: str | None = None,
+    category: str | None = None,
 ) -> dict:
     """Extract 6 calibration features."""
     # Feature 1: Calibration bias (historical_rate - market_price)
-    calibrated = get_calibration_estimate(market_price)
+    calibrated = get_calibration_estimate(market_price, platform=platform, category=category)
     calibration_bias = calibrated - market_price
 
     # Feature 2: Overconfidence delta (positive = market is overconfident)

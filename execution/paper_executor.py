@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import (
     PortfolioPosition, Market, AutoTradingConfig,
-    EnsembleEdgeSignal, EloEdgeSignal,
+    EnsembleEdgeSignal, EloEdgeSignal, FavoriteLongshotEdgeSignal,
 )
 from risk.risk_manager import check_risk_limits
 
@@ -87,10 +87,11 @@ async def _get_auto_config(session: AsyncSession, strategy: str) -> AutoTradingC
 
 
 async def execute_paper_trades(session: AsyncSession) -> list[int]:
-    """Orchestrator: run both ensemble and Elo auto-trading."""
+    """Orchestrator: run ensemble, Elo, and favorite-longshot auto-trading."""
     created = []
     created.extend(await _execute_ensemble_trades(session))
     created.extend(await _execute_elo_trades(session))
+    created.extend(await _execute_favorite_longshot_trades(session))
     return created
 
 
@@ -390,5 +391,115 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
     if created_ids:
         await session.commit()
         logger.info(f"Elo executor: {len(created_ids)} new auto positions")
+
+    return created_ids
+
+
+async def _execute_favorite_longshot_trades(session: AsyncSession) -> list[int]:
+    """Auto-open paper positions for favorite-longshot bias signals."""
+    config = await _get_auto_config(session, "favorite_longshot")
+    if not config:
+        return []
+
+    now = datetime.utcnow()
+
+    result = await session.execute(
+        select(FavoriteLongshotEdgeSignal)
+        .where(
+            FavoriteLongshotEdgeSignal.expired_at == None,  # noqa
+            FavoriteLongshotEdgeSignal.net_ev >= config.min_net_ev,
+        )
+        .order_by(FavoriteLongshotEdgeSignal.net_ev.desc())
+        .limit(10)
+    )
+    signals = result.scalars().all()
+
+    if not signals:
+        return []
+
+    open_markets = set()
+    open_result = await session.execute(
+        select(PortfolioPosition.market_id)
+        .where(
+            PortfolioPosition.exit_time == None,  # noqa
+            PortfolioPosition.portfolio_type == "auto",
+        )
+    )
+    for row in open_result.all():
+        open_markets.add(row[0])
+
+    created_ids = []
+
+    for signal in signals:
+        if signal.market_id in open_markets:
+            continue
+
+        market = await session.get(Market, signal.market_id)
+        if not market or not market.is_active:
+            continue
+
+        category = (market.normalized_category or market.category or "").lower()
+        if _is_blocked_market(market.question or "", category):
+            continue
+
+        if market.price_yes is not None and (market.price_yes <= 0.01 or market.price_yes >= 0.99):
+            continue
+
+        kelly = signal.kelly_fraction or 0.0
+        kelly = min(kelly, config.max_kelly_fraction)
+        if signal.detected_at:
+            signal_age_hours = (now - signal.detected_at).total_seconds() / 3600
+            decay = math.exp(-0.693 * signal_age_hours / EDGE_DECAY_HALF_LIFE_HOURS)
+            kelly *= decay
+        if kelly <= 0:
+            continue
+
+        exec_result = compute_execution_cost(
+            direction=signal.direction,
+            market_price=signal.market_price,
+            slippage_bps=200,
+        )
+        entry_price = exec_result["execution_price"]
+
+        if signal.direction == "buy_yes":
+            cost_per_share = entry_price
+        else:
+            cost_per_share = 1.0 - entry_price
+        quantity = (config.bankroll * kelly) / max(cost_per_share, 0.01)
+        position_cost = cost_per_share * quantity
+
+        risk_check = await check_risk_limits(
+            session, position_cost, "auto_favorite_longshot",
+            portfolio_type="auto", strategy="auto_favorite_longshot"
+        )
+        if not risk_check.allowed:
+            logger.info(f"Favorite-longshot auto-trade blocked: {risk_check.reason}")
+            continue
+
+        position = PortfolioPosition(
+            user_id="auto_favorite_longshot",
+            market_id=signal.market_id,
+            platform_id=market.platform_id,
+            side="yes" if signal.direction == "buy_yes" else "no",
+            entry_price=entry_price,
+            quantity=round(quantity, 2),
+            entry_time=datetime.utcnow(),
+            strategy="auto_favorite_longshot",
+            portfolio_type="auto",
+            is_simulated=True,
+        )
+        session.add(position)
+        await session.flush()
+        created_ids.append(position.id)
+        open_markets.add(signal.market_id)
+
+        logger.info(
+            f"Auto favorite-longshot: market {signal.market_id} | {signal.direction} @ {entry_price:.3f} | "
+            f"qty={quantity:.2f} | Kelly={kelly:.4f} | type={signal.signal_type}"
+        )
+
+    if created_ids:
+        await session.commit()
+        logger.info(f"Favorite-longshot executor: {len(created_ids)} new auto positions")
 
     return created_ids
