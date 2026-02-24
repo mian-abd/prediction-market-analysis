@@ -32,6 +32,8 @@ sys.path.insert(0, str(project_root))
 # Set by main() from --archive-dir; used inside load_resolved_markets().
 _ARCHIVE_DIR: Path | None = None
 _SNAPSHOT_ONLY: bool = False  # Set by --snapshot-only flag: train only on as_of snapshot markets
+_TRADEABLE_RANGE: tuple[float, float] | None = None  # Set by --tradeable-range: filter to uncertain markets
+_AS_OF_DAYS: int = 1  # Set by --as-of-days: how many days before resolution to use as reference
 
 import asyncio
 import logging
@@ -199,11 +201,12 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
                 if not market:
                     continue
 
-                # as_of = resolved_at - 24h (predict 24h before resolution)
+                # as_of = resolved_at - N days (configurable via --as-of-days, default 1)
+                _as_of_delta = timedelta(hours=_AS_OF_DAYS * 24)
                 if market.resolved_at:
-                    as_of = market.resolved_at - timedelta(hours=24)
+                    as_of = market.resolved_at - _as_of_delta
                 elif getattr(market, 'end_date', None):
-                    as_of = market.end_date - timedelta(hours=24)
+                    as_of = market.end_date - _as_of_delta
                 else:
                     # No valid as_of time, skip this market (strict mode)
                     skipped_no_as_of += 1
@@ -260,14 +263,15 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
 
                     # Merge: apply same as_of filter used for DB snapshots
                     merged_count = 0
+                    _as_of_delta = timedelta(hours=_AS_OF_DAYS * 24)
                     for market_id, snap_list in archive_price.items():
                         market = markets_by_id.get(market_id)
                         if not market:
                             continue
                         if market.resolved_at:
-                            as_of = market.resolved_at - timedelta(hours=24)
+                            as_of = market.resolved_at - _as_of_delta
                         elif getattr(market, "end_date", None):
-                            as_of = market.end_date - timedelta(hours=24)
+                            as_of = market.end_date - _as_of_delta
                         else:
                             continue
                         filtered = [(ts, p) for (ts, p) in snap_list if ts <= as_of]
@@ -311,11 +315,12 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
                 if not market:
                     continue
 
-                # Compute as_of = resolved_at - 24h (same logic as price snapshots)
+                # Compute as_of = resolved_at - N days (same logic as price snapshots)
+                _as_of_delta = timedelta(hours=_AS_OF_DAYS * 24)
                 if market.resolved_at:
-                    as_of = market.resolved_at - timedelta(hours=24)
+                    as_of = market.resolved_at - _as_of_delta
                 elif getattr(market, 'end_date', None):
-                    as_of = market.end_date - timedelta(hours=24)
+                    as_of = market.end_date - _as_of_delta
                 else:
                     skipped_no_ob_as_of += 1
                     continue
@@ -367,14 +372,15 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
                     )
 
                     ob_merged_count = 0
+                    _as_of_delta = timedelta(hours=_AS_OF_DAYS * 24)
                     for market_id, ob_list in archive_ob.items():
                         market = markets_by_id.get(market_id)
                         if not market:
                             continue
                         if market.resolved_at:
-                            as_of = market.resolved_at - timedelta(hours=24)
+                            as_of = market.resolved_at - _as_of_delta
                         elif getattr(market, "end_date", None):
-                            as_of = market.end_date - timedelta(hours=24)
+                            as_of = market.end_date - _as_of_delta
                         else:
                             continue
                         # Pick latest orderbook row before as_of
@@ -760,13 +766,25 @@ async def main():
 
     # --- Build feature matrix (with as_of enforcement) ---
     snapshot_only = _SNAPSHOT_ONLY
+    tradeable_range = _TRADEABLE_RANGE
 
+    mode_parts = []
     if snapshot_only:
+        mode_parts.append("snapshot_only=True")
+    if tradeable_range is not None:
+        lo, hi = tradeable_range
+        mode_parts.append(f"tradeable_range=[{lo:.2f}, {hi:.2f}]")
+    as_of_label = f"as_of=resolved_at-{_AS_OF_DAYS}d"
+    mode_desc = ", ".join(mode_parts) if mode_parts else f"{as_of_label}, all prices"
+    if mode_parts:
+        mode_parts.insert(0, as_of_label)
+        mode_desc = ", ".join(mode_parts)
+    logger.info(f"\nExtracting features ({mode_desc})...")
+    if tradeable_range is not None:
         logger.info(
-            "\nExtracting features (snapshot_only=True - only markets with as_of snapshot prices)..."
+            f"  NOTE: Near-decided markets (price outside [{tradeable_range[0]:.0%}, "
+            f"{tradeable_range[1]:.0%}]) excluded — forces learning genuine uncertainty signal."
         )
-    else:
-        logger.info("\nExtracting features (as_of = resolved_at - 24h)...")
 
     X, y = build_training_matrix(
         markets,
@@ -774,6 +792,7 @@ async def main():
         price_at_as_of_map=price_at_as_of_map,
         orderbook_snapshots_map=orderbook_snapshots_map,
         snapshot_only=snapshot_only,
+        tradeable_range=tradeable_range,
     )
     logger.info(f"Feature matrix: {X.shape} ({N_FEATURES} features)")
     logger.info(f"Features: {ENSEMBLE_FEATURE_NAMES}")
@@ -1125,6 +1144,8 @@ async def main():
             "n_total": n_total_usable,
             "coverage_pct": coverage_pct,
             "snapshot_only_mode": snapshot_only,
+            "tradeable_range": list(tradeable_range) if tradeable_range else None,
+            "as_of_days": _AS_OF_DAYS,
         },
         "class_balance_yes_pct": round(float(y.mean()) * 100, 1),
         "temporal_split_date": cutoff_date,
@@ -1207,7 +1228,34 @@ def _parse_args() -> argparse.Namespace:
             "(eliminates market.price_yes leakage for resolved markets). "
             "Reduces training set size but produces cleaner calibration and "
             "enables all momentum/price features. Recommended when as_of "
-            "coverage >= 20%% (currently ~19%%)."
+            "coverage >= 20%%."
+        ),
+    )
+    parser.add_argument(
+        "--tradeable-range",
+        default=None,
+        dest="tradeable_range",
+        metavar="MIN,MAX",
+        help=(
+            "Comma-separated price range e.g. '0.05,0.95'. When set with "
+            "--snapshot-only, only include markets whose as_of price falls within "
+            "[MIN, MAX]. Excludes near-decided markets (price near 0 or 1) that "
+            "trivially inflate AUC/Brier. Use '0.05,0.95' for the full tradeable "
+            "universe or '0.1,0.9' for stricter filtering. Honest Brier will be "
+            "HIGHER (worse-looking) but the model will generalise to live uncertain "
+            "markets instead of memorising obvious outcomes."
+        ),
+    )
+    parser.add_argument(
+        "--as-of-days",
+        type=int,
+        default=1,
+        dest="as_of_days",
+        help=(
+            "Number of days before resolved_at to use as the as_of reference time "
+            "(default: 1 = 24h). Increase to e.g. 7 to train the model on prices "
+            "from 7 days before resolution, which are less certain and better "
+            "reflect conditions you will face on live uncertain markets."
         ),
     )
     return parser.parse_args()
@@ -1219,6 +1267,26 @@ if __name__ == "__main__":
     if args.snapshot_only:
         _SNAPSHOT_ONLY = True
         logger.info("Snapshot-only mode: training on markets with real as_of prices only (no leakage fallback).")
+
+    if args.tradeable_range:
+        try:
+            lo_str, hi_str = args.tradeable_range.split(",")
+            _TRADEABLE_RANGE = (float(lo_str.strip()), float(hi_str.strip()))
+            logger.info(
+                f"Tradeable-range filter: [{_TRADEABLE_RANGE[0]:.2f}, {_TRADEABLE_RANGE[1]:.2f}] — "
+                "near-decided markets excluded to prevent leakage and force genuine learning."
+            )
+        except ValueError:
+            logger.error(
+                f"--tradeable-range must be 'MIN,MAX' e.g. '0.05,0.95'. Got: {args.tradeable_range!r}"
+            )
+            sys.exit(1)
+
+    if args.as_of_days != 1:
+        _AS_OF_DAYS = args.as_of_days
+        logger.info(
+            f"as-of-days={_AS_OF_DAYS}: using prices from {_AS_OF_DAYS} days before resolution."
+        )
 
     if args.archive_dir:
         _archive_path = Path(args.archive_dir)

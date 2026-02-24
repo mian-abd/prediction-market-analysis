@@ -91,6 +91,9 @@ async def get_model_accuracy():
             "test_samples": metrics.get("n_test"),
             "features_used": len(metrics.get("feature_names", [])),
             "features_dropped": len(metrics.get("features_dropped", [])),
+            "snapshot_coverage": metrics.get("snapshot_coverage"),
+            "brier_by_price_bucket": metrics.get("brier_by_price_bucket"),
+            "oof_brier": metrics.get("oof_brier"),
         }
     except Exception as e:
         return {

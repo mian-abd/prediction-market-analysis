@@ -395,6 +395,7 @@ def build_training_matrix(
     price_at_as_of_map: dict[int, float] | None = None,
     orderbook_snapshots_map: dict[int, any] | None = None,
     snapshot_only: bool = False,
+    tradeable_range: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build X (features) and y (labels) from resolved markets.
 
@@ -416,6 +417,12 @@ def build_training_matrix(
                        (skips the market.price_yes fallback entirely). This eliminates
                        leakage from resolved-market prices at the cost of fewer samples.
                        Recommended once as_of coverage exceeds ~20%.
+        tradeable_range: Optional (min_price, max_price) tuple. When set, only include markets
+                         whose as_of price is within this range. Use (0.05, 0.95) to exclude
+                         near-decided markets (price near 0 or 1 at as_of time). These are
+                         trivially predictable and inflate AUC/Brier; removing them forces the
+                         model to learn genuine signal for uncertain, actively-traded markets.
+                         Only applies when a real as_of price is available (snapshot markets).
 
     Returns:
         (X, y) where X is (n_samples, n_features), y is (n_samples,) binary
@@ -464,6 +471,16 @@ def build_training_matrix(
         # Get price at as_of (overrides market.price_yes to prevent leakage)
         price_override = as_of_map.get(m.id) if as_of_map else None
 
+        # Tradeable-range filter: skip near-decided markets if range specified.
+        # Markets with price near 0 or 1 at as_of are trivially predictable —
+        # the model learns "price→outcome" leakage instead of genuine signal.
+        # Only apply when we have a real as_of price (not fallback leakage).
+        if tradeable_range is not None and price_override is not None:
+            lo, hi = tradeable_range
+            if price_override < lo or price_override > hi:
+                skipped["near_decided"] = skipped.get("near_decided", 0) + 1
+                continue
+
         feat = extract_features_from_market(
             m,
             for_training=True,
@@ -485,6 +502,8 @@ def build_training_matrix(
         skip_msg += f"{skipped['no_price']} no-price"
         if skipped.get("no_snapshot"):
             skip_msg += f", {skipped['no_snapshot']} no-snapshot (snapshot_only=True)"
+        if skipped.get("near_decided"):
+            skip_msg += f", {skipped['near_decided']} near-decided (tradeable_range filter)"
         if as_of_map:
             n_fallback = len(X_rows) - as_of_used
             if n_fallback > 0:

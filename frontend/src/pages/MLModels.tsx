@@ -40,6 +40,22 @@ interface MispricedMarket {
   volume_24h: number | null
 }
 
+interface BrierBucket {
+  n: number
+  brier: number
+  baseline: number
+  improvement_pct: number
+}
+
+interface SnapshotCoverage {
+  n_with_snapshots: number
+  n_total: number
+  coverage_pct: number
+  snapshot_only_mode: boolean
+  tradeable_range: [number, number] | null
+  as_of_days: number
+}
+
 interface AccuracyData {
   trained: boolean
   metrics: {
@@ -58,9 +74,14 @@ interface AccuracyData {
       xgboost: number
       lightgbm: number
     }
+    snapshot_coverage?: SnapshotCoverage
+    brier_by_price_bucket?: Record<string, BrierBucket>
     xgb_feature_importance: Record<string, number>
     lgb_feature_importance: Record<string, number>
   }
+  snapshot_coverage?: SnapshotCoverage
+  brier_by_price_bucket?: Record<string, BrierBucket>
+  oof_brier?: { calibration: number; xgboost: number; lightgbm: number }
   weights: Record<string, number>
   models?: Record<string, {
     name: string
@@ -569,6 +590,111 @@ export default function MLModels() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Snapshot Coverage + Brier by Price Bucket */}
+      {accuracy?.trained && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Snapshot Coverage */}
+          {(accuracy.snapshot_coverage || accuracy.metrics?.snapshot_coverage) && (() => {
+            const cov = accuracy.snapshot_coverage || accuracy.metrics?.snapshot_coverage!
+            const pct = cov.coverage_pct ?? 0
+            const barColor = pct >= 50 ? 'var(--green)' : pct >= 30 ? '#F59E0B' : 'var(--accent)'
+            return (
+              <div className="card p-6">
+                <p className="text-[14px] font-semibold mb-1" style={{ color: 'var(--text)' }}>
+                  Price Snapshot Coverage
+                </p>
+                <p className="text-[11px] mb-4" style={{ color: 'var(--text-3)' }}>
+                  Markets with real pre-resolution prices (enables momentum features)
+                </p>
+                <div className="flex items-end gap-3 mb-3">
+                  <p className="text-[32px] font-bold leading-none" style={{ color: barColor }}>
+                    {pct.toFixed(1)}%
+                  </p>
+                  <p className="text-[12px] pb-1" style={{ color: 'var(--text-2)' }}>
+                    {cov.n_with_snapshots.toLocaleString()} / {cov.n_total.toLocaleString()} markets
+                  </p>
+                </div>
+                <div className="h-2 rounded-full overflow-hidden mb-4" style={{ background: 'rgba(255,255,255,0.06)' }}>
+                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${Math.min(pct, 100)}%`, background: barColor }} />
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-[11px]">
+                    <span style={{ color: 'var(--text-3)' }}>As-of window</span>
+                    <span className="font-mono" style={{ color: 'var(--text)' }}>{cov.as_of_days}d before resolution</span>
+                  </div>
+                  <div className="flex justify-between text-[11px]">
+                    <span style={{ color: 'var(--text-3)' }}>Mode</span>
+                    <span className="font-mono" style={{ color: 'var(--text)' }}>
+                      {cov.snapshot_only_mode ? 'Snapshot-only (clean)' : 'Full training set'}
+                    </span>
+                  </div>
+                  {cov.tradeable_range && (
+                    <div className="flex justify-between text-[11px]">
+                      <span style={{ color: 'var(--text-3)' }}>Tradeable filter</span>
+                      <span className="font-mono" style={{ color: 'var(--text)' }}>
+                        [{(cov.tradeable_range[0] * 100).toFixed(0)}%, {(cov.tradeable_range[1] * 100).toFixed(0)}%]
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-[11px] pt-1" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                    <span style={{ color: 'var(--text-3)' }}>Target</span>
+                    <span className="font-mono" style={{ color: pct >= 50 ? 'var(--green)' : '#F59E0B' }}>
+                      {pct >= 50 ? '✓ 50%+ reached' : pct >= 30 ? '30%+ ok, 50% target' : '< 30% — run backfill'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Brier by Price Bucket */}
+          {(accuracy.brier_by_price_bucket || accuracy.metrics?.brier_by_price_bucket) && (() => {
+            const buckets = accuracy.brier_by_price_bucket || accuracy.metrics?.brier_by_price_bucket!
+            const entries = Object.entries(buckets)
+            return (
+              <div className="card p-6">
+                <p className="text-[14px] font-semibold mb-1" style={{ color: 'var(--text)' }}>
+                  Brier Score by Price Range
+                </p>
+                <p className="text-[11px] mb-4" style={{ color: 'var(--text-3)' }}>
+                  How well the model performs across different certainty levels (lower = better)
+                </p>
+                <div className="space-y-4">
+                  {entries.map(([label, bucket]) => {
+                    const imp = bucket.improvement_pct
+                    const isGood = imp > 0
+                    const color = isGood ? 'var(--green)' : 'var(--red, #EF4444)'
+                    const barPct = Math.min(100, (bucket.brier / Math.max(bucket.baseline, 0.001)) * 100)
+                    const baseBarPct = 100
+                    const isTradeableRange = label.includes('20-80')
+                    return (
+                      <div key={label}>
+                        <div className="flex justify-between items-baseline mb-1.5">
+                          <span className="text-[11px] font-medium" style={{ color: isTradeableRange ? 'var(--accent)' : 'var(--text-2)' }}>
+                            {isTradeableRange ? '★ ' : ''}{label} <span style={{ color: 'var(--text-3)' }}>n={bucket.n.toLocaleString()}</span>
+                          </span>
+                          <span className="text-[11px] font-mono" style={{ color }}>
+                            {imp > 0 ? '+' : ''}{imp.toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="relative h-3 rounded overflow-hidden" style={{ background: 'rgba(255,255,255,0.04)' }}>
+                          <div className="absolute inset-y-0 left-0 rounded opacity-30" style={{ width: `${baseBarPct}%`, background: 'var(--text-3)' }} />
+                          <div className="absolute inset-y-0 left-0 rounded" style={{ width: `${barPct}%`, background: color }} />
+                        </div>
+                        <div className="flex justify-between mt-1">
+                          <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>Model: {bucket.brier.toFixed(4)}</span>
+                          <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>Market: {bucket.baseline.toFixed(4)}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })()}
         </div>
       )}
 
