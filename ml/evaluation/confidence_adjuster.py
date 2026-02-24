@@ -25,8 +25,8 @@ from db.models import PortfolioPosition, EnsembleEdgeSignal, EloEdgeSignal
 
 logger = logging.getLogger(__name__)
 
-# Minimum samples before applying adjustments (faster learning from recent streams)
-MIN_SAMPLES = 8
+# Minimum samples before applying adjustments (lower = learn from fewer trades)
+MIN_SAMPLES = 4
 
 # EMA smoothing factor (~20-signal window for faster adaptation to recent performance)
 EMA_ALPHA = 0.095

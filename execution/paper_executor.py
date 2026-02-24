@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import (
     PortfolioPosition, Market, AutoTradingConfig,
-    EnsembleEdgeSignal, EloEdgeSignal,
+    EnsembleEdgeSignal, EloEdgeSignal, StrategySignal,
 )
 from risk.risk_manager import check_risk_limits
 
@@ -87,10 +87,11 @@ async def _get_auto_config(session: AsyncSession, strategy: str) -> AutoTradingC
 
 
 async def execute_paper_trades(session: AsyncSession) -> list[int]:
-    """Orchestrator: run both ensemble and Elo auto-trading."""
+    """Orchestrator: run ensemble, Elo, AND new strategy auto-trading."""
     created = []
     created.extend(await _execute_ensemble_trades(session))
     created.extend(await _execute_elo_trades(session))
+    created.extend(await _execute_new_strategy_trades(session))
     return created
 
 
@@ -390,5 +391,150 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
     if created_ids:
         await session.commit()
         logger.info(f"Elo executor: {len(created_ids)} new auto positions")
+
+    return created_ids
+
+
+async def _execute_new_strategy_trades(session: AsyncSession) -> list[int]:
+    """Auto-open paper positions for high-confidence signals from new strategies.
+
+    Supports: llm_forecast, longshot_bias, news_catalyst, resolution_convergence,
+    orderflow, smart_money, market_clustering.
+
+    Uses a unified auto-trading config keyed by 'new_strategies'.
+    Falls back to ensemble config thresholds if no dedicated config exists.
+    """
+    # Try dedicated config, fall back to ensemble config thresholds
+    config = await _get_auto_config(session, "new_strategies")
+    if not config:
+        config = await _get_auto_config(session, "ensemble")
+    if not config:
+        return []
+
+    now = datetime.utcnow()
+
+    result = await session.execute(
+        select(StrategySignal)
+        .where(
+            StrategySignal.expired_at == None,  # noqa
+            StrategySignal.direction != None,  # noqa
+            StrategySignal.net_ev >= config.min_net_ev,
+        )
+        .order_by(StrategySignal.net_ev.desc())
+        .limit(20)
+    )
+    signals = result.scalars().all()
+
+    if not signals:
+        return []
+
+    # Filter by confidence (use slightly lower bar since these are diversified strategies)
+    min_conf = max(0.3, config.min_confidence - 0.1)
+    signals = [s for s in signals if (s.confidence or 0) >= min_conf]
+
+    # Markets with existing open auto positions
+    open_markets = set()
+    open_result = await session.execute(
+        select(PortfolioPosition.market_id)
+        .where(
+            PortfolioPosition.exit_time == None,  # noqa
+            PortfolioPosition.portfolio_type == "auto",
+        )
+    )
+    for row in open_result.all():
+        open_markets.add(row[0])
+
+    created_ids = []
+
+    for signal in signals:
+        if signal.market_id in open_markets:
+            continue
+
+        market = await session.get(Market, signal.market_id)
+        if not market or not market.is_active:
+            continue
+
+        # Skip effectively decided markets
+        if market.price_yes is not None and (market.price_yes <= 0.01 or market.price_yes >= 0.99):
+            continue
+
+        # Skip blocked markets
+        question = market.question or ""
+        category = (market.normalized_category or market.category or "").lower()
+        if _is_blocked_market(question, category):
+            continue
+
+        kelly = signal.kelly_fraction or 0.0
+        kelly = min(kelly, config.max_kelly_fraction)
+
+        # Edge decay
+        if signal.detected_at:
+            signal_age_hours = (now - signal.detected_at).total_seconds() / 3600
+            decay = math.exp(-0.693 * signal_age_hours / EDGE_DECAY_HALF_LIFE_HOURS)
+            kelly *= decay
+        if kelly <= 0:
+            continue
+
+        # Strategy-specific Kelly adjustments
+        strategy = signal.strategy or ""
+        if strategy == "resolution_convergence":
+            kelly *= 1.2  # Slightly more aggressive for high win-rate strategy
+        elif strategy == "longshot_bias":
+            kelly *= 1.0  # Standard — well-documented structural edge
+        elif strategy in ("news_catalyst", "orderflow"):
+            kelly *= 0.7  # More conservative — shorter-lived signals
+        elif strategy in ("smart_money", "market_clustering"):
+            kelly *= 0.6  # Most conservative — heuristic-based
+
+        exec_result = compute_execution_cost(
+            direction=signal.direction,
+            market_price=signal.market_price,
+            slippage_bps=200,
+        )
+        entry_price = exec_result["execution_price"]
+
+        if signal.direction == "buy_yes":
+            cost_per_share = entry_price
+        else:
+            cost_per_share = 1.0 - entry_price
+
+        quantity = (config.bankroll * kelly) / max(cost_per_share, 0.01)
+        position_cost = cost_per_share * quantity
+
+        user_id = f"auto_{strategy}"
+        risk_check = await check_risk_limits(
+            session, position_cost, user_id,
+            portfolio_type="auto", strategy=user_id
+        )
+        if not risk_check.allowed:
+            logger.info(f"{strategy} auto-trade blocked: {risk_check.reason}")
+            continue
+
+        position = PortfolioPosition(
+            user_id=user_id,
+            market_id=signal.market_id,
+            platform_id=market.platform_id,
+            side="yes" if signal.direction == "buy_yes" else "no",
+            entry_price=entry_price,
+            quantity=round(quantity, 2),
+            entry_time=datetime.utcnow(),
+            strategy=user_id,
+            portfolio_type="auto",
+            is_simulated=True,
+        )
+        session.add(position)
+        await session.flush()
+        created_ids.append(position.id)
+        open_markets.add(signal.market_id)
+
+        logger.info(
+            f"Auto {strategy}: market {signal.market_id} | "
+            f"{signal.direction} @ {entry_price:.3f} | "
+            f"qty={quantity:.2f} | Kelly={kelly:.4f} | EV={signal.net_ev:.3f}"
+        )
+
+    if created_ids:
+        await session.commit()
+        logger.info(f"New strategy executor: {len(created_ids)} auto positions")
 
     return created_ids
