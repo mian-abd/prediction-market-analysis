@@ -50,6 +50,17 @@ export default function AutoTradingPanel() {
     refetchInterval: 15_000,
   })
 
+  const { data: adjusterStats } = useQuery<{
+    status?: string
+    total_segments?: number
+    total_trades_analyzed?: number
+    cache_age_minutes?: number | null
+  }>({
+    queryKey: ['confidence-adjuster'],
+    queryFn: async () => (await apiClient.get('/system/confidence-adjuster')).data,
+    refetchInterval: 60_000,
+  })
+
   const toggleMutation = useMutation({
     mutationFn: async ({ strategy, enabled }: { strategy: string; enabled: boolean }) => {
       await apiClient.post(`/auto-trading/toggle/${strategy}?enabled=${enabled}`)
@@ -101,6 +112,24 @@ export default function AutoTradingPanel() {
         onToggle={(enabled) => toggleMutation.mutate({ strategy: 'elo', enabled })}
         toggleLoading={toggleMutation.isPending}
       />
+      {/* Surface that the system learns from past auto-trades */}
+      <div
+        className="col-span-full text-[11px] rounded-lg px-3 py-2"
+        style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--text-3)' }}
+      >
+        {adjusterStats?.total_segments != null && adjusterStats.total_segments > 0 ? (
+          <>
+            <strong style={{ color: 'var(--text)' }}>Learning from your trades:</strong>{' '}
+            Confidence is adjusted from your last 60 days of auto-trades (
+            {adjusterStats.total_trades_analyzed ?? 0} trades, {adjusterStats.total_segments} segments).
+          </>
+        ) : (
+          <>
+            <strong style={{ color: 'var(--text)' }}>Learning from your trades:</strong>{' '}
+            Once you have enough closed auto-trades, confidence scores will be adapted by segment (tier, direction, price zone) so the system performs better over time.
+          </>
+        )}
+      </div>
     </div>
   )
 }
