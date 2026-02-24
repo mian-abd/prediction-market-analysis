@@ -14,14 +14,65 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import (
     PortfolioPosition, Market, AutoTradingConfig,
-    EnsembleEdgeSignal, EloEdgeSignal, StrategySignal,
+    EnsembleEdgeSignal, EloEdgeSignal, StrategySignal, OrderbookSnapshot,
 )
 from risk.risk_manager import check_risk_limits
 
 logger = logging.getLogger(__name__)
 
-# Edge decay: signals lose half their edge every 2 hours (exponential decay)
-EDGE_DECAY_HALF_LIFE_HOURS = 2.0
+# Per-strategy edge decay half-lives (hours). Short-lived signal types decay faster;
+# structural edges (longshot bias, market clustering) persist much longer.
+STRATEGY_DECAY_HOURS: dict[str, float] = {
+    "ensemble": 2.0,
+    "elo": 2.0,
+    "longshot_bias": 24.0,        # Structural bias persists for days
+    "resolution_convergence": 12.0,  # Theta decays as market nears resolution
+    "llm_forecast": 6.0,           # LLM analysis stays valid for several hours
+    "news_catalyst": 1.0,          # News stales very quickly
+    "orderflow": 0.5,              # Flow signals are extremely short-lived
+    "smart_money": 4.0,            # On-chain positions shift over hours
+    "market_clustering": 12.0,     # Correlation-based edges are slow-moving
+    "consensus": 6.0,              # Multi-strategy agreement
+}
+_DEFAULT_DECAY_HOURS = 2.0
+
+
+def _get_decay_hours(strategy: str) -> float:
+    """Return edge decay half-life for a strategy (strips 'auto_' prefix)."""
+    name = strategy.removeprefix("auto_")
+    return STRATEGY_DECAY_HOURS.get(name, _DEFAULT_DECAY_HOURS)
+
+
+async def _get_market_slippage_bps(session: AsyncSession, market: Market) -> float:
+    """Compute realistic slippage from orderbook spread or liquidity tier.
+
+    Priority:
+    1. Recent orderbook snapshot → half-spread as taker slippage
+    2. Fallback → liquidity-tiered flat rate
+    """
+    try:
+        result = await session.execute(
+            select(OrderbookSnapshot.bid_ask_spread)
+            .where(OrderbookSnapshot.market_id == market.id)
+            .order_by(OrderbookSnapshot.timestamp.desc())
+            .limit(1)
+        )
+        spread = result.scalar_one_or_none()
+        if spread is not None and spread > 0:
+            # Half-spread = typical taker cost; convert to basis points
+            slippage_bps = (spread / 2) * 10_000
+            return min(500.0, max(20.0, slippage_bps))  # Cap 0.2% – 5%
+    except Exception:
+        pass
+
+    liquidity = float(market.liquidity or 0)
+    if liquidity >= 50_000:
+        return 50.0    # 0.5%
+    elif liquidity >= 10_000:
+        return 100.0   # 1.0%
+    elif liquidity >= 5_000:
+        return 200.0   # 2.0%
+    return 300.0       # 3.0%
 
 # Markets with these keywords are blocked from auto-trading (no edge, pure noise)
 BLOCKED_KEYWORDS = [
@@ -130,12 +181,14 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
     signal_market_pairs = result.all()
 
     # Sort by edge-decayed EV: discount stale signals, skip near-resolution markets
+    ensemble_decay = _get_decay_hours("ensemble")
+
     def urgency_score(signal, market):
         base_ev = signal.net_ev
         # Edge decay: exponential decay based on signal age
         if signal.detected_at:
             signal_age_hours = (now - signal.detected_at).total_seconds() / 3600
-            decay = math.exp(-0.693 * signal_age_hours / EDGE_DECAY_HALF_LIFE_HOURS)
+            decay = math.exp(-0.693 * signal_age_hours / ensemble_decay)
             base_ev *= decay
         # Skip markets too close to resolution (no time for stop-loss)
         if market.end_date:
@@ -200,10 +253,10 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
 
         kelly = signal.kelly_fraction or 0.0
         kelly = min(kelly, config.max_kelly_fraction)
-        # Apply edge decay to Kelly (stale signals get smaller positions)
+        # Apply strategy-specific edge decay to Kelly (stale signals get smaller positions)
         if signal.detected_at:
             signal_age_hours = (now - signal.detected_at).total_seconds() / 3600
-            decay = math.exp(-0.693 * signal_age_hours / EDGE_DECAY_HALF_LIFE_HOURS)
+            decay = math.exp(-0.693 * signal_age_hours / ensemble_decay)
             kelly *= decay
         if kelly <= 0:
             continue
@@ -223,11 +276,12 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
             logger.warning(f"Skipping {market.question[:60]}: effectively decided (price={market.price_yes:.4f})")
             continue
 
-        # Model execution costs (2% slippage)
+        # Dynamic slippage from orderbook depth or liquidity tier
+        slippage_bps = await _get_market_slippage_bps(session, market)
         exec_result = compute_execution_cost(
             direction=signal.direction,
             market_price=signal.market_price,
-            slippage_bps=200,
+            slippage_bps=slippage_bps,
         )
         entry_price = exec_result["execution_price"]
 
@@ -333,10 +387,11 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
 
         kelly = signal.kelly_fraction or 0.0
         kelly = min(kelly, config.max_kelly_fraction)
-        # Apply edge decay to Kelly (stale signals get smaller positions)
+        # Apply strategy-specific edge decay to Kelly
+        elo_decay = _get_decay_hours("elo")
         if signal.detected_at:
             signal_age_hours = (now - signal.detected_at).total_seconds() / 3600
-            decay = math.exp(-0.693 * signal_age_hours / EDGE_DECAY_HALF_LIFE_HOURS)
+            decay = math.exp(-0.693 * signal_age_hours / elo_decay)
             kelly *= decay
         if kelly <= 0:
             continue
@@ -345,11 +400,12 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
         if signal.market_price_yes is not None and 0.40 <= signal.market_price_yes <= 0.60:
             kelly *= 0.5
 
-        # Model execution costs with slippage (same as ensemble)
+        # Dynamic slippage from orderbook depth or liquidity tier
+        slippage_bps = await _get_market_slippage_bps(session, market)
         exec_result = compute_execution_cost(
             direction=direction,
             market_price=signal.market_price_yes,
-            slippage_bps=200,
+            slippage_bps=slippage_bps,
         )
         entry_price = exec_result["execution_price"]
 
@@ -467,16 +523,17 @@ async def _execute_new_strategy_trades(session: AsyncSession) -> list[int]:
         kelly = signal.kelly_fraction or 0.0
         kelly = min(kelly, config.max_kelly_fraction)
 
-        # Edge decay
+        # Strategy-specific edge decay (uses signal.strategy as key)
+        strategy = signal.strategy or ""
+        signal_decay_hours = _get_decay_hours(strategy)
         if signal.detected_at:
             signal_age_hours = (now - signal.detected_at).total_seconds() / 3600
-            decay = math.exp(-0.693 * signal_age_hours / EDGE_DECAY_HALF_LIFE_HOURS)
+            decay = math.exp(-0.693 * signal_age_hours / signal_decay_hours)
             kelly *= decay
         if kelly <= 0:
             continue
 
         # Strategy-specific Kelly adjustments
-        strategy = signal.strategy or ""
         if strategy == "consensus":
             kelly *= 1.5  # Multi-strategy agreement = highest conviction
         elif strategy == "resolution_convergence":
@@ -486,12 +543,14 @@ async def _execute_new_strategy_trades(session: AsyncSession) -> list[int]:
         elif strategy in ("news_catalyst", "orderflow"):
             kelly *= 0.7  # More conservative — shorter-lived signals
         elif strategy in ("smart_money", "market_clustering"):
-            kelly *= 0.6  # Most conservative — heuristic-based
+            kelly *= 0.8  # Upgraded: now uses real on-chain data
 
+        # Dynamic slippage from orderbook depth or liquidity tier
+        slippage_bps = await _get_market_slippage_bps(session, market)
         exec_result = compute_execution_cost(
             direction=signal.direction,
             market_price=signal.market_price,
-            slippage_bps=200,
+            slippage_bps=slippage_bps,
         )
         entry_price = exec_result["execution_price"]
 

@@ -56,12 +56,33 @@ def _extract_keywords(text: str) -> set[str]:
 
 
 def _compute_keyword_overlap(market_keywords: set[str], article_title: str) -> float:
-    """Compute keyword overlap score between market question and article title."""
+    """Compute similarity score between market question and article title.
+
+    Uses TF-IDF cosine similarity when sklearn is available (better semantic
+    matching). Falls back to Jaccard keyword overlap if sklearn is unavailable.
+    """
+    if not market_keywords:
+        return 0.0
+
+    # Reconstruct text from keywords for TF-IDF
+    market_text = " ".join(market_keywords)
+
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity as sk_cosine
+
+        vect = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
+        tfidf = vect.fit_transform([market_text, article_title])
+        sim = float(sk_cosine(tfidf[0:1], tfidf[1:2])[0][0])
+        return sim
+    except Exception:
+        pass
+
+    # Fallback: Jaccard-like overlap
     article_keywords = _extract_keywords(article_title)
-    if not market_keywords or not article_keywords:
+    if not article_keywords:
         return 0.0
     overlap = market_keywords & article_keywords
-    # Jaccard-like similarity but weighted toward market keywords
     return len(overlap) / max(len(market_keywords), 1)
 
 
@@ -123,7 +144,8 @@ async def analyze_market_news(
         tone = float(article.get("tone", 0))
         overlap = _compute_keyword_overlap(market_keywords, title)
 
-        if overlap < 0.15:
+        # TF-IDF cosine similarity uses 0-1 scale; 0.10 is meaningful semantic overlap
+        if overlap < 0.10:
             continue  # Not relevant enough
 
         # Check recency

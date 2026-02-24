@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
+import numpy as np
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +39,12 @@ MIN_NET_EDGE = 0.04
 CACHE_HOURS = 6
 MAX_MARKETS_PER_SCAN = 50
 COST_PER_CALL_USD = 0.03  # Estimated cost per Haiku call
+
+# Calibration: how strongly to shrink LLM probability toward market price
+# when we don't have enough historical data for Platt scaling yet.
+# Research (KalshiBench 2025): even best LLMs have ECE=0.12-0.40 → shrink aggressively.
+LLM_SHRINKAGE_PRIOR = 0.30  # LLM = 70%, market = 30% initially
+MIN_PLATT_SAMPLES = 50       # Minimum resolved forecasts before switching to Platt scaling
 
 SYSTEM_PROMPT = """You are an expert superforecaster trained in the methodology of Philip Tetlock's Good Judgment Project. You produce well-calibrated probability estimates for binary questions about future events.
 
@@ -80,6 +87,7 @@ Respond with ONLY this JSON structure:
 {{
   "probability": <float between 0.01 and 0.99>,
   "confidence": <float between 0.0 and 1.0, how confident you are in your estimate>,
+  "stake": <integer between 1 and 100, how large a bet you would place. 1=minimal conviction, 100=maximum conviction. Calibrate: only bet 80-100 when you would be shocked to be wrong>,
   "base_rate": <float, the historical base rate you used>,
   "adjustment_direction": "<string: 'up' or 'down' or 'none'>",
   "adjustment_magnitude": <float, how much you adjusted from base rate>,
@@ -112,8 +120,116 @@ def _format_time_to_resolution(market) -> str:
 
 def _build_prompt_hash(question: str, market_price: float) -> str:
     price_bucket = round(market_price, 2)
-    raw = f"llm_forecast_v2:{question}:{price_bucket}"
+    raw = f"llm_forecast_v3:{question}:{price_bucket}"
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _fit_platt_scaling(
+    raw_probs: list[float],
+    outcomes: list[float],
+    n_iter: int = 500,
+    lr: float = 0.05,
+) -> tuple[float, float]:
+    """Fit Platt scaling via gradient descent on logistic log-loss.
+
+    Maps raw LLM probabilities to calibrated probabilities using logistic
+    regression in logit space. Returns (slope, intercept).
+    """
+    probs = np.clip(np.array(raw_probs, dtype=float), 1e-7, 1 - 1e-7)
+    y = np.array(outcomes, dtype=float)
+    logit = np.log(probs / (1 - probs))
+
+    slope, intercept = 1.0, 0.0
+    for _ in range(n_iter):
+        pred = 1.0 / (1.0 + np.exp(-(slope * logit + intercept)))
+        err = pred - y
+        slope -= lr * float(np.mean(err * logit))
+        intercept -= lr * float(np.mean(err))
+    return float(slope), float(intercept)
+
+
+def _apply_platt(raw_prob: float, slope: float, intercept: float) -> float:
+    p = max(1e-7, min(1 - 1e-7, raw_prob))
+    logit = float(np.log(p / (1 - p)))
+    return float(1.0 / (1.0 + np.exp(-(slope * logit + intercept))))
+
+
+# Module-level Platt calibration cache (slope, intercept, last_loaded)
+_platt_params: tuple[float, float] | None = None
+_platt_loaded_at: datetime | None = None
+_PLATT_CACHE_HOURS = 6
+
+
+async def _debias_llm_probability(
+    raw_prob: float,
+    market_price: float,
+    session: AsyncSession,
+) -> float:
+    """Apply post-hoc calibration to LLM probability.
+
+    Two-stage approach:
+    1. With ≥50 resolved forecasts: Platt scaling (logistic calibration).
+    2. Without enough data: shrinkage toward market price to reduce overconfidence.
+
+    Research basis: KalshiBench 2025 shows even Claude Opus has ECE=0.12.
+    Shrinking by 30% toward the market price significantly reduces overconfidence.
+    """
+    global _platt_params, _platt_loaded_at
+
+    # Refresh calibration every N hours
+    needs_refresh = (
+        _platt_params is None or
+        _platt_loaded_at is None or
+        (datetime.utcnow() - _platt_loaded_at).total_seconds() > _PLATT_CACHE_HOURS * 3600
+    )
+
+    if needs_refresh:
+        try:
+            result = await session.execute(
+                select(AIAnalysis.structured_result, Market.resolution_value)
+                .join(Market, AIAnalysis.market_id == Market.id)
+                .where(
+                    AIAnalysis.analysis_type == "llm_forecast",
+                    AIAnalysis.structured_result.isnot(None),
+                    Market.resolution_value.isnot(None),
+                )
+                .limit(500)
+            )
+            rows = result.all()
+
+            samples = [
+                (float(sr["llm_probability"]), float(rv))
+                for sr, rv in rows
+                if sr and "llm_probability" in sr
+            ]
+
+            if len(samples) >= MIN_PLATT_SAMPLES:
+                probs = [s[0] for s in samples]
+                outcomes = [s[1] for s in samples]
+                slope, intercept = _fit_platt_scaling(probs, outcomes)
+                _platt_params = (slope, intercept)
+                _platt_loaded_at = datetime.utcnow()
+                logger.info(
+                    f"LLM calibration: Platt scaling fit on {len(samples)} samples "
+                    f"(slope={slope:.3f}, intercept={intercept:.3f})"
+                )
+            else:
+                _platt_params = None  # Not enough data yet
+                _platt_loaded_at = datetime.utcnow()
+                logger.debug(
+                    f"LLM calibration: only {len(samples)} resolved samples, "
+                    f"using shrinkage (need {MIN_PLATT_SAMPLES})"
+                )
+        except Exception as e:
+            logger.debug(f"Platt calibration load failed: {e}")
+
+    if _platt_params is not None:
+        calibrated = _apply_platt(raw_prob, _platt_params[0], _platt_params[1])
+    else:
+        # Shrinkage: LLM gets 70% weight, efficient market price gets 30%
+        calibrated = raw_prob * (1 - LLM_SHRINKAGE_PRIOR) + market_price * LLM_SHRINKAGE_PRIOR
+
+    return max(0.01, min(0.99, calibrated))
 
 
 async def _get_news_context(question: str, category: str) -> str:
@@ -177,36 +293,73 @@ async def forecast_market(
         news_context=news_context,
     )
 
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": settings.anthropic_api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-3-5-haiku-20241022",
-                    "max_tokens": 800,
-                    "system": SYSTEM_PROMPT,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+    last_exc: Exception | None = None
+    data: dict | None = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": settings.anthropic_api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": "claude-3-5-haiku-20241022",
+                        "max_tokens": 900,
+                        "system": SYSTEM_PROMPT,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            break  # Success
+        except httpx.HTTPStatusError as exc:
+            last_exc = exc
+            if exc.response.status_code in (429, 529):
+                import asyncio
+                wait = 5 * (attempt + 1)
+                logger.debug(f"Anthropic rate limit, retry {attempt + 1}/3 (wait {wait}s)")
+                await asyncio.sleep(wait)
+            else:
+                raise  # Non-retryable HTTP error
+        except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+            last_exc = exc
+            if attempt < 2:
+                import asyncio
+                await asyncio.sleep(2 ** attempt)
+            else:
+                raise
 
+    if data is None:
+        raise RuntimeError(f"Anthropic API failed after retries: {last_exc}")
+
+    try:
         response_text = data["content"][0]["text"]
         input_tokens = data.get("usage", {}).get("input_tokens", 0)
         output_tokens = data.get("usage", {}).get("output_tokens", 0)
 
         # Parse JSON response
         result = json.loads(response_text)
-        llm_prob = float(result["probability"])
-        llm_prob = max(0.01, min(0.99, llm_prob))
-        llm_confidence = float(result.get("confidence", 0.5))
+        raw_llm_prob = float(result["probability"])
+        raw_llm_prob = max(0.01, min(0.99, raw_llm_prob))
 
-        # Compute edge
+        # Apply post-hoc calibration (Platt scaling or shrinkage-toward-market)
+        llm_prob = await _debias_llm_probability(raw_llm_prob, market_price, session)
+
+        # Stake-based confidence: research shows LLM "bet size" is a better
+        # calibration signal than self-reported confidence (Going All-In, 2025).
+        # Stake 80-100 → ~99% accuracy; stake 1-20 → ~74% accuracy.
+        stake = int(result.get("stake", 50))
+        stake = max(1, min(100, stake))
+        stake_confidence = 0.3 + 0.7 * (stake / 100)
+
+        # Blend stake-based and self-reported confidence
+        self_conf = float(result.get("confidence", 0.5))
+        llm_confidence = 0.6 * stake_confidence + 0.4 * self_conf
+
+        # Compute edge using calibrated (debiased) probability
         direction, net_ev, fee_cost = _compute_directional_ev(llm_prob, market_price)
         kelly = compute_kelly(direction, llm_prob, market_price, fee_cost)
         raw_edge = abs(llm_prob - market_price)
@@ -215,6 +368,7 @@ async def forecast_market(
             "market_id": market.id,
             "strategy": "llm_forecast",
             "llm_probability": round(llm_prob, 4),
+            "raw_llm_probability": round(raw_llm_prob, 4),
             "market_price": round(market_price, 4),
             "raw_edge": round(raw_edge, 4),
             "direction": direction,
@@ -222,6 +376,7 @@ async def forecast_market(
             "fee_cost": round(fee_cost, 4),
             "kelly_fraction": round(kelly, 4),
             "confidence": round(llm_confidence, 3),
+            "stake": stake,
             "base_rate": result.get("base_rate"),
             "key_factors": result.get("key_factors", []),
             "scenarios": result.get("scenarios", []),
@@ -247,9 +402,6 @@ async def forecast_market(
 
     except json.JSONDecodeError as e:
         logger.warning(f"LLM forecast JSON parse failed for market {market.id}: {e}")
-        return None
-    except httpx.HTTPStatusError as e:
-        logger.warning(f"LLM API error for market {market.id}: {e.response.status_code}")
         return None
     except Exception as e:
         logger.error(f"LLM forecast failed for market {market.id}: {e}")

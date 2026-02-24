@@ -39,9 +39,44 @@ MIN_VOLUME_TOTAL = 10_000
 MIN_NET_EDGE = 0.03
 MIN_CORRELATION = 0.5  # Minimum correlation to consider markets related
 MIN_CLUSTER_SIZE = 2
-KEYWORD_SIMILARITY_THRESHOLD = 0.3  # Jaccard similarity for keyword clustering
+KEYWORD_SIMILARITY_THRESHOLD = 0.3   # Jaccard fallback threshold
+TFIDF_SIMILARITY_THRESHOLD = 0.25    # TF-IDF cosine similarity threshold
 PRICE_HISTORY_DAYS = 7
 MIN_PRICE_POINTS = 10  # Need >=10 overlapping price points for correlation
+
+
+def _build_tfidf_similarity_matrix(
+    markets: list,
+) -> Optional[np.ndarray]:
+    """Build a TF-IDF cosine similarity matrix for market questions.
+
+    TF-IDF captures word importance (rare shared terms = stronger match)
+    which is much better than Jaccard at finding semantically related markets.
+    Uses sklearn which is already in requirements.
+
+    Returns similarity matrix of shape (n_markets, n_markets), or None if sklearn
+    is unavailable.
+    """
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        questions = [m.question or "" for m in markets]
+        if len(questions) < 2:
+            return None
+
+        vectorizer = TfidfVectorizer(
+            min_df=1,
+            stop_words="english",
+            ngram_range=(1, 2),   # Unigrams + bigrams for better phrase matching
+            max_features=5000,
+        )
+        tfidf_matrix = vectorizer.fit_transform(questions)
+        sim_matrix = cosine_similarity(tfidf_matrix)
+        return sim_matrix
+    except Exception as e:
+        logger.debug(f"TF-IDF similarity failed: {e}")
+        return None
 
 
 def _extract_entity_keywords(text: str) -> set[str]:
@@ -66,10 +101,62 @@ def _jaccard_similarity(set_a: set, set_b: set) -> float:
 
 
 def cluster_markets_by_keywords(markets: list[Market]) -> dict[str, list[Market]]:
-    """Cluster markets by keyword similarity (greedy agglomerative).
+    """Cluster markets by semantic similarity (TF-IDF cosine or Jaccard fallback).
 
-    Groups markets that share enough keywords to be about the same topic.
+    TF-IDF cosine similarity finds semantically related markets much better
+    than raw Jaccard — e.g., "Trump tariffs" and "trade war" share few keywords
+    but are clearly related events that TF-IDF can detect through context.
     """
+    if len(markets) < MIN_CLUSTER_SIZE:
+        return {}
+
+    # Try TF-IDF cosine similarity first (sklearn required, already installed)
+    tfidf_matrix = _build_tfidf_similarity_matrix(markets)
+
+    if tfidf_matrix is not None:
+        return _cluster_by_tfidf(markets, tfidf_matrix)
+
+    # Fallback: original Jaccard keyword approach
+    return _cluster_by_jaccard(markets)
+
+
+def _cluster_by_tfidf(
+    markets: list[Market],
+    sim_matrix: np.ndarray,
+) -> dict[str, list[Market]]:
+    """Greedy agglomerative clustering using pre-computed TF-IDF similarity matrix."""
+    n = len(markets)
+    clusters: dict[str, list[Market]] = {}
+    assigned: set[int] = set()
+    cluster_id = 0
+
+    for i in range(n):
+        if i in assigned:
+            continue
+
+        cluster_name = f"cluster_{cluster_id}"
+        clusters[cluster_name] = [markets[i]]
+        assigned.add(i)
+
+        for j in range(i + 1, n):
+            if j in assigned:
+                continue
+            if float(sim_matrix[i, j]) >= TFIDF_SIMILARITY_THRESHOLD:
+                clusters[cluster_name].append(markets[j])
+                assigned.add(j)
+
+        if len(clusters[cluster_name]) >= MIN_CLUSTER_SIZE:
+            cluster_id += 1
+        else:
+            for m in clusters[cluster_name]:
+                assigned.discard(markets.index(m))
+            del clusters[cluster_name]
+
+    return clusters
+
+
+def _cluster_by_jaccard(markets: list[Market]) -> dict[str, list[Market]]:
+    """Original Jaccard keyword similarity clustering (fallback)."""
     market_keywords = {}
     for m in markets:
         keywords = _extract_entity_keywords(m.question or "")
@@ -90,7 +177,7 @@ def cluster_markets_by_keywords(markets: list[Market]) -> dict[str, list[Market]
         clusters[cluster_name] = [m_a]
         assigned.add(mid_a)
 
-        for mid_b in market_ids[i+1:]:
+        for mid_b in market_ids[i + 1:]:
             if mid_b in assigned:
                 continue
             _, kw_b = market_keywords[mid_b]
@@ -102,7 +189,6 @@ def cluster_markets_by_keywords(markets: list[Market]) -> dict[str, list[Market]
         if len(clusters[cluster_name]) >= MIN_CLUSTER_SIZE:
             cluster_id += 1
         else:
-            # Single-market cluster, remove it
             for m in clusters[cluster_name]:
                 assigned.discard(m.id)
             del clusters[cluster_name]

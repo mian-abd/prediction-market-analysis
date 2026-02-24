@@ -3,28 +3,27 @@
 Research basis:
 - Polymarket on Polygon: ALL transactions are publicly visible on-chain.
 - Top traders achieve 65-75% win rates vs 45-50% average (PolyTrack research).
-- PolyRadar tracks 183 "smart wallets" with 7-layer conviction scoring.
-- Polymarket Insider Tracker detects pre-event informed trading patterns.
+- Analysis of 46,945 wallets: top 1% capture enormous profits while majority break even.
+- "Zombie trade" bias: published win rates are inflated by unclosed positions,
+  so we filter strictly for realised P&L, not open position count.
 
-Strategy:
-- Build and maintain a database of wallet performance from leaderboard data
-- Track which markets the best traders are positioning in
-- When multiple proven-profitable wallets converge on the same market,
-  follow their directional conviction.
-- Weight signals by wallet track record (higher PnL + higher win rate = more weight).
+Strategy (real on-chain implementation):
+1. Query Polymarket PNL subgraph for wallets with >$5K realised profit.
+2. Every 5 minutes, query Activity subgraph for recent trades by these wallets.
+3. When ≥2 qualified wallets take the same side in the same market within 1 hour,
+   generate a directional signal weighted by whale quality scores.
 
-This strategy uses the EXISTING trader_profiles and copy trading infrastructure
-but turns it into a systematic signal generator rather than just a copy engine.
+This replaces the previous volume-surge heuristic with actual on-chain evidence.
 """
 
 import logging
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Market, TraderProfile
+from db.models import Market
 from ml.strategies.ensemble_edge_detector import (
     POLYMARKET_FEE_RATE, SLIPPAGE_BUFFER, compute_kelly,
 )
@@ -33,104 +32,174 @@ logger = logging.getLogger(__name__)
 
 MIN_VOLUME_TOTAL = 10_000
 MIN_NET_EDGE = 0.03
-MIN_TRADER_PNL = 5_000  # Only follow traders with >$5K profit
-MIN_TRADER_WIN_RATE = 0.55  # >55% win rate
-MIN_TRADER_TRADES = 20  # Enough history to be meaningful
-MIN_SMART_WALLETS = 2  # Need >=2 smart wallets agreeing
+MIN_WHALE_USD_SIZE = 500    # Minimum trade size to count ($500 minimum bet)
+MAX_EDGE_ADJUSTMENT = 0.08  # Maximum price adjustment implied by whale consensus
 
 
-async def get_smart_wallets(
-    session: AsyncSession,
-    min_pnl: float = MIN_TRADER_PNL,
-    min_win_rate: float = MIN_TRADER_WIN_RATE,
-    min_trades: int = MIN_TRADER_TRADES,
-) -> list[dict]:
-    """Get list of proven-profitable wallets from trader profiles.
+async def _build_token_to_market_map(session: AsyncSession) -> dict[str, tuple[int, str]]:
+    """Build a mapping from Polymarket token_id -> (market_id, 'yes'|'no').
 
-    These are wallets that meet our "smart money" criteria:
-    - High PnL (>$5K)
-    - High win rate (>55%)
-    - Enough trades to be statistically meaningful (>20)
+    This lets us match on-chain token trades to markets in our DB.
     """
     result = await session.execute(
-        select(TraderProfile).where(
-            TraderProfile.total_pnl >= min_pnl,
-            TraderProfile.win_rate >= min_win_rate,
-            TraderProfile.total_trades >= min_trades,
-        ).order_by(TraderProfile.total_pnl.desc())
+        select(Market.id, Market.token_id_yes, Market.token_id_no).where(
+            Market.is_active == True,  # noqa: E711
+        )
     )
-    traders = result.scalars().all()
-
-    return [
-        {
-            "wallet": t.user_id,
-            "display_name": t.display_name,
-            "pnl": t.total_pnl,
-            "win_rate": t.win_rate,
-            "trades": t.total_trades,
-            "roi": t.roi_pct,
-            "risk_score": t.risk_score,
-            "quality_score": _compute_wallet_quality(t),
-        }
-        for t in traders
-    ]
-
-
-def _compute_wallet_quality(trader: TraderProfile) -> float:
-    """Compute wallet quality score (0-1) for signal weighting.
-
-    Factors:
-    - PnL magnitude (more profit = more evidence of skill)
-    - Win rate (higher = more consistent)
-    - Trade count (more trades = more statistical significance)
-    - ROI (efficiency of capital)
-    """
-    # PnL component (log scale, 0-0.3)
-    import math
-    pnl_score = min(0.3, math.log1p(max(0, trader.total_pnl)) / 40)
-
-    # Win rate component (0-0.3)
-    wr = trader.win_rate or 0
-    wr_score = max(0, (wr - 0.5) / 0.3) * 0.3  # 50% → 0, 80% → 0.3
-
-    # Trade count component (0-0.2)
-    trades = trader.total_trades or 0
-    trade_score = min(0.2, trades / 500)  # 100 trades → 0.04, 500+ → 0.2
-
-    # ROI component (0-0.2)
-    roi = trader.roi_pct or 0
-    roi_score = min(0.2, max(0, roi) / 500)  # 100% ROI → 0.04, 500%+ → 0.2
-
-    return round(pnl_score + wr_score + trade_score + roi_score, 3)
+    token_map: dict[str, tuple[int, str]] = {}
+    for market_id, token_yes, token_no in result.all():
+        if token_yes:
+            token_map[str(token_yes).lower()] = (market_id, "yes")
+        if token_no:
+            token_map[str(token_no).lower()] = (market_id, "no")
+    return token_map
 
 
 async def analyze_smart_money_positioning(
     session: AsyncSession,
 ) -> list[dict]:
-    """Analyze smart money positioning across active markets.
+    """Generate signals from real on-chain whale activity via Polymarket subgraphs.
 
-    Since we don't have real-time on-chain trade data yet, this uses
-    the existing copy trading infrastructure to identify markets where
-    top traders are active.
-
-    Returns signals for markets where multiple smart wallets show
-    directional conviction.
+    Falls back to the volume-surge heuristic if the subgraph is unavailable.
     """
-    smart_wallets = await get_smart_wallets(session)
-    if len(smart_wallets) < MIN_SMART_WALLETS:
-        logger.info(f"Only {len(smart_wallets)} smart wallets found (need {MIN_SMART_WALLETS}+)")
-        return []
+    try:
+        from data_pipeline.collectors.polymarket_subgraph import (
+            get_whale_market_signals,
+            get_cached_smart_wallets,
+        )
 
-    logger.info(f"Smart money analysis: {len(smart_wallets)} qualified wallets")
+        # Build token → market mapping for on-chain trade resolution
+        token_to_market = await _build_token_to_market_map(session)
 
-    # For now, generate signals based on smart money concentration metrics:
-    # Markets where the smart money profile data indicates high conviction.
-    # Phase 2: Add real-time Polygon WebSocket trade monitoring.
+        if not token_to_market:
+            logger.info("Smart money: no token IDs in DB, falling back to heuristic")
+            return await _heuristic_smart_money(session)
 
+        # Get on-chain whale signals
+        whale_signals = await get_whale_market_signals(token_to_market)
+
+        if not whale_signals:
+            logger.info("Smart money: no on-chain signals found, trying heuristic fallback")
+            return await _heuristic_smart_money(session)
+
+        return await _convert_whale_signals_to_edges(session, whale_signals)
+
+    except Exception as e:
+        logger.warning(f"Smart money on-chain analysis failed ({e}), using heuristic fallback")
+        return await _heuristic_smart_money(session)
+
+
+async def _convert_whale_signals_to_edges(
+    session: AsyncSession,
+    whale_signals: list[dict],
+) -> list[dict]:
+    """Convert raw whale signals into tradeable edges with EV/Kelly computation."""
     result = await session.execute(
         select(Market).where(
             Market.is_active == True,  # noqa: E711
-            Market.price_yes != None,  # noqa: E711
+            Market.price_yes.isnot(None),
+            Market.volume_total >= MIN_VOLUME_TOTAL,
+        )
+    )
+    market_map = {m.id: m for m in result.scalars().all()}
+
+    edges_found = []
+
+    for ws in whale_signals:
+        market_id = ws["market_id"]
+        market = market_map.get(market_id)
+        if not market:
+            continue
+
+        price = market.price_yes or 0.5
+        direction = ws["direction"]
+        whale_count = ws["whale_count"]
+        avg_entry = ws["avg_entry_price"]
+        confidence = ws["confidence"]
+
+        # Estimate implied probability from whale entry prices
+        # Whales paid avg_entry_price; if avg > current price, they expect YES
+        # Edge estimate: whales have insider-like information advantage
+        if direction == "buy_yes":
+            # Whales buying YES → they believe true prob > current price
+            implied_prob = min(0.95, price + _estimate_whale_edge(
+                avg_entry, price, whale_count, direction="up"
+            ))
+            p, q = implied_prob, price
+            fee = p * POLYMARKET_FEE_RATE * (1 - q) + SLIPPAGE_BUFFER
+            net_ev = p * (1 - q) - (1 - p) * q - fee
+        else:  # buy_no
+            # Whales buying NO → they believe true prob < current price
+            implied_prob = max(0.05, price - _estimate_whale_edge(
+                avg_entry, price, whale_count, direction="down"
+            ))
+            p, q = implied_prob, price
+            fee = (1 - p) * POLYMARKET_FEE_RATE * q + SLIPPAGE_BUFFER
+            net_ev = (1 - p) * q - p * (1 - q) - fee
+
+        if net_ev < MIN_NET_EDGE:
+            continue
+
+        kelly = compute_kelly(direction, implied_prob, price, fee)
+
+        edges_found.append({
+            "market_id": market_id,
+            "strategy": "smart_money",
+            "question": market.question,
+            "category": market.normalized_category or market.category,
+            "direction": direction,
+            "implied_prob": round(implied_prob, 4),
+            "market_price": round(price, 4),
+            "raw_edge": round(abs(implied_prob - price), 4),
+            "net_ev": round(net_ev, 4),
+            "fee_cost": round(fee, 4),
+            "kelly_fraction": round(kelly, 4),
+            "confidence": round(confidence, 3),
+            "whale_count": whale_count,
+            "avg_whale_entry": round(avg_entry, 4),
+            "total_whale_size_usd": ws.get("total_size_usd", 0),
+            "data_source": "on_chain",
+        })
+
+        logger.info(
+            f"Smart money (on-chain): {market.question[:50]}... | "
+            f"{whale_count} whales → {direction} | "
+            f"EV: {net_ev:.1%} | confidence: {confidence:.2f}"
+        )
+
+    logger.info(
+        f"Smart money on-chain scan: {len(whale_signals)} signals → "
+        f"{len(edges_found)} tradeable edges"
+    )
+    return edges_found
+
+
+def _estimate_whale_edge(
+    avg_entry: float,
+    current_price: float,
+    whale_count: int,
+    direction: str,
+) -> float:
+    """Estimate edge implied by whale consensus.
+
+    Higher whale count and larger divergence from current price → stronger edge.
+    Capped at MAX_EDGE_ADJUSTMENT to prevent overestimation.
+    """
+    price_divergence = abs(avg_entry - current_price)
+    count_multiplier = min(2.0, 1.0 + (whale_count - 2) * 0.15)  # Scales with whale count
+    edge = min(MAX_EDGE_ADJUSTMENT, price_divergence * count_multiplier * 0.5)
+    return max(0.01, edge)
+
+
+async def _heuristic_smart_money(session: AsyncSession) -> list[dict]:
+    """Fallback: volume-surge heuristic when on-chain data unavailable.
+
+    This is the original implementation, retained as a safety net.
+    """
+    result = await session.execute(
+        select(Market).where(
+            Market.is_active == True,  # noqa: E711
+            Market.price_yes.isnot(None),
             Market.volume_total >= MIN_VOLUME_TOTAL,
         ).order_by(Market.volume_24h.desc()).limit(200)
     )
@@ -138,47 +207,32 @@ async def analyze_smart_money_positioning(
 
     edges_found = []
 
-    # Compute "smart money heat" score for each market category
-    # Categories where smart money concentrates tend to be more predictable
-    total_smart_pnl = sum(w["pnl"] for w in smart_wallets)
-    avg_smart_wr = sum(w["win_rate"] for w in smart_wallets) / max(len(smart_wallets), 1)
-
     for market in markets:
         price = market.price_yes or 0.5
         vol_24h = float(market.volume_24h or 0)
         vol_total = float(market.volume_total or 0)
 
-        # Heuristic: markets with very high volume relative to their category
-        # are more likely to attract smart money.
-        # Volume concentration signals informed trading.
         if vol_24h < 5000:
             continue
 
-        # Check if volume spike indicates smart money activity
-        expected_daily = vol_total / max(30, 1)  # Assume 30-day market
+        expected_daily = vol_total / max(30, 1)
         volume_surge = vol_24h / max(expected_daily, 1)
 
-        if volume_surge < 1.5:
-            continue  # No unusual activity
+        if volume_surge < 2.0:
+            continue
+        if 0.20 <= price <= 0.80 and volume_surge < 3.0:
+            continue
 
-        # Volume surge on extreme prices = potential smart money
-        if 0.15 <= price <= 0.85 and volume_surge < 3.0:
-            continue  # Need stronger signal in the middle range
-
-        # Estimate direction from price movement
-        # If price is moving toward an extreme + high volume → informed buying
-        # (This is a heuristic; real implementation needs on-chain data)
         if price > 0.70 and volume_surge > 2.0:
             direction = "buy_yes"
-            implied_prob = min(0.95, price + min(0.08, (volume_surge - 1) * 0.02))
+            implied_prob = min(0.95, price + min(0.06, (volume_surge - 1) * 0.015))
         elif price < 0.30 and volume_surge > 2.0:
             direction = "buy_no"
-            implied_prob = max(0.05, price - min(0.08, (volume_surge - 1) * 0.02))
+            implied_prob = max(0.05, price - min(0.06, (volume_surge - 1) * 0.015))
         else:
             continue
 
-        p = implied_prob
-        q = price
+        p, q = implied_prob, price
         if direction == "buy_yes":
             fee = p * POLYMARKET_FEE_RATE * (1 - q) + SLIPPAGE_BUFFER
             net_ev = p * (1 - q) - (1 - p) * q - fee
@@ -190,12 +244,9 @@ async def analyze_smart_money_positioning(
             continue
 
         kelly = compute_kelly(direction, implied_prob, price, fee)
+        surge_confidence = min(0.4, (volume_surge - 1.5) / 12)
 
-        # Confidence based on volume surge magnitude
-        surge_confidence = min(0.5, (volume_surge - 1.5) / 10)
-        base_confidence = 0.3 + surge_confidence
-
-        signal = {
+        edges_found.append({
             "market_id": market.id,
             "strategy": "smart_money",
             "question": market.question,
@@ -207,12 +258,10 @@ async def analyze_smart_money_positioning(
             "net_ev": round(net_ev, 4),
             "fee_cost": round(fee, 4),
             "kelly_fraction": round(kelly, 4),
-            "confidence": round(base_confidence, 3),
+            "confidence": round(0.25 + surge_confidence, 3),  # Lower confidence for heuristic
             "volume_surge": round(volume_surge, 2),
-            "smart_wallet_count": len(smart_wallets),
-            "avg_smart_win_rate": round(avg_smart_wr, 3),
-        }
-        edges_found.append(signal)
+            "data_source": "heuristic",
+        })
 
-    logger.info(f"Smart money scan: {len(markets)} markets, {len(edges_found)} signals")
+    logger.info(f"Smart money heuristic: {len(markets)} markets, {len(edges_found)} signals")
     return edges_found

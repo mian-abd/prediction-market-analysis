@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 GDELT_API_BASE = settings.gdelt_api_url or "https://api.gdeltproject.org/api/v2"
 
 
+def _is_retryable(exc: BaseException) -> bool:
+    """Determine whether an exception warrants a retry."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in (429, 500, 502, 503, 504)
+    return isinstance(exc, (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError))
+
+
 async def search_news(
     query: str,
     max_records: int = 10,
@@ -48,33 +55,41 @@ async def search_news(
         "sort": "DateDesc",  # Most recent first
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
 
-        articles = data.get("articles", [])
-        logger.info(f"GDELT search '{query}' returned {len(articles)} articles")
+            articles = data.get("articles", [])
+            logger.info(f"GDELT search '{query}' returned {len(articles)} articles")
 
-        # Parse GDELT response
-        parsed_articles = []
-        for art in articles:
-            parsed_articles.append({
-                "url": art.get("url"),
-                "title": art.get("title"),
-                "domain": art.get("domain"),
-                "language": art.get("language", "en"),
-                "publish_date": art.get("seendate"),  # YYYYMMDDHHMMSS format
-                "tone": float(art.get("tone", 0)),  # -10 (negative) to +10 (positive)
-                "social_image": art.get("socialimage"),
-            })
+            return [
+                {
+                    "url": art.get("url"),
+                    "title": art.get("title"),
+                    "domain": art.get("domain"),
+                    "language": art.get("language", "en"),
+                    "publish_date": art.get("seendate"),
+                    "tone": float(art.get("tone", 0)),
+                    "social_image": art.get("socialimage"),
+                }
+                for art in articles
+            ]
 
-        return parsed_articles
+        except Exception as exc:
+            last_exc = exc
+            if not _is_retryable(exc) or attempt == 2:
+                break
+            import asyncio
+            wait = 2 ** attempt  # 1s, 2s, 4s
+            logger.debug(f"GDELT retry {attempt + 1}/3 for '{query}' (wait {wait}s): {exc}")
+            await asyncio.sleep(wait)
 
-    except Exception as e:
-        logger.error(f"GDELT search failed for '{query}': {e}")
-        return []
+    logger.error(f"GDELT search failed for '{query}' after retries: {last_exc}")
+    return []
 
 
 async def get_category_news(category: str, max_articles: int = 5) -> list[dict]:
