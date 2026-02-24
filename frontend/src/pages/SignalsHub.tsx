@@ -15,11 +15,19 @@ import {
   CheckCircle,
   XCircle,
   BarChart3,
+  Brain,
+  Target,
+  Newspaper,
+  Clock,
+  Activity,
+  Users,
+  Network,
+  Layers,
 } from 'lucide-react'
 import apiClient from '../api/client'
 import { Skeleton } from '../components/LoadingSkeleton'
 
-type SignalTab = 'all' | 'ml' | 'arbitrage' | 'elo'
+type SignalTab = 'all' | 'ml' | 'arbitrage' | 'elo' | 'strategies'
 
 interface EnsembleEdge {
   id: number
@@ -64,17 +72,39 @@ interface ArbOpp {
   estimated_profit_usd: number
 }
 
+interface NewStrategySignal {
+  id: number
+  market_id: number
+  market_question: string
+  market_slug: string | null
+  strategy: string
+  detected_at: string | null
+  direction: string
+  implied_prob: number | null
+  market_price: number
+  raw_edge_pct: number
+  net_ev_pct: number
+  kelly_fraction: number
+  confidence: number
+  quality_tier: string | null
+  metadata: Record<string, unknown> | null
+}
+
 interface SignalsResponse {
   ensemble_edges: EnsembleEdge[]
   elo_edges: EloEdge[]
   arbitrage_opportunities: ArbOpp[]
+  new_strategy_signals: NewStrategySignal[]
+  strategy_breakdown: Record<string, number>
   summary: {
     total_signals: number
     ensemble_count: number
     elo_count: number
     arbitrage_count: number
+    new_strategy_count: number
     high_confidence_count: number
     avg_kelly_fraction: number
+    strategies_active: string[]
   }
 }
 
@@ -83,6 +113,17 @@ const TIER_COLORS: Record<string, { bg: string; text: string; border: string }> 
   medium: { bg: 'rgba(196,162,77,0.1)', text: 'var(--accent)', border: 'rgba(196,162,77,0.3)' },
   low: { bg: 'rgba(255,255,255,0.03)', text: 'var(--text-3)', border: 'var(--border)' },
   speculative: { bg: 'rgba(207,102,121,0.08)', text: 'var(--red)', border: 'rgba(207,102,121,0.25)' },
+}
+
+const STRATEGY_META: Record<string, { label: string; icon: typeof Zap; color: string }> = {
+  llm_forecast: { label: 'LLM', icon: Brain, color: 'var(--purple, #a78bfa)' },
+  longshot_bias: { label: 'Longshot', icon: Target, color: 'var(--accent)' },
+  news_catalyst: { label: 'News', icon: Newspaper, color: 'var(--blue)' },
+  resolution_convergence: { label: 'Theta', icon: Clock, color: 'var(--green)' },
+  orderflow: { label: 'Flow', icon: Activity, color: '#f59e0b' },
+  smart_money: { label: 'Whale', icon: Users, color: '#ec4899' },
+  market_clustering: { label: 'Cluster', icon: Network, color: '#06b6d4' },
+  consensus: { label: 'Consensus', icon: Shield, color: 'var(--green)' },
 }
 
 function getModelAgreement(preds: Record<string, number> | null, direction: string): { agree: boolean; count: number; total: number } {
@@ -141,12 +182,14 @@ export default function SignalsHub() {
   const ensemble = data?.ensemble_edges ?? []
   const elo = data?.elo_edges ?? []
   const arb = data?.arbitrage_opportunities ?? []
+  const newSignals = data?.new_strategy_signals ?? []
   const summary = data?.summary
 
   const tabs: { key: SignalTab; label: string; count: number; icon: typeof Zap }[] = [
     { key: 'all', label: 'All Signals', count: summary?.total_signals ?? 0, icon: TrendingUp },
     { key: 'ml', label: 'ML Ensemble', count: summary?.ensemble_count ?? 0, icon: Zap },
     { key: 'elo', label: 'Elo Sports', count: summary?.elo_count ?? 0, icon: Trophy },
+    { key: 'strategies', label: 'New Strategies', count: summary?.new_strategy_count ?? 0, icon: Layers },
     { key: 'arbitrage', label: 'Arbitrage', count: summary?.arbitrage_count ?? 0, icon: ArrowLeftRight },
   ]
 
@@ -184,7 +227,7 @@ export default function SignalsHub() {
           { label: 'Total Signals', value: summary?.total_signals ?? 0, color: 'var(--text)' },
           { label: 'High Confidence', value: summary?.high_confidence_count ?? 0, color: 'var(--green)' },
           { label: 'Avg Kelly', value: `${((summary?.avg_kelly_fraction ?? 0) * 100).toFixed(1)}%`, color: 'var(--accent)' },
-          { label: 'Strategies', value: [ensemble.length > 0, elo.length > 0, arb.length > 0].filter(Boolean).length, color: 'var(--blue)' },
+          { label: 'Strategies', value: (summary?.strategies_active?.length ?? 0) + [ensemble.length > 0, elo.length > 0, arb.length > 0].filter(Boolean).length, color: 'var(--blue)' },
         ].map((item) => (
           <div key={item.label} className="card p-4">
             <p className="text-[10px] font-medium uppercase tracking-wide mb-1" style={{ color: 'var(--text-3)' }}>
@@ -389,6 +432,99 @@ export default function SignalsHub() {
                       <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Confidence</p>
                       <p className="text-[13px] font-mono" style={{ color: 'var(--text-2)' }}>
                         {(s.elo_confidence * 100).toFixed(0)}%
+                      </p>
+                    </div>
+                    <div className="ml-auto flex-shrink-0">
+                      <ChevronRight
+                        className="h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity"
+                        style={{ color: 'var(--text-3)' }}
+                      />
+                    </div>
+                  </div>
+                </Link>
+              )
+            })}
+
+            {/* New Strategy Signals */}
+            {(activeTab === 'all' || activeTab === 'strategies') && newSignals.map((s) => {
+              const meta = STRATEGY_META[s.strategy] ?? { label: s.strategy, icon: Zap, color: 'var(--text-3)' }
+              const StratIcon = meta.icon
+              const isBuyYes = s.direction === 'buy_yes'
+              const dirColor = isBuyYes ? 'var(--green)' : 'var(--red)'
+              const DirIcon = isBuyYes ? ArrowUpRight : ArrowDownRight
+              const tier = TIER_COLORS[s.quality_tier ?? 'medium'] ?? TIER_COLORS.medium
+
+              return (
+                <Link
+                  key={`strat-${s.id}`}
+                  to={`/markets/${s.market_id}`}
+                  className="card card-hover p-4 block group relative"
+                  style={{ textDecoration: 'none', borderLeft: `3px solid ${meta.color}` }}
+                >
+                  <div className="flex items-center gap-2 mb-2 flex-wrap">
+                    <span
+                      className="signal-badge"
+                      style={{ background: `${meta.color}18`, color: meta.color }}
+                    >
+                      <StratIcon className="h-3 w-3" /> {meta.label}
+                    </span>
+                    {s.quality_tier && (
+                      <span
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold"
+                        style={{ background: tier.bg, color: tier.text, border: `1px solid ${tier.border}` }}
+                      >
+                        {s.quality_tier}
+                      </span>
+                    )}
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold"
+                      style={{ background: isBuyYes ? 'rgba(76,175,112,0.1)' : 'rgba(207,102,121,0.1)', color: dirColor }}
+                    >
+                      <DirIcon className="h-3 w-3" />
+                      {isBuyYes ? 'BUY YES' : 'BUY NO'}
+                    </span>
+                    {s.detected_at && (
+                      <span className="text-[10px] ml-auto" style={{ color: 'var(--text-3)' }}>
+                        {timeAgo(s.detected_at)}
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-[14px] font-medium truncate mb-2" style={{ color: 'var(--text)' }}>
+                    {s.market_question}
+                  </p>
+
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <div className="text-center">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Net EV</p>
+                      <p className="text-[15px] font-bold font-mono" style={{ color: 'var(--green)' }}>
+                        +{s.net_ev_pct.toFixed(1)}%
+                      </p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Kelly</p>
+                      <p className="text-[15px] font-bold font-mono" style={{ color: 'var(--accent)' }}>
+                        {(s.kelly_fraction * 100).toFixed(1)}%
+                      </p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Confidence</p>
+                      <p className="text-[15px] font-bold font-mono" style={{ color: 'var(--text)' }}>
+                        {((s.confidence ?? 0) * 100).toFixed(0)}%
+                      </p>
+                    </div>
+                    {s.implied_prob != null && (
+                      <div className="text-center">
+                        <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Model</p>
+                        <p className="text-[13px] font-mono" style={{ color: 'var(--text-2)' }}>
+                          {(s.implied_prob * 100).toFixed(1)}%
+                        </p>
+                      </div>
+                    )}
+                    <div className="text-center">
+                      <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>Market</p>
+                      <p className="text-[13px] font-mono" style={{ color: 'var(--text-2)' }}>
+                        {(s.market_price * 100).toFixed(1)}%
                       </p>
                     </div>
                     <div className="ml-auto flex-shrink-0">

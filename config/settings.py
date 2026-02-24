@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     elo_max_kelly: float = 0.02  # Maximum Kelly fraction (2%)
     elo_scan_interval_sec: int = 600  # Scan every 10 minutes
 
+    # New strategies
+    llm_forecast_enabled: bool = True
+    llm_forecast_max_markets: int = 30
+    llm_forecast_interval_sec: int = 1800  # Every 30 min
+    longshot_bias_enabled: bool = True
+    news_catalyst_enabled: bool = True
+    news_catalyst_interval_sec: int = 900  # Every 15 min
+    resolution_convergence_enabled: bool = True
+    orderflow_enabled: bool = True
+    smart_money_enabled: bool = True
+    market_clustering_enabled: bool = True
+    market_clustering_interval_sec: int = 3600  # Every hour
+
     # Data retention (hot/cold split)
     # cleanup_enabled=False by default: never auto-delete without first running
     # scripts/export_archive_to_local.py to archive data locally.

@@ -42,3 +42,4 @@ redis[asyncio]>=5.0.0  # For real-time price cache and arbitrage detection
 
 # Utilities
 python-dateutil==2.9.0
+tenacity>=8.2.0  # Exponential backoff retries for external API calls

@@ -745,6 +745,266 @@ async def cleanup_realtime_streams():
         logger.error(f"Stream cleanup error: {e}")
 
 
+# ── New Strategy Scans ───────────────────────────────────────────────
+
+async def scan_new_strategies():
+    """Run all new strategy scans and persist signals to unified strategy_signals table."""
+    from config.settings import settings
+    from db.models import StrategySignal
+    from datetime import timedelta
+
+    logger.info("Starting new strategy scans...")
+
+    async with async_session() as session:
+        # Expire old strategy signals (>6 hours)
+        cutoff = datetime.utcnow() - timedelta(hours=6)
+        from sqlalchemy import update as sa_update
+        await session.execute(
+            sa_update(StrategySignal).where(
+                StrategySignal.expired_at == None,  # noqa: E711
+                StrategySignal.detected_at < cutoff,
+            ).values(expired_at=datetime.utcnow())
+        )
+        await session.commit()
+
+    total_signals = 0
+
+    # 1. Favorite-Longshot Bias (always run, no API cost)
+    if settings.longshot_bias_enabled:
+        try:
+            from ml.strategies.longshot_bias import scan_longshot_bias
+            async with async_session() as session:
+                edges = await scan_longshot_bias(session)
+                for edge in edges:
+                    sig = StrategySignal(
+                        market_id=edge["market_id"],
+                        strategy="longshot_bias",
+                        direction=edge["direction"],
+                        implied_prob=edge.get("true_prob"),
+                        market_price=edge["market_price"],
+                        raw_edge=edge.get("raw_edge"),
+                        net_ev=edge["net_ev"],
+                        fee_cost=edge.get("fee_cost", 0),
+                        kelly_fraction=edge.get("kelly_fraction"),
+                        confidence=edge.get("confidence"),
+                        quality_tier="high" if edge["net_ev"] >= 0.05 else "medium",
+                        signal_metadata={"bias_type": edge.get("bias_type"), "time_mult": edge.get("time_horizon_multiplier")},
+                    )
+                    session.add(sig)
+                await session.commit()
+                total_signals += len(edges)
+        except Exception as e:
+            logger.error(f"Longshot bias scan failed: {e}")
+
+    # 2. Resolution Convergence (no API cost)
+    if settings.resolution_convergence_enabled:
+        try:
+            from ml.strategies.resolution_convergence import scan_resolution_convergence
+            async with async_session() as session:
+                edges = await scan_resolution_convergence(session)
+                for edge in edges:
+                    sig = StrategySignal(
+                        market_id=edge["market_id"],
+                        strategy="resolution_convergence",
+                        direction=edge["direction"],
+                        implied_prob=edge.get("true_prob"),
+                        market_price=edge["market_price"],
+                        raw_edge=edge.get("raw_edge"),
+                        net_ev=edge["net_ev"],
+                        fee_cost=edge.get("fee_cost", 0),
+                        kelly_fraction=edge.get("kelly_fraction"),
+                        confidence=edge.get("confidence"),
+                        quality_tier=edge.get("quality_tier", "medium"),
+                        signal_metadata={"hours_to_resolution": edge.get("hours_to_resolution"), "time_factor": edge.get("time_factor")},
+                    )
+                    session.add(sig)
+                await session.commit()
+                total_signals += len(edges)
+        except Exception as e:
+            logger.error(f"Resolution convergence scan failed: {e}")
+
+    # 3. Order Flow Analysis (no API cost, uses existing orderbook data)
+    if settings.orderflow_enabled:
+        try:
+            from ml.strategies.orderflow_analyzer import scan_orderflow_signals
+            async with async_session() as session:
+                edges = await scan_orderflow_signals(session)
+                for edge in edges:
+                    sig = StrategySignal(
+                        market_id=edge["market_id"],
+                        strategy="orderflow",
+                        direction=edge["direction"],
+                        implied_prob=edge.get("implied_prob"),
+                        market_price=edge["market_price"],
+                        raw_edge=edge.get("raw_edge"),
+                        net_ev=edge["net_ev"],
+                        fee_cost=edge.get("fee_cost", 0),
+                        kelly_fraction=edge.get("kelly_fraction"),
+                        confidence=edge.get("confidence"),
+                        quality_tier="medium",
+                        signal_metadata=edge.get("flow_analysis"),
+                    )
+                    session.add(sig)
+                await session.commit()
+                total_signals += len(edges)
+        except Exception as e:
+            logger.error(f"Orderflow scan failed: {e}")
+
+    # 4. Smart Money (no API cost, uses existing trader data)
+    if settings.smart_money_enabled:
+        try:
+            from ml.strategies.smart_money import analyze_smart_money_positioning
+            async with async_session() as session:
+                edges = await analyze_smart_money_positioning(session)
+                for edge in edges:
+                    sig = StrategySignal(
+                        market_id=edge["market_id"],
+                        strategy="smart_money",
+                        direction=edge["direction"],
+                        implied_prob=edge.get("implied_prob"),
+                        market_price=edge["market_price"],
+                        raw_edge=edge.get("raw_edge"),
+                        net_ev=edge["net_ev"],
+                        fee_cost=edge.get("fee_cost", 0),
+                        kelly_fraction=edge.get("kelly_fraction"),
+                        confidence=edge.get("confidence"),
+                        quality_tier="medium",
+                        signal_metadata={"volume_surge": edge.get("volume_surge"), "smart_wallets": edge.get("smart_wallet_count")},
+                    )
+                    session.add(sig)
+                await session.commit()
+                total_signals += len(edges)
+        except Exception as e:
+            logger.error(f"Smart money scan failed: {e}")
+
+    # Run consensus scan after all individual strategies
+    try:
+        from ml.strategies.signal_consensus import compute_signal_consensus, persist_consensus_signals
+        async with async_session() as cons_session:
+            consensus = await compute_signal_consensus(cons_session)
+            if consensus:
+                await persist_consensus_signals(cons_session, consensus)
+                total_signals += len(consensus)
+    except Exception as e:
+        logger.error(f"Consensus scan failed: {e}")
+
+    logger.info(f"New strategy scans complete: {total_signals} total signals")
+    return total_signals
+
+
+async def scan_news_strategy():
+    """Run news catalyst scan (separate due to API rate limits)."""
+    from config.settings import settings
+    from db.models import StrategySignal
+
+    if not settings.news_catalyst_enabled:
+        return
+
+    try:
+        from ml.strategies.news_catalyst import scan_news_catalysts
+        async with async_session() as session:
+            edges = await scan_news_catalysts(session)
+            for edge in edges:
+                sig = StrategySignal(
+                    market_id=edge["market_id"],
+                    strategy="news_catalyst",
+                    direction=edge["direction"],
+                    implied_prob=edge.get("implied_prob"),
+                    market_price=edge["market_price"],
+                    raw_edge=edge.get("raw_edge"),
+                    net_ev=edge["net_ev"],
+                    fee_cost=edge.get("fee_cost", 0),
+                    kelly_fraction=edge.get("kelly_fraction"),
+                    confidence=edge.get("confidence"),
+                    quality_tier="medium",
+                    signal_metadata=edge.get("sentiment"),
+                )
+                session.add(sig)
+            await session.commit()
+            logger.info(f"News catalyst scan: {len(edges)} signals")
+    except Exception as e:
+        logger.error(f"News catalyst scan failed: {e}")
+
+
+async def scan_llm_strategy():
+    """Run LLM superforecaster scan (separate due to API cost)."""
+    from config.settings import settings
+    from db.models import StrategySignal
+
+    if not settings.llm_forecast_enabled:
+        return
+    if not settings.anthropic_api_key:
+        logger.debug("LLM forecast skipped: ANTHROPIC_API_KEY not set")
+        return
+
+    try:
+        from ml.strategies.llm_forecaster import scan_llm_forecasts
+        async with async_session() as session:
+            edges = await scan_llm_forecasts(session, max_markets=settings.llm_forecast_max_markets)
+            for edge in edges:
+                sig = StrategySignal(
+                    market_id=edge["market_id"],
+                    strategy="llm_forecast",
+                    direction=edge["direction"],
+                    implied_prob=edge.get("llm_probability"),
+                    market_price=edge["market_price"],
+                    raw_edge=edge.get("raw_edge"),
+                    net_ev=edge["net_ev"],
+                    fee_cost=edge.get("fee_cost", 0),
+                    kelly_fraction=edge.get("kelly_fraction"),
+                    confidence=edge.get("confidence"),
+                    quality_tier="high" if edge["net_ev"] >= 0.05 else "medium",
+                    signal_metadata={
+                        "base_rate": edge.get("base_rate"),
+                        "key_factors": edge.get("key_factors"),
+                        "reasoning": edge.get("reasoning"),
+                    },
+                )
+                session.add(sig)
+            await session.commit()
+            logger.info(f"LLM forecast scan: {len(edges)} signals")
+    except Exception as e:
+        logger.error(f"LLM forecast scan failed: {e}")
+
+
+async def scan_clustering_strategy():
+    """Run market correlation clustering scan."""
+    from config.settings import settings
+    from db.models import StrategySignal
+
+    if not settings.market_clustering_enabled:
+        return
+
+    try:
+        from ml.strategies.market_clustering import scan_market_clusters
+        async with async_session() as session:
+            edges = await scan_market_clusters(session)
+            for edge in edges:
+                sig = StrategySignal(
+                    market_id=edge["market_id"],
+                    strategy="market_clustering",
+                    direction=edge["direction"],
+                    implied_prob=edge.get("implied_prob"),
+                    market_price=edge["market_price"],
+                    raw_edge=edge.get("raw_edge"),
+                    net_ev=edge["net_ev"],
+                    fee_cost=edge.get("fee_cost", 0),
+                    kelly_fraction=edge.get("kelly_fraction"),
+                    confidence=edge.get("confidence"),
+                    quality_tier="medium",
+                    signal_metadata={
+                        "correlation": edge.get("correlation"),
+                        "related_market_id": edge.get("related_market_id"),
+                        "related_question": edge.get("related_market_question"),
+                    },
+                )
+                session.add(sig)
+            await session.commit()
+            logger.info(f"Market clustering scan: {len(edges)} signals")
+    except Exception as e:
+        logger.error(f"Market clustering scan failed: {e}")
+
+
 # ── Orchestration ────────────────────────────────────────────────────
 
 async def run_pipeline_once():
@@ -894,6 +1154,12 @@ async def run_pipeline_loop():
     except Exception as e:
         logger.error(f"Initial paper executor error: {e}")
 
+    # ── Initial new strategy scans ──
+    try:
+        await scan_new_strategies()
+    except Exception as e:
+        logger.error(f"Initial new strategy scan failed: {e}")
+
     # ── Loop configuration ──
     price_interval = settings.price_poll_interval_sec
     market_interval = settings.market_refresh_interval_sec
@@ -906,6 +1172,10 @@ async def run_pipeline_loop():
     cycles_per_favorite_longshot_scan = 5  # Same cadence as ensemble
     cycles_per_auto_trade = 5      # Every 5 cycles - matches ensemble scan
     cycles_per_resolution_score = max(1, 1800 // price_interval)  # Every ~30 min
+    cycles_per_new_strategies = max(1, 300 // price_interval)  # Every ~5 min
+    cycles_per_news_scan = max(1, settings.news_catalyst_interval_sec // price_interval)  # Every ~15 min
+    cycles_per_llm_scan = max(1, settings.llm_forecast_interval_sec // price_interval)  # Every ~30 min
+    cycles_per_clustering = max(1, settings.market_clustering_interval_sec // price_interval)  # Every ~1 hr
 
     cycle = 0
 
@@ -992,6 +1262,34 @@ async def run_pipeline_loop():
                         )
             except Exception as e:
                 logger.error(f"Copy sync error: {e}")
+
+        # ── New strategy scans every ~5 min ──
+        if cycle % cycles_per_new_strategies == 0:
+            try:
+                await scan_new_strategies()
+            except Exception as e:
+                logger.error(f"New strategy scan error: {e}")
+
+        # ── News catalyst scan every ~15 min ──
+        if cycle % cycles_per_news_scan == 0:
+            try:
+                await scan_news_strategy()
+            except Exception as e:
+                logger.error(f"News catalyst scan error: {e}")
+
+        # ── LLM forecast scan every ~30 min ──
+        if cycle % cycles_per_llm_scan == 0:
+            try:
+                await scan_llm_strategy()
+            except Exception as e:
+                logger.error(f"LLM forecast scan error: {e}")
+
+        # ── Market clustering every ~1 hour ──
+        if cycle % cycles_per_clustering == 0:
+            try:
+                await scan_clustering_strategy()
+            except Exception as e:
+                logger.error(f"Market clustering scan error: {e}")
 
         # ── Trader stats refresh every ~30 min ──
         if cycle % cycles_per_trader_refresh == 0:

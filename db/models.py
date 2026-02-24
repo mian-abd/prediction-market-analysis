@@ -498,6 +498,42 @@ class EloRating(Base):
     )
 
 
+class StrategySignal(Base):
+    """Unified signal table for ALL new strategies (LLM forecast, longshot bias,
+    news catalyst, resolution convergence, orderflow, smart money, clustering)."""
+    __tablename__ = "strategy_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(Integer, ForeignKey("markets.id"), nullable=False)
+    strategy = Column(String(50), nullable=False)  # llm_forecast, longshot_bias, news_catalyst, etc.
+    detected_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expired_at = Column(DateTime)
+
+    direction = Column(String(10))  # buy_yes, buy_no
+    implied_prob = Column(Float)
+    market_price = Column(Float, nullable=False)
+    raw_edge = Column(Float)
+    net_ev = Column(Float, nullable=False)
+    fee_cost = Column(Float, default=0.0)
+    kelly_fraction = Column(Float)
+    confidence = Column(Float)
+    quality_tier = Column(String(20))
+
+    # Strategy-specific metadata
+    signal_metadata = Column(JSON)
+
+    # Outcome tracking
+    was_correct = Column(Boolean)
+    actual_pnl = Column(Float)
+
+    __table_args__ = (
+        Index("ix_strategy_signal_market", "market_id"),
+        Index("ix_strategy_signal_type", "strategy", "detected_at"),
+        Index("ix_strategy_signal_ev", "net_ev"),
+        Index("ix_strategy_signal_active", "strategy", "expired_at"),
+    )
+
+
 class EloEdgeSignal(Base):
     """Detected mispricing signals from Elo vs market price comparison."""
     __tablename__ = "elo_edge_signals"

@@ -116,9 +116,17 @@ async def get_auto_trading_status(session: AsyncSession = Depends(get_session)):
 
     enabled_strategies = [c.strategy for c in configs if c.is_enabled]
 
+    # Discover all auto strategies dynamically (not just ensemble/elo)
+    distinct_strats = (await session.execute(
+        select(PortfolioPosition.strategy)
+        .where(PortfolioPosition.portfolio_type == "auto")
+        .distinct()
+    )).scalars().all()
+    all_strats = set(distinct_strats) | {"auto_ensemble", "auto_elo"}
+
     # Open auto positions count by strategy
     open_by_strategy = {}
-    for strat in ["auto_ensemble", "auto_elo"]:
+    for strat in all_strats:
         count = (await session.execute(
             select(func.count(PortfolioPosition.id))
             .where(
@@ -127,7 +135,8 @@ async def get_auto_trading_status(session: AsyncSession = Depends(get_session)):
                 PortfolioPosition.exit_time == None,  # noqa: E711
             )
         )).scalar() or 0
-        open_by_strategy[strat] = count
+        if count > 0 or strat in ("auto_ensemble", "auto_elo"):
+            open_by_strategy[strat] = count
 
     # Per-strategy P&L and exposure
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -138,7 +147,7 @@ async def get_auto_trading_status(session: AsyncSession = Depends(get_session)):
 
     pnl_by_strategy = {}
     exposure_by_strategy = {}
-    for strat in ["auto_ensemble", "auto_elo"]:
+    for strat in all_strats:
         pnl = (await session.execute(
             select(func.sum(PortfolioPosition.realized_pnl))
             .where(
@@ -148,7 +157,8 @@ async def get_auto_trading_status(session: AsyncSession = Depends(get_session)):
                 PortfolioPosition.exit_time >= today_start,
             )
         )).scalar() or 0.0
-        pnl_by_strategy[strat] = pnl
+        if pnl != 0 or strat in ("auto_ensemble", "auto_elo"):
+            pnl_by_strategy[strat] = pnl
 
         exp = (await session.execute(
             select(func.sum(cost_expr))
@@ -158,7 +168,8 @@ async def get_auto_trading_status(session: AsyncSession = Depends(get_session)):
                 PortfolioPosition.exit_time == None,  # noqa: E711
             )
         )).scalar() or 0.0
-        exposure_by_strategy[strat] = exp
+        if exp != 0 or strat in ("auto_ensemble", "auto_elo"):
+            exposure_by_strategy[strat] = exp
 
     today_pnl = sum(pnl_by_strategy.values())
     total_exposure = sum(exposure_by_strategy.values())

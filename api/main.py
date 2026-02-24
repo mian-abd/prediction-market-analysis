@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
                 max_loss_per_day_usd=25.0, max_daily_trades=20,
             ),
             "elo": dict(
-                is_enabled=False, bankroll=500.0,
+                is_enabled=True, bankroll=500.0,
                 min_confidence=0.5, min_net_ev=0.03, max_kelly_fraction=0.02,
                 stop_loss_pct=0.05, min_quality_tier="medium", close_on_signal_expiry=True,
                 max_position_usd=100.0, max_total_exposure_usd=500.0,
@@ -74,6 +74,13 @@ async def lifespan(app: FastAPI):
                 stop_loss_pct=0.05, min_quality_tier="medium", close_on_signal_expiry=True,
                 max_position_usd=100.0, max_total_exposure_usd=500.0,
                 max_loss_per_day_usd=25.0, max_daily_trades=20,
+            ),
+            "new_strategies": dict(
+                is_enabled=True, bankroll=500.0,
+                min_confidence=0.4, min_net_ev=0.03, max_kelly_fraction=0.015,
+                stop_loss_pct=0.08, min_quality_tier="medium", close_on_signal_expiry=True,
+                max_position_usd=75.0, max_total_exposure_usd=300.0,
+                max_loss_per_day_usd=20.0, max_daily_trades=15,
             ),
         }
 
