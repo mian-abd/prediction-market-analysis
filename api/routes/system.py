@@ -129,3 +129,90 @@ async def confidence_adjuster_stats():
             "status": "error",
             "error": str(e),
         }
+
+
+@router.get("/system/truth-dashboard")
+async def truth_dashboard(session: AsyncSession = Depends(get_session)):
+    """Truth dashboard — comprehensive view of data quality and model health.
+
+    Returns data coverage, model deployment status, feature quality,
+    and collection pipeline health in a single response.
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import text
+    from db.models import Trade
+
+    now = datetime.utcnow()
+    cutoff_24h = (now - timedelta(hours=24)).isoformat()
+
+    def q(sql):
+        return session.execute(text(sql))
+
+    # Data coverage
+    total_markets = (await q("SELECT COUNT(*) FROM markets")).scalar()
+    resolved = (await q("SELECT COUNT(*) FROM markets WHERE resolution_value IS NOT NULL")).scalar()
+    active = (await q("SELECT COUNT(*) FROM markets WHERE is_active = 1")).scalar()
+
+    total_snaps = (await q("SELECT COUNT(*) FROM price_snapshots")).scalar()
+    markets_with_snaps = (await q("SELECT COUNT(DISTINCT market_id) FROM price_snapshots")).scalar()
+    snaps_24h = (await q(f"SELECT COUNT(*) FROM price_snapshots WHERE timestamp >= '{cutoff_24h}'")).scalar()
+
+    total_obs = (await q("SELECT COUNT(*) FROM orderbook_snapshots")).scalar()
+    obs_24h = (await q(f"SELECT COUNT(*) FROM orderbook_snapshots WHERE timestamp >= '{cutoff_24h}'")).scalar()
+
+    total_trades = (await q("SELECT COUNT(*) FROM trades")).scalar()
+
+    newest_snap = (await q("SELECT MAX(timestamp) FROM price_snapshots")).scalar()
+    newest_ob = (await q("SELECT MAX(timestamp) FROM orderbook_snapshots")).scalar()
+
+    # Model health
+    try:
+        from ml.evaluation.deployment_gate import get_model_health_summary
+        model_health = get_model_health_summary()
+    except Exception as e:
+        model_health = {"error": str(e)}
+
+    # Pipeline freshness
+    snap_age_min = None
+    if newest_snap:
+        try:
+            ts = datetime.fromisoformat(str(newest_snap))
+            snap_age_min = round((now - ts).total_seconds() / 60, 1)
+        except Exception:
+            pass
+
+    ob_age_min = None
+    if newest_ob:
+        try:
+            ts = datetime.fromisoformat(str(newest_ob))
+            ob_age_min = round((now - ts).total_seconds() / 60, 1)
+        except Exception:
+            pass
+
+    return {
+        "generated_at": now.isoformat(),
+        "data_coverage": {
+            "markets": {"total": total_markets, "resolved": resolved, "active": active},
+            "price_snapshots": {
+                "total": total_snaps,
+                "markets_covered": markets_with_snaps,
+                "coverage_pct": round(markets_with_snaps / max(total_markets, 1) * 100, 1),
+                "last_24h": snaps_24h,
+                "newest": str(newest_snap) if newest_snap else None,
+                "age_minutes": snap_age_min,
+            },
+            "orderbook_snapshots": {
+                "total": total_obs,
+                "last_24h": obs_24h,
+                "newest": str(newest_ob) if newest_ob else None,
+                "age_minutes": ob_age_min,
+            },
+            "trades": {"total": total_trades},
+        },
+        "pipeline_health": {
+            "price_collection_active": snaps_24h > 0,
+            "orderbook_collection_active": obs_24h > 0,
+            "stale_warning": (snap_age_min or 999) > 60,
+        },
+        "model_health": model_health,
+    }

@@ -7,11 +7,11 @@ Close conditions (checked in order):
 1. Market resolved -> close at resolution value (1.0 or 0.0)
 1b. Effectively resolved -> price near 0/1 (lock in profits immediately)
 1c. Market deactivated -> close at last price
-2. Edge invalidation -> price moved >10% away from entry AND losing (prediction markets)
-2a. Stale unprofitable -> >24h old and not profitable
+2. Edge invalidation -> price moved >20% away from entry AND losing
+2a. Stale unprofitable -> >72h old and not profitable
 2b. Trailing stop -> position had >8% gain but gave back >50% of peak
 2c. Time-decay exit -> within 1-4 hours of market end date
-3. Stop loss hit -> close at current market price (tighter: 12/8/5% by price tier)
+3. Stop loss hit -> close at current market price (15/12/8% by price tier)
 4. Signal expired -> close at current market price (if close_on_signal_expiry=True)
 """
 
@@ -99,15 +99,17 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
             else:
                 unrealized = (pos.entry_price - market.price_yes) * pos.quantity
 
-            # If price moved >10 percentage points AND we're losing, exit
-            if price_deviation > 0.10 and unrealized < 0:
+            # If price moved >20 percentage points AND we're losing, exit
+            # (Prediction markets routinely swing 10% on routine news)
+            if price_deviation > 0.20 and unrealized < 0:
                 exit_price = market.price_yes
                 close_reason = "edge_invalidation"
 
-            # Time-based exit: if position is >24h old and not profitable, cut it
+            # Time-based exit: if position is >72h old and not profitable, cut it
+            # (Prediction markets need days to converge to fair value)
             if exit_price is None and pos.entry_time:
                 age_hours = (datetime.utcnow() - pos.entry_time).total_seconds() / 3600
-                if age_hours > 24 and unrealized <= 0:
+                if age_hours > 72 and unrealized <= 0:
                     exit_price = market.price_yes
                     close_reason = "stale_unprofitable"
 
@@ -150,14 +152,14 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
                     unrealized = (pos.entry_price - market.price_yes) * pos.quantity
                     position_cost = (1.0 - pos.entry_price) * pos.quantity
 
-                # Tighter stop-losses to cut losses faster
+                # Widened stop-losses: prediction markets are volatile, tight stops trigger on noise
                 cost_per_share = pos.entry_price if pos.side == "yes" else (1.0 - pos.entry_price)
                 if cost_per_share < 0.30:
-                    effective_stop = 0.12  # 12% for cheap contracts
+                    effective_stop = 0.15  # 15% for cheap contracts (very volatile)
                 elif cost_per_share < 0.50:
-                    effective_stop = 0.08  # 8% for mid-range
+                    effective_stop = 0.12  # 12% for mid-range
                 else:
-                    effective_stop = min(config.stop_loss_pct, 0.05)  # 5% max for expensive
+                    effective_stop = min(config.stop_loss_pct, 0.08)  # 8% for expensive
 
                 if position_cost > 0 and unrealized / position_cost < -effective_stop:
                     exit_price = market.price_yes
@@ -192,16 +194,28 @@ async def auto_close_positions(session: AsyncSession) -> list[int]:
                         close_reason = "signal_expired"
                     exit_price = market.price_yes
 
-        # Close the position
+        # Close the position with realistic exit slippage
         if exit_price is not None:
+            # Apply exit slippage unless market resolved (resolution is exact)
+            if close_reason not in ("market_resolved",):
+                exit_slippage_rate = 0.01  # 1% exit slippage
+                if pos.side == "yes":
+                    exit_price = exit_price * (1 - exit_slippage_rate)
+                else:
+                    exit_price = exit_price * (1 + exit_slippage_rate)
+
             pos.exit_price = exit_price
             pos.exit_time = datetime.utcnow()
             if pos.side == "yes":
                 gross_pnl = (exit_price - pos.entry_price) * pos.quantity
             else:
                 gross_pnl = (pos.entry_price - exit_price) * pos.quantity
-            # Polymarket charges 2% fee on net winnings only (0% on losses)
-            fee = 0.02 * max(gross_pnl, 0.0)
+
+            # Fee based on market's stored fee rate; fall back to 0 for fee-free markets
+            fee_rate = 0.0
+            if hasattr(market, 'taker_fee_bps') and market.taker_fee_bps:
+                fee_rate = market.taker_fee_bps / 10000
+            fee = fee_rate * max(gross_pnl, 0.0)
             pos.realized_pnl = gross_pnl - fee
 
             closed_ids.append(pos.id)

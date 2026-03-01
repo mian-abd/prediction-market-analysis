@@ -120,21 +120,20 @@ async def _convert_whale_signals_to_edges(
         # Estimate implied probability from whale entry prices
         # Whales paid avg_entry_price; if avg > current price, they expect YES
         # Edge estimate: whales have insider-like information advantage
+        fee_rate = (getattr(market, 'taker_fee_bps', 0) or 0) / 10000.0
         if direction == "buy_yes":
-            # Whales buying YES → they believe true prob > current price
             implied_prob = min(0.95, price + _estimate_whale_edge(
                 avg_entry, price, whale_count, direction="up"
             ))
             p, q = implied_prob, price
-            fee = p * POLYMARKET_FEE_RATE * (1 - q) + SLIPPAGE_BUFFER
+            fee = p * fee_rate * (1 - q) + SLIPPAGE_BUFFER
             net_ev = p * (1 - q) - (1 - p) * q - fee
         else:  # buy_no
-            # Whales buying NO → they believe true prob < current price
             implied_prob = max(0.05, price - _estimate_whale_edge(
                 avg_entry, price, whale_count, direction="down"
             ))
             p, q = implied_prob, price
-            fee = (1 - p) * POLYMARKET_FEE_RATE * q + SLIPPAGE_BUFFER
+            fee = (1 - p) * fee_rate * q + SLIPPAGE_BUFFER
             net_ev = (1 - p) * q - p * (1 - q) - fee
 
         if net_ev < MIN_NET_EDGE:
@@ -233,11 +232,12 @@ async def _heuristic_smart_money(session: AsyncSession) -> list[dict]:
             continue
 
         p, q = implied_prob, price
+        mkt_fee_rate = (getattr(market, 'taker_fee_bps', 0) or 0) / 10000.0
         if direction == "buy_yes":
-            fee = p * POLYMARKET_FEE_RATE * (1 - q) + SLIPPAGE_BUFFER
+            fee = p * mkt_fee_rate * (1 - q) + SLIPPAGE_BUFFER
             net_ev = p * (1 - q) - (1 - p) * q - fee
         else:
-            fee = (1 - p) * POLYMARKET_FEE_RATE * q + SLIPPAGE_BUFFER
+            fee = (1 - p) * mkt_fee_rate * q + SLIPPAGE_BUFFER
             net_ev = (1 - p) * q - p * (1 - q) - fee
 
         if net_ev < MIN_NET_EDGE:

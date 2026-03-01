@@ -119,12 +119,13 @@ async def get_prediction(
     model = get_calibration_model()
     mispricing = model.get_mispricing(market.price_yes)
 
-    # Ensemble prediction + edge detection
     ensemble_data = None
     edge_data = None
     try:
+        from ml.features.training_features import load_serving_context
+        price_snaps, ob_snap = await load_serving_context(session, market.id)
         ensemble = get_ensemble_model()
-        ensemble_data = ensemble.predict_market(market)
+        ensemble_data = ensemble.predict_market(market, price_snapshots=price_snaps, orderbook_snapshot=ob_snap)
         edge = detect_edge(market, ensemble_data)
         edge_data = edge_signal_to_dict(edge)
     except Exception as e:
@@ -162,8 +163,10 @@ async def get_ensemble_prediction(
         return {"error": "No price data available"}
 
     try:
+        from ml.features.training_features import load_serving_context
+        price_snaps, ob_snap = await load_serving_context(session, market.id)
         ensemble = get_ensemble_model()
-        result = ensemble.predict_market(market)
+        result = ensemble.predict_market(market, price_snapshots=price_snaps, orderbook_snapshot=ob_snap)
         edge = detect_edge(market, result)
         return {
             "market_id": market_id,
@@ -172,7 +175,6 @@ async def get_ensemble_prediction(
             "edge_signal": edge_signal_to_dict(edge),
         }
     except Exception as e:
-        # Fallback to calibration-only
         model = get_calibration_model()
         mispricing = model.get_mispricing(market.price_yes)
         return {
@@ -219,7 +221,9 @@ async def top_mispriced(
         ensemble_data = None
         if ensemble:
             try:
-                ensemble_data = ensemble.predict_market(m)
+                from ml.features.training_features import load_serving_context
+                price_snaps, ob_snap = await load_serving_context(session, m.id)
+                ensemble_data = ensemble.predict_market(m, price_snapshots=price_snaps, orderbook_snapshot=ob_snap)
                 edge = detect_edge(m, ensemble_data)
                 edge_data = edge_signal_to_dict(edge)
             except Exception:
@@ -288,7 +292,9 @@ async def top_edges(
             continue
 
         try:
-            ensemble_data = ensemble.predict_market(m)
+            from ml.features.training_features import load_serving_context
+            price_snaps, ob_snap = await load_serving_context(session, m.id)
+            ensemble_data = ensemble.predict_market(m, price_snapshots=price_snaps, orderbook_snapshot=ob_snap)
             edge = detect_edge(m, ensemble_data)
         except Exception:
             continue

@@ -102,19 +102,43 @@ class EnsembleModel:
             logger.warning("Ensemble not fully loaded, will use calibration-only fallback")
         return self._is_loaded
 
-    def predict_market(self, market) -> dict:
+    def predict_market(
+        self,
+        market,
+        price_snapshots: list | None = None,
+        orderbook_snapshot=None,
+        price_yes_override: float | None = None,
+    ) -> dict:
         """Generate ensemble prediction for a Market ORM object.
+
+        Args:
+            market: Market ORM object with price_yes, end_date, etc.
+            price_snapshots: Recent PriceSnapshot objects for momentum features.
+                Pass these from the DB to avoid train/serve skew on momentum features.
+            orderbook_snapshot: Most recent OrderbookSnapshot for orderbook features.
+                Pass from the DB to avoid train/serve skew on OBI/spread features.
 
         Returns dict with individual model predictions, weights,
         and blended ensemble probability.
         """
-        price = market.price_yes if market.price_yes else 0.5
+        if price_yes_override is not None:
+            price = float(price_yes_override)
+        else:
+            raw_price = market.price_yes
+            if raw_price is None:
+                price = 0.5
+            elif isinstance(raw_price, (int, float)):
+                price = float(raw_price)
+            else:
+                # SQLAlchemy async can return an ORM proxy after session IO; extract float
+                try:
+                    price = float(getattr(raw_price, "price_yes", raw_price))
+                except (TypeError, ValueError, AttributeError):
+                    price = 0.5
 
-        # Calibration prediction (always available)
         cal_pred = self.calibration.predict_single(price)
 
         if not self._is_loaded:
-            # Fallback: calibration only
             delta = cal_pred - price
             return {
                 "ensemble_probability": cal_pred,
@@ -130,8 +154,13 @@ class EnsembleModel:
                 "ensemble_active": False,
             }
 
-        # Feature-based predictions using the active feature subset from training
-        features = extract_features_from_market(market)
+        features = extract_features_from_market(
+            market,
+            price_yes_override=price_yes_override,
+            as_of=None,
+            price_snapshots=price_snapshots,
+            orderbook_snapshot=orderbook_snapshot,
+        )
         active = self._active_features or list(ENSEMBLE_FEATURE_NAMES)
         feat_array = np.array([features[name] for name in active])
 

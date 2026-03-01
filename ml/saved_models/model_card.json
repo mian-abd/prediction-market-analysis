@@ -1,33 +1,46 @@
 {
-  "trained_at": "2026-02-24T12:59:59.694000+00:00",
-  "n_total_resolved": 67029,
-  "n_usable": 15307,
-  "n_train": 12245,
-  "n_test": 3062,
+  "trained_at": "2026-03-01T02:29:06.801651+00:00",
+  "n_total_resolved": 66869,
+  "n_usable": 642,
+  "n_train": 365,
+  "n_test": 132,
   "snapshot_coverage": {
-    "n_with_snapshots": 6116,
-    "n_total": 15307,
-    "coverage_pct": 40.0,
+    "n_with_snapshots": 642,
+    "n_total": 642,
+    "coverage_pct": 100.0,
     "snapshot_only_mode": false,
-    "tradeable_range": null,
-    "as_of_days": 1
+    "tradeable_range": [
+      0.05,
+      0.95
+    ],
+    "as_of_days": "variable [1,2,3,5,7,14,30]",
+    "variable_as_of": true
   },
-  "class_balance_yes_pct": 27.2,
-  "temporal_split_date": "2026-02-13",
+  "class_balance_yes_pct": 40.3,
+  "temporal_split_date": "2026-02-23",
   "feature_names": [
-    "log_open_interest",
+    "price_yes",
+    "price_bucket",
+    "price_distance_from_50",
+    "calibration_bias",
     "time_to_resolution_hrs",
+    "category_encoded",
+    "is_weekend",
     "return_1h",
     "volatility_20",
-    "zscore_24h"
+    "zscore_24h",
+    "oflow_buy_sell_ratio_1h",
+    "oflow_buy_sell_ratio_24h",
+    "oflow_trade_intensity_1h",
+    "oflow_trade_intensity_24h",
+    "oflow_avg_trade_size_24h",
+    "oflow_large_trade_count_24h",
+    "oflow_large_trade_count_7d",
+    "oflow_vwap_deviation_24h",
+    "oflow_volume_acceleration_6h",
+    "oflow_total_volume_24h"
   ],
   "features_dropped": [
-    "price_yes (near-constant, 444 unique/12245)",
-    "price_bucket (near-constant, 20 unique/12245)",
-    "price_distance_from_50 (near-constant, 349 unique/12245)",
-    "calibration_bias (near-constant, 324 unique/12245)",
-    "category_encoded (near-constant, 9 unique/12245)",
-    "is_weekend (near-constant, 2 unique/12245)",
     "obi_level1 (zero variance)",
     "obi_weighted_5 (zero variance)",
     "bid_ask_spread_abs (zero variance)",
@@ -35,124 +48,108 @@
     "depth_ratio (zero variance)",
     "bid_depth_usd (zero variance)",
     "ask_depth_usd (zero variance)",
-    "vwap_deviation (zero variance)",
-    "cross_platform_spread (zero variance)"
+    "vwap_deviation (zero variance)"
   ],
   "models_included": [
-    "calibration",
+    "calibration"
+  ],
+  "models_excluded": [
     "xgboost",
     "lightgbm"
   ],
-  "models_excluded": [],
   "oof_brier": {
-    "calibration": 0.1151,
-    "xgboost": 0.0965,
-    "lightgbm": 0.0967
+    "calibration": 0.1628,
+    "xgboost": 0.1626,
+    "lightgbm": 0.1647
   },
-  "baseline_brier": 0.0546,
-  "naive_baseline_brier": 0.1979,
-  "calibration_brier": 0.0541,
-  "ensemble_brier": 0.0647,
-  "post_calibrated_brier": 0.0506,
-  "ensemble_auc": 0.8762,
-  "ensemble_logloss": 0.1917,
-  "optimal_threshold": 0.667,
+  "baseline_brier": 0.1312,
+  "naive_baseline_brier": 0.2407,
+  "calibration_brier": 0.1609,
+  "ensemble_brier": 0.3063,
+  "post_calibrated_brier": 0.1427,
+  "ensemble_auc": 0.8758,
+  "ensemble_logloss": 0.4247,
+  "optimal_threshold": 0.909,
   "ablation": {
-    "calibration_only": 0.0541,
-    "cal_plus_xgb": 0.0494,
-    "cal_plus_lgb": 0.0494,
-    "full_ensemble": 0.0647
+    "calibration_only": 0.1609,
+    "full_ensemble": 0.3063
   },
   "profit_simulation": {
-    "ungated_pnl": 207.8638,
-    "ungated_trades": 2151,
-    "ungated_win_rate": 0.689,
-    "gated_pnl": 195.3011,
-    "gated_trades": 1410,
-    "gated_win_rate": 0.719,
+    "ungated_pnl": -2.442,
+    "ungated_trades": 117,
+    "ungated_win_rate": 0.744,
+    "gated_pnl": -2.375,
+    "gated_trades": 75,
+    "gated_win_rate": 0.667,
     "min_net_edge": 0.05,
-    "fee_model": "polymarket_2pct_on_winnings",
+    "fee_model": "polymarket_fee_free",
     "slippage": 0.015,
     "threshold_sweep": {
       "3%": {
-        "pnl": 200.286,
-        "trades": 1688,
-        "win_rate": 0.692
+        "pnl": -2.6015,
+        "trades": 99,
+        "win_rate": 0.717
       },
       "4%": {
-        "pnl": 197.7097,
-        "trades": 1535,
-        "win_rate": 0.706
+        "pnl": -3.4655,
+        "trades": 85,
+        "win_rate": 0.682
       },
       "5%": {
-        "pnl": 195.3011,
-        "trades": 1410,
-        "win_rate": 0.719
+        "pnl": -2.375,
+        "trades": 75,
+        "win_rate": 0.667
       },
       "6%": {
-        "pnl": 191.1976,
-        "trades": 1282,
-        "win_rate": 0.75
+        "pnl": -2.312,
+        "trades": 69,
+        "win_rate": 0.652
       },
       "7%": {
-        "pnl": 183.7151,
-        "trades": 1184,
-        "win_rate": 0.747
+        "pnl": -2.012,
+        "trades": 64,
+        "win_rate": 0.641
       },
       "8%": {
-        "pnl": 174.1991,
-        "trades": 1071,
-        "win_rate": 0.752
+        "pnl": -0.57,
+        "trades": 57,
+        "win_rate": 0.649
       },
       "10%": {
-        "pnl": 159.0629,
-        "trades": 950,
-        "win_rate": 0.731
+        "pnl": -1.11,
+        "trades": 49,
+        "win_rate": 0.612
       }
     }
   },
   "brier_by_price_bucket": {
     "0-20% (near NO)": {
-      "n": 2024,
-      "brier": 0.038,
-      "baseline": 0.0109,
-      "improvement_pct": -248.3
+      "n": 44,
+      "brier": 0.0451,
+      "baseline": 0.0449,
+      "improvement_pct": -0.5
     },
     "20-80% (tradeable)": {
-      "n": 838,
-      "brier": 0.1295,
-      "baseline": 0.1709,
-      "improvement_pct": 24.2
+      "n": 63,
+      "brier": 0.2619,
+      "baseline": 0.218,
+      "improvement_pct": -20.1
     },
     "80-100% (near YES)": {
-      "n": 200,
-      "brier": 0.0638,
-      "baseline": 0.0096,
-      "improvement_pct": -563.6
+      "n": 25,
+      "brier": 0.878,
+      "baseline": 0.0642,
+      "improvement_pct": -1268.3
     }
   },
   "price_distribution": {
-    "pct_near_0": 0.28,
-    "pct_near_1": 0.075
+    "pct_near_0": 0.0,
+    "pct_near_1": 0.0
   },
   "leakage_warnings": [
     "orderbook_snapshots: filtered to as_of timestamp (fixed as of 2026-02-14)",
     "volume_features: correlation check not performed",
-    "price_distribution: 35.6% near-extremes (inflates metrics, real-world harder)",
-    "survivorship_bias: 15307/67029 (22.8%) of resolved markets used (volume>0 filter)"
-  ],
-  "xgb_feature_importance": {
-    "log_open_interest": 0.512204647064209,
-    "zscore_24h": 0.2627292275428772,
-    "volatility_20": 0.14290249347686768,
-    "return_1h": 0.04114915430545807,
-    "time_to_resolution_hrs": 0.04101448506116867
-  },
-  "lgb_feature_importance": {
-    "log_open_interest": 428,
-    "time_to_resolution_hrs": 267,
-    "zscore_24h": 250,
-    "return_1h": 203,
-    "volatility_20": 177
-  }
+    "price_distribution: 0.0% near-extremes (inflates metrics, real-world harder)",
+    "survivorship_bias: 642/66869 (1.0%) of resolved markets used (volume>0 filter)"
+  ]
 }

@@ -1,17 +1,21 @@
 """Unified feature extraction for ML training and inference.
 
 Produces a consistent feature vector from Market ORM objects.
-Handles both resolved (training) and active (inference) markets.
+Both training and serving call the SAME function with the SAME interface.
+The only difference is the `as_of` timestamp:
+  - Training: as_of = resolved_at - timedelta(days=N)
+  - Serving:  as_of = datetime.utcnow()
 
 LEAKAGE RULES:
 - Markets with volume_total = 0 are excluded from training
   (their price_yes is post-settlement zeros, not informative)
 - price_yes is ONLY used when it represents a real traded price
+- ALL features are computed relative to as_of — no future data
 """
 
 import math
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ml.features.calibration_features import (
     compute_calibration_features,
@@ -37,10 +41,13 @@ ENSEMBLE_FEATURE_NAMES: list[str] = [
     "price_yes",
     "price_bucket",
     "price_distance_from_50",
-    # Volume/liquidity features
-    # EXCLUDED 2026-02-14: log_volume_total (0.664 correlation with resolution - contaminated)
+    # Volume/liquidity features — ALL EXCLUDED
+    # EXCLUDED 2026-02-14: log_volume_total (0.664 correlation with resolution)
     # "log_volume_total",
-    "log_open_interest",  # Keep open_interest (less contaminated)
+    # EXCLUDED 2026-02-27: log_open_interest — market.liquidity is the FINAL value;
+    # for resolved markets it collapses toward 0, creating leakage. No historical
+    # liquidity snapshots exist to provide a clean as_of value.
+    # "log_open_interest",
     # Calibration features (derived from price_yes)
     "calibration_bias",
     # Time features
@@ -63,44 +70,52 @@ ENSEMBLE_FEATURE_NAMES: list[str] = [
     "bid_depth_usd",
     "ask_depth_usd",
     "vwap_deviation",
-    # Volume pattern features (from volume_features.py)
-    # EXCLUDED 2026-02-14: All volume pattern features show high correlation with resolution
-    # - volume_trend_7d: 0.809 correlation (post-resolution spike contamination)
-    # - volume_volatility: 0.853 correlation (SEVERE contamination, was 55.6% XGBoost importance)
-    # - volume_acceleration: likely contaminated (not tested but derived from volume_24h)
-    # - volume_to_liquidity_ratio: derived from contaminated volume
-    # "volume_trend_7d",
-    # "volume_volatility",
-    # "volume_acceleration",
-    # "volume_to_liquidity_ratio",
-    # Cross-platform features (Phase 2.4)
-    "cross_platform_spread",  # poly_price - kalshi_price (informed trading signal)
+    # Order flow features (from trade history, computed in orderflow_features.py)
+    # These capture informed trading patterns: buy/sell imbalance, trade intensity,
+    # large-trade signals, VWAP deviation. Default to 0.0 when no trade data available.
+    "oflow_buy_sell_ratio_1h",
+    "oflow_buy_sell_ratio_24h",
+    "oflow_trade_intensity_1h",
+    "oflow_trade_intensity_24h",
+    "oflow_avg_trade_size_24h",
+    "oflow_large_trade_count_24h",
+    "oflow_large_trade_count_7d",
+    "oflow_vwap_deviation_24h",
+    "oflow_volume_acceleration_6h",
+    "oflow_total_volume_24h",
 ]
 
-N_FEATURES = len(ENSEMBLE_FEATURE_NAMES)  # 20 (added cross_platform_spread 2026-02-22)
+N_FEATURES = len(ENSEMBLE_FEATURE_NAMES)  # 28
 
-# Feature quality metadata — "real" = derived from live market data,
-# "proxy" = synthetic approximation from snapshot-level data
 FEATURE_QUALITY: dict[str, str] = {
     "price_yes": "real",
     "price_bucket": "real",
     "price_distance_from_50": "real",
-    "log_open_interest": "real",
     "calibration_bias": "real",
     "time_to_resolution_hrs": "real",
     "category_encoded": "real",
     "is_weekend": "real",
-    "return_1h": "proxy",       # defaults to 0 when <2 snapshots
-    "volatility_20": "proxy",   # defaults to 0 when <2 snapshots
-    "zscore_24h": "proxy",      # defaults to 0 when <2 snapshots
-    "obi_level1": "proxy",      # defaults to 0 when no orderbook
+    "return_1h": "proxy",
+    "volatility_20": "proxy",
+    "zscore_24h": "proxy",
+    "obi_level1": "proxy",
     "obi_weighted_5": "proxy",
     "bid_ask_spread_abs": "proxy",
     "bid_ask_spread_rel": "proxy",
-    "depth_ratio": "proxy",     # defaults to 1.0 when no orderbook
+    "depth_ratio": "proxy",
     "bid_depth_usd": "proxy",
     "ask_depth_usd": "proxy",
     "vwap_deviation": "proxy",
+    "oflow_buy_sell_ratio_1h": "real",
+    "oflow_buy_sell_ratio_24h": "real",
+    "oflow_trade_intensity_1h": "real",
+    "oflow_trade_intensity_24h": "real",
+    "oflow_avg_trade_size_24h": "real",
+    "oflow_large_trade_count_24h": "real",
+    "oflow_large_trade_count_7d": "real",
+    "oflow_vwap_deviation_24h": "real",
+    "oflow_volume_acceleration_6h": "real",
+    "oflow_total_volume_24h": "real",
 }
 
 
@@ -133,34 +148,46 @@ def get_feature_quality_summary(features: dict[str, float] | None = None) -> dic
 
 def extract_features_from_market(
     market,
-    for_training: bool = False,
+    as_of: datetime | None = None,
     price_snapshots: list[float] | None = None,
-    orderbook_snapshot = None,
+    orderbook_snapshot=None,
     price_yes_override: float | None = None,
     matched_market_price: float | None = None,
+    for_training: bool = False,
+    trades: list[dict] | None = None,
 ) -> dict[str, float]:
     """Extract features from a Market ORM object.
 
+    CRITICAL: Both training and serving MUST call this function with the same
+    interface. The `as_of` parameter is the single source of truth for "what
+    time is it?" — all time-dependent features are computed relative to it.
+
     Args:
         market: Market ORM object (or any object with the right attributes)
-        for_training: If True, compute time features relative to market's
-                      own timeline (not current time).
+        as_of: Point-in-time for feature computation. REQUIRED for honest features.
+               Training: as_of = resolved_at - timedelta(days=1) (or snapshot time)
+               Serving:  as_of = datetime.utcnow()
+               If None, defaults to datetime.utcnow() for backward compatibility.
         price_snapshots: Optional list of historical prices (oldest to newest)
-                         for momentum feature computation.
+                         for momentum feature computation. Must be filtered to
+                         only include snapshots BEFORE as_of.
         orderbook_snapshot: Optional OrderbookSnapshot ORM object with
                             bids_json/asks_json for orderbook features.
-        price_yes_override: Optional price override for training (as_of enforcement).
+                            Must be the latest snapshot BEFORE as_of.
+        price_yes_override: Optional price override (as_of enforcement).
                             If provided, use this instead of market.price_yes.
                             This prevents leakage from using resolved outcome price.
-        matched_market_price: Optional cross-platform matched market price (Kalshi if
-                             current is Polymarket, or vice versa). Used to compute
-                             cross_platform_spread feature. Defaults to 0.0 if not provided.
+        matched_market_price: Optional cross-platform matched market price.
+        for_training: DEPRECATED. Kept for backward compatibility only.
+                      Use as_of instead. Will be removed in future version.
 
     Returns:
         Dict of {feature_name: float_value}
     """
+    reference_time = as_of or datetime.utcnow()
+
     # Use override if provided (for as_of enforcement), else market.price_yes
-    price = price_yes_override if price_yes_override is not None else (market.price_yes if market.price_yes else 0.5)
+    price = price_yes_override if price_yes_override is not None else (float(market.price_yes) if market.price_yes is not None else 0.5)
 
     # Volume features
     vol_total = float(market.volume_total or 0)
@@ -175,31 +202,19 @@ def extract_features_from_market(
     # Calibration features
     cf = compute_calibration_features(market_price=price)
 
-    # Time features
-    if for_training and market.end_date:
-        # For training: use market duration (end_date - created_at)
-        created = getattr(market, "created_at", None)
-        if created and market.end_date:
-            try:
-                end_naive = market.end_date.replace(tzinfo=None) if market.end_date.tzinfo else market.end_date
-                created_naive = created.replace(tzinfo=None) if created.tzinfo else created
-                delta = end_naive - created_naive
-                time_hrs = max(0, delta.total_seconds() / 3600)
-            except (TypeError, AttributeError):
-                time_hrs = 168.0  # Default 1 week
-        else:
-            time_hrs = 168.0
-    elif market.end_date:
-        # For inference: time remaining until resolution
-        now = datetime.utcnow()
+    # Time features: ALWAYS computed as (end_date - reference_time)
+    # This is identical for training and serving — the only difference is
+    # what reference_time is (as_of for training, now() for serving).
+    if market.end_date:
         try:
             end_naive = market.end_date.replace(tzinfo=None) if market.end_date.tzinfo else market.end_date
-            delta = end_naive - now
+            ref_naive = reference_time.replace(tzinfo=None) if reference_time.tzinfo else reference_time
+            delta = end_naive - ref_naive
             time_hrs = max(0, delta.total_seconds() / 3600)
         except (TypeError, AttributeError):
             time_hrs = 168.0
     else:
-        time_hrs = 8760.0  # Default 1 year
+        time_hrs = 8760.0
 
     # Volume per day (engagement density)
     duration_days = max(time_hrs / 24, 1.0)
@@ -209,20 +224,23 @@ def extract_features_from_market(
     category = getattr(market, "normalized_category", None) or getattr(market, "category", "other") or "other"
     category_encoded = float(CATEGORY_MAP.get(category.lower(), 9))
 
-    # Weekend feature
-    if for_training:
-        # For training: check if market was created on weekend
-        created = getattr(market, "created_at", None)
-        is_weekend = 1.0 if (created and created.weekday() >= 5) else 0.0
-    else:
-        is_weekend = 1.0 if datetime.utcnow().weekday() >= 5 else 0.0
+    # Weekend feature: ALWAYS computed from reference_time
+    is_weekend = 1.0 if reference_time.weekday() >= 5 else 0.0
 
     # Momentum features (from price snapshots)
+    # Accept either plain floats or PriceSnapshot ORM objects
     if price_snapshots and len(price_snapshots) >= 2:
-        mom = compute_momentum_features(price_snapshots)
-        return_1h = mom["return_1"]
-        volatility_20 = mom["volatility_20"]
-        zscore_24h = mom["zscore_24h"]
+        if hasattr(price_snapshots[0], "price_yes"):
+            raw_prices = [float(s.price_yes) for s in price_snapshots if s.price_yes is not None]
+        else:
+            raw_prices = [float(p) for p in price_snapshots if p is not None]
+        mom = compute_momentum_features(raw_prices) if len(raw_prices) >= 2 else None
+        if mom is None:
+            return_1h = volatility_20 = zscore_24h = 0.0
+        else:
+            return_1h = mom["return_1"]
+            volatility_20 = mom["volatility_20"]
+            zscore_24h = mom["zscore_24h"]
     else:
         return_1h = 0.0
         volatility_20 = 0.0
@@ -288,13 +306,17 @@ def extract_features_from_market(
         volume_to_liquidity_ratio = 0.0
 
     # Cross-platform spread feature (Phase 2.4)
-    # Positive spread = Polymarket price > Kalshi price (potential informed buying on Poly)
-    # Negative spread = Polymarket price < Kalshi price (potential informed buying on Kalshi)
-    # Zero = no cross-platform match or prices equal
     if matched_market_price is not None:
         cross_platform_spread = price - matched_market_price
     else:
         cross_platform_spread = 0.0
+
+    # Order flow features (from trade history — optional, defaults to 0.0)
+    from ml.features.orderflow_features import compute_orderflow_features, ORDERFLOW_FEATURE_NAMES
+    if trades:
+        oflow = compute_orderflow_features(trades, as_of=reference_time)
+    else:
+        oflow = {name: 0.0 for name in ORDERFLOW_FEATURE_NAMES}
 
     return {
         "price_yes": price,
@@ -323,6 +345,7 @@ def extract_features_from_market(
         "volume_acceleration": volume_acceleration,
         "volume_to_liquidity_ratio": volume_to_liquidity_ratio,
         "cross_platform_spread": cross_platform_spread,
+        **oflow,
     }
 
 
@@ -359,10 +382,16 @@ def prune_features(
             dropped.append(f"{name} (zero variance)")
             continue
 
-        # Hard gate 2: near-constant (<5% unique values)
-        n_unique = len(np.unique(col))
-        if n_unique / len(col) < 0.05:
-            dropped.append(f"{name} (near-constant, {n_unique} unique/{len(col)})")
+        # Hard gate 2: dominated by single value (>97% one class)
+        # Old gate used unique_ratio < 5%, which incorrectly killed binary features
+        # like is_weekend (2 unique values / 200 samples = 1%).
+        unique_vals, counts = np.unique(col, return_counts=True)
+        if len(unique_vals) <= 1:
+            dropped.append(f"{name} (single value)")
+            continue
+        dominant_frac = counts.max() / len(col)
+        if dominant_frac > 0.97:
+            dropped.append(f"{name} (near-constant, {dominant_frac:.1%} dominant)")
             continue
 
         # Diagnostic: univariate AUC (info only, don't auto-drop)
@@ -396,6 +425,7 @@ def build_training_matrix(
     orderbook_snapshots_map: dict[int, any] | None = None,
     snapshot_only: bool = False,
     tradeable_range: tuple[float, float] | None = None,
+    as_of_days: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build X (features) and y (labels) from resolved markets.
 
@@ -472,18 +502,33 @@ def build_training_matrix(
         price_override = as_of_map.get(m.id) if as_of_map else None
 
         # Tradeable-range filter: skip near-decided markets if range specified.
-        # Markets with price near 0 or 1 at as_of are trivially predictable —
-        # the model learns "price→outcome" leakage instead of genuine signal.
-        # Only apply when we have a real as_of price (not fallback leakage).
-        if tradeable_range is not None and price_override is not None:
-            lo, hi = tradeable_range
-            if price_override < lo or price_override > hi:
-                skipped["near_decided"] = skipped.get("near_decided", 0) + 1
-                continue
+        # Apply to ALL markets (both snapshot and fallback) to prevent:
+        # 1. Snapshot markets: prices near 0/1 are trivially predictable
+        # 2. Fallback markets: market.price_yes IS the settlement price (0 or 1),
+        #    so near-extreme prices are direct target leakage.
+        if tradeable_range is not None:
+            check_price = price_override if price_override is not None else (float(m.price_yes) if m.price_yes is not None else None)
+            if check_price is not None:
+                lo, hi = tradeable_range
+                if check_price < lo or check_price > hi:
+                    skipped["near_decided"] = skipped.get("near_decided", 0) + 1
+                    continue
+
+        # as_of must match the snapshot lookup window used in train_ensemble.py.
+        # If snapshots were loaded at resolved_at - N days, features must also be
+        # computed at that same point in time. Otherwise price features reflect one
+        # time horizon while time features reflect another.
+        market_as_of = None
+        if m.resolved_at:
+            market_as_of = m.resolved_at - timedelta(days=as_of_days)
+        elif m.end_date:
+            market_as_of = m.end_date - timedelta(days=as_of_days)
+        elif m.created_at:
+            market_as_of = m.created_at
 
         feat = extract_features_from_market(
             m,
-            for_training=True,
+            as_of=market_as_of,
             price_snapshots=snapshots,
             orderbook_snapshot=ob_snapshot,
             price_yes_override=price_override,
@@ -519,3 +564,195 @@ def build_training_matrix(
             logger.info(f"Markets with orderbook data: {with_orderbook}/{len(X_rows)}")
 
     return np.array(X_rows), np.array(y_rows)
+
+
+async def load_serving_context(session, market_id: int, max_snapshots: int = 48):
+    """Load price snapshots and orderbook data for serving-time feature parity.
+
+    This ensures the serving path has the same feature inputs as training.
+    Without this, momentum and orderbook features default to 0.0 at inference
+    while having real values during training — a critical train/serve skew.
+
+    Args:
+        session: AsyncSession for DB queries
+        market_id: Market ID to load context for
+        max_snapshots: Maximum number of recent price snapshots to load
+
+    Returns:
+        (price_snapshots, orderbook_snapshot) tuple
+    """
+    from db.models import PriceSnapshot, OrderbookSnapshot
+    from sqlalchemy import select
+
+    snapshots_result = await session.execute(
+        select(PriceSnapshot)
+        .where(PriceSnapshot.market_id == market_id)
+        .order_by(PriceSnapshot.timestamp.desc())
+        .limit(max_snapshots)
+    )
+    price_snapshots = list(reversed(snapshots_result.scalars().all()))
+
+    ob_result = await session.execute(
+        select(OrderbookSnapshot)
+        .where(OrderbookSnapshot.market_id == market_id)
+        .order_by(OrderbookSnapshot.timestamp.desc())
+        .limit(1)
+    )
+    orderbook_snapshot = ob_result.scalar_one_or_none()
+
+    return price_snapshots, orderbook_snapshot
+
+
+# ── Variable as_of Horizons ──────────────────────────────────────────
+
+VARIABLE_AS_OF_DAYS = [1, 2, 3, 5, 7, 14, 30]
+
+
+def build_variable_as_of_matrix(
+    markets: list,
+    raw_price_snapshots: dict[int, list[tuple]],
+    raw_orderbook_snapshots: dict[int, list] | None = None,
+    raw_trades: dict[int, list[dict]] | None = None,
+    tradeable_range: tuple[float, float] | None = None,
+    horizons: list[int] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build training matrix with multiple as_of time horizons per market.
+
+    For each resolved market, creates samples at multiple time points before
+    resolution, producing natural variance in time_to_resolution_hrs and
+    price-at-different-horizons. This multiplies effective training set size
+    by up to len(horizons)x while maintaining temporal integrity.
+
+    Args:
+        markets: List of Market ORM objects, ordered by resolved_at
+        raw_price_snapshots: {market_id: [(timestamp, price), ...]} — ALL snapshots
+                             (unfiltered). Will be filtered per-horizon internally.
+        raw_orderbook_snapshots: {market_id: [(timestamp, ob_dict), ...]} — ALL OB snapshots.
+        tradeable_range: Optional (lo, hi) price filter (same as build_training_matrix).
+        horizons: List of as_of days [1, 2, 3, 5, 7, 14, 30]. Defaults to VARIABLE_AS_OF_DAYS.
+
+    Returns:
+        (X, y, market_indices) where:
+          X: (n_samples, n_features) feature matrix
+          y: (n_samples,) binary labels
+          market_indices: (n_samples,) index into `markets` list for each sample.
+                          Use this for temporal split: group by market, not sample.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    if horizons is None:
+        horizons = VARIABLE_AS_OF_DAYS
+
+    ob_map = raw_orderbook_snapshots or {}
+    trade_map = raw_trades or {}
+
+    X_rows = []
+    y_rows = []
+    idx_rows = []  # maps each sample back to market index
+
+    stats = {
+        "total_samples": 0,
+        "markets_used": 0,
+        "samples_per_horizon": {h: 0 for h in horizons},
+        "skipped_no_resolution": 0,
+        "skipped_zero_volume": 0,
+        "skipped_no_snapshots": 0,
+        "skipped_near_decided": 0,
+        "skipped_too_early": 0,
+    }
+
+    for market_idx, m in enumerate(markets):
+        if m.resolution_value is None:
+            stats["skipped_no_resolution"] += 1
+            continue
+
+        if (m.volume_total or 0) <= 0:
+            stats["skipped_zero_volume"] += 1
+            continue
+
+        raw_snaps = raw_price_snapshots.get(m.id)
+        if not raw_snaps or len(raw_snaps) < 1:
+            stats["skipped_no_snapshots"] += 1
+            continue
+
+        ref_date = m.resolved_at or m.end_date
+        if not ref_date:
+            continue
+
+        market_created = m.created_at or (ref_date - timedelta(days=365))
+        added_for_this_market = False
+
+        for h in horizons:
+            as_of = ref_date - timedelta(days=h)
+
+            if as_of < market_created:
+                stats["skipped_too_early"] += 1
+                continue
+
+            filtered = [(ts, p) for (ts, p) in raw_snaps if ts <= as_of]
+            if not filtered:
+                continue
+
+            filtered.sort(key=lambda x: x[0])
+            price_at_as_of = filtered[-1][1]
+
+            if tradeable_range is not None:
+                lo, hi = tradeable_range
+                if price_at_as_of < lo or price_at_as_of > hi:
+                    stats["skipped_near_decided"] += 1
+                    continue
+
+            price_list = [p for (_, p) in filtered]
+
+            ob_snapshot = None
+            raw_obs = ob_map.get(m.id)
+            if raw_obs:
+                valid_obs = [(ts, ob) for (ts, ob) in raw_obs if ts <= as_of]
+                if valid_obs:
+                    valid_obs.sort(key=lambda x: x[0])
+                    ob_snapshot = valid_obs[-1][1]
+
+            market_trades = trade_map.get(m.id)
+            trades_for_feature = None
+            if market_trades:
+                trades_for_feature = [
+                    t for t in market_trades
+                    if t.get("timestamp") and t["timestamp"] <= as_of
+                ]
+
+            feat = extract_features_from_market(
+                m,
+                as_of=as_of,
+                price_snapshots=price_list,
+                orderbook_snapshot=ob_snapshot,
+                price_yes_override=price_at_as_of,
+                trades=trades_for_feature,
+            )
+            X_rows.append(features_to_array(feat))
+            y_rows.append(m.resolution_value)
+            idx_rows.append(market_idx)
+            stats["samples_per_horizon"][h] += 1
+            stats["total_samples"] += 1
+            added_for_this_market = True
+
+        if added_for_this_market:
+            stats["markets_used"] += 1
+
+    logger.info(
+        f"Variable as_of matrix: {stats['total_samples']} samples from "
+        f"{stats['markets_used']} markets ({len(markets)} total)"
+    )
+    for h in horizons:
+        cnt = stats["samples_per_horizon"][h]
+        if cnt > 0:
+            logger.info(f"  as_of={h}d: {cnt} samples")
+    if stats["skipped_no_snapshots"] > 0:
+        logger.info(f"  Skipped: {stats['skipped_no_snapshots']} no snapshots, "
+                     f"{stats['skipped_near_decided']} near-decided, "
+                     f"{stats['skipped_too_early']} as_of before creation")
+
+    if not X_rows:
+        return np.array([]).reshape(0, N_FEATURES), np.array([]), np.array([], dtype=int)
+
+    return np.array(X_rows), np.array(y_rows), np.array(idx_rows, dtype=int)

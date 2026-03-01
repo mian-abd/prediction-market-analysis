@@ -59,6 +59,8 @@ interface EquityCurveProps {
   showDrawdown?: boolean
   autoRefresh?: boolean
   portfolioType?: 'all' | 'manual' | 'auto'
+  /** When set, subtract this from all cumulative P&L values (e.g. "Reset to $0" baseline). */
+  pnlBaseline?: number
 }
 
 const STRATEGY_COLORS: Record<string, string> = {
@@ -179,6 +181,7 @@ export default function EquityCurve({
   showDrawdown: _showDrawdown = false,
   autoRefresh = false,
   portfolioType = 'all',
+  pnlBaseline,
 }: EquityCurveProps) {
   const [data, setData] = useState<EquityCurveData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -245,13 +248,14 @@ export default function EquityCurve({
   // Prepare chart data: merge all strategy timelines
   const chartDataMap = new Map<string, any>()
 
+  const baseline = pnlBaseline ?? 0
   data.data.forEach((strategy) => {
     strategy.data.forEach((point) => {
       const timestamp = point.timestamp
       if (!chartDataMap.has(timestamp)) {
         chartDataMap.set(timestamp, { timestamp })
       }
-      chartDataMap.get(timestamp)![strategy.name] = point.cumulative_pnl
+      chartDataMap.get(timestamp)![strategy.name] = point.cumulative_pnl - baseline
     })
   })
 

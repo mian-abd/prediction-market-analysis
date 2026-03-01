@@ -260,7 +260,7 @@ async def get_signal_performance():
             daily[date_key]["signals_generated"] += 1
             if s.was_correct:
                 daily[date_key]["signals_correct"] += 1
-            daily[date_key]["pnl"] += (s.actual_pnl or 0.0) * 100  # per $100 notional
+            daily[date_key]["pnl"] += (s.actual_pnl or 0.0)
 
         # Build time series
         data = []

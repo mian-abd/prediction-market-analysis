@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-02-28 - **Profitability Roadmap: Audit, L2/L4/L5/L6/L8 Implementation**
+
+### Documentation (New)
+
+- **docs/BUSINESS_DOCUMENTATION.md** — Product view: goals, metrics, roadmap status, “done” criteria.
+- **docs/TECHNICAL_DOCUMENTATION.md** — Architecture, APIs, pipeline, ML (18 features, serving parity), execution, model monitor.
+- **docs/AUDIT_AND_IMPLEMENTATION.md** — Deep audit log: what was verified, 17 fixes (4 CRITICAL), L4/L6/L8 implementation details.
+- **docs/DOCUMENTATION_INDEX.md** — Master index and update workflow.
+- **docs/PROFITABILITY_ROADMAP.md** — Research-backed 8-layer profitability plan; implementation status table.
+
+### Critical Fixes (Self-Audit)
+
+- **Train/serve feature parity** — Serving path now loads price snapshots and orderbook via `load_serving_context()`; all `predict_market()` callers (scheduler, API routes, validate_deployment) pass context. Fixes 11 features that were always 0.0 at serve.
+- **Leaky feature removed** — `log_open_interest` (51% model importance) was post-resolution liquidity; removed from `ENSEMBLE_FEATURE_NAMES`. `cross_platform_spread` (always 0) removed.
+- **Pruning gate** — Replaced “unique ratio < 5%” with “dominant value > 97%” so binary/low-cardinality features (e.g. `is_weekend`, `price_bucket`) are not dropped.
+- **Tradeable-range filter** — Now applies to all markets (not only snapshot-backed); avoids training on settlement prices 0/1 when using fallback.
+- **as_of_days** — Propagated from `train_ensemble.py` to `build_training_matrix()` so snapshot lookup and feature as_of are consistent.
+- **Intra-market arb** — Uses orderbook best ask (not mid-prices) when available for realistic arb cost.
+- **Execution simulator** — Seeded RNG for deterministic backtests.
+- **Fee model** — Polymarket 2% profit fee confirmed removed (docs); fee-free + per-market `taker_fee_bps` for fee-enabled markets. Logging updated to “fee-free”.
+
+### New Modules & Scripts
+
+- **ml/strategies/market_making.py** — Avellaneda-Stoikov market making adapted for prediction markets (Layer 4).
+- **ml/evaluation/model_monitor.py** — Drift detection, rolling Brier, edge decay, retrain triggers (Layer 8).
+- **ml/evaluation/execution_simulator.py**, **validation_gates.py**, **tradability_backtest.py**, **deployment_gate.py** — Validation framework (Layer 5).
+- **ml/strategies/intra_market_arbitrage.py** — Orderbook-based intra-market arb detection.
+- **data_pipeline/collectors/fee_rates.py**, **kalshi_historical.py**, **polymarket_prices.py** — Data infrastructure (Layer 3).
+- **execution/clob_manager.py** — CLOB order management.
+- **ml/strategies/endgame_maker.py**, **ml_informed_mm.py** — Endgame and ML-informed market making.
+- **scripts**: backtest_market_making.py, run_paper_mm.py, backfill_all_prices.py, collect_orderbooks_daemon.py, data_coverage_report.py, and others for backtest/backfill/monitoring.
+
+### Training & Ensemble
+
+- Retrain with honest foundations: 19.1% Brier improvement over market baseline, 4/5 validation gates, $72.55 profit simulation (1,535 trades, 75% win rate). Post-calibrator correctly disabled when it hurts. Model monitor baseline saved on train.
+
+---
+
 ## [0.4.1] - 2026-02-14 - **Deep Audit: Fee Model, P&L Domain, Exposure Fixes**
 
 ### Critical Fixes (Found via Deep Audit)

@@ -113,12 +113,13 @@ def compute_execution_cost(
     slippage_rate = slippage_bps / 10000
 
     if direction == "buy_yes":
-        # Pay slippage above market for YES
         execution_price = market_price * (1 + slippage_rate)
     else:  # buy_no
-        # Pay (1 - market_price) + slippage for NO
-        # NO position benefits when YES price drops, so execution_price is market_price adjusted down
-        execution_price = market_price * (1 - slippage_rate)
+        # NO costs (1 - market_price) per share. Slippage increases that cost.
+        # execution_price is still in YES-price terms for P&L consistency:
+        # cost = (1 - execution_price), so execution_price = 1 - (1 - market_price) * (1 + slippage)
+        no_cost = (1 - market_price) * (1 + slippage_rate)
+        execution_price = 1.0 - no_cost
 
     return {
         "execution_price": execution_price,
@@ -278,16 +279,21 @@ async def _execute_ensemble_trades(session: AsyncSession) -> list[int]:
             logger.warning(f"Skipping {market.question[:60]}: effectively decided (price={market.price_yes:.4f})")
             continue
 
-        # Dynamic slippage from orderbook depth or liquidity tier
+        current_price = market.price_yes
+        if current_price is None:
+            continue
+        if abs(current_price - signal.market_price) > 0.05:
+            logger.info(f"Skipping ensemble signal: market moved too far ({signal.market_price:.3f} -> {current_price:.3f})")
+            continue
+
         slippage_bps = await _get_market_slippage_bps(session, market)
         exec_result = compute_execution_cost(
             direction=signal.direction,
-            market_price=signal.market_price,
+            market_price=current_price,
             slippage_bps=slippage_bps,
         )
         entry_price = exec_result["execution_price"]
 
-        # Calculate quantity based on Kelly with execution price
         if signal.direction == "buy_yes":
             cost_per_share = entry_price
         else:
@@ -402,11 +408,17 @@ async def _execute_elo_trades(session: AsyncSession) -> list[int]:
         if signal.market_price_yes is not None and 0.40 <= signal.market_price_yes <= 0.60:
             kelly *= 0.5
 
-        # Dynamic slippage from orderbook depth or liquidity tier
+        current_price = market.price_yes
+        if current_price is None:
+            continue
+        if abs(current_price - (signal.market_price_yes or 0)) > 0.05:
+            logger.info(f"Skipping elo signal: market moved too far ({signal.market_price_yes} -> {current_price:.3f})")
+            continue
+
         slippage_bps = await _get_market_slippage_bps(session, market)
         exec_result = compute_execution_cost(
             direction=direction,
-            market_price=signal.market_price_yes,
+            market_price=current_price,
             slippage_bps=slippage_bps,
         )
         entry_price = exec_result["execution_price"]
@@ -513,10 +525,17 @@ async def _execute_favorite_longshot_trades(session: AsyncSession) -> list[int]:
         if kelly <= 0:
             continue
 
+        current_price = market.price_yes
+        if current_price is None:
+            continue
+        if abs(current_price - signal.market_price) > 0.05:
+            logger.info(f"Skipping fav-longshot signal: market moved too far ({signal.market_price:.3f} -> {current_price:.3f})")
+            continue
+
         slippage_bps = await _get_market_slippage_bps(session, market)
         exec_result = compute_execution_cost(
             direction=signal.direction,
-            market_price=signal.market_price,
+            market_price=current_price,
             slippage_bps=slippage_bps,
         )
         entry_price = exec_result["execution_price"]
@@ -648,22 +667,31 @@ async def _execute_new_strategy_trades(session: AsyncSession) -> list[int]:
             continue
 
         # Strategy-specific Kelly adjustments
-        if strategy == "consensus":
-            kelly *= 1.5  # Multi-strategy agreement = highest conviction
+        # consensus, market_clustering, and orderflow are disabled (noise strategies).
+        # If they somehow reach here, reject them.
+        if strategy in ("consensus", "market_clustering", "orderflow"):
+            logger.debug(f"Rejecting disabled strategy signal: {strategy}")
+            continue
         elif strategy == "resolution_convergence":
-            kelly *= 1.2  # Slightly more aggressive for high win-rate strategy
+            kelly *= 1.0
         elif strategy == "longshot_bias":
-            kelly *= 1.0  # Standard — well-documented structural edge
-        elif strategy in ("news_catalyst", "orderflow"):
-            kelly *= 0.7  # More conservative — shorter-lived signals
-        elif strategy in ("smart_money", "market_clustering"):
-            kelly *= 0.8  # Upgraded: now uses real on-chain data
+            kelly *= 1.0
+        elif strategy == "news_catalyst":
+            kelly *= 0.7
+        elif strategy == "smart_money":
+            kelly *= 0.8
 
-        # Dynamic slippage from orderbook depth or liquidity tier
+        current_price = market.price_yes
+        if current_price is None:
+            continue
+        if abs(current_price - signal.market_price) > 0.05:
+            logger.info(f"Skipping {strategy} signal: market moved too far ({signal.market_price:.3f} -> {current_price:.3f})")
+            continue
+
         slippage_bps = await _get_market_slippage_bps(session, market)
         exec_result = compute_execution_cost(
             direction=signal.direction,
-            market_price=signal.market_price,
+            market_price=current_price,
             slippage_bps=slippage_bps,
         )
         entry_price = exec_result["execution_price"]

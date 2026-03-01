@@ -17,11 +17,11 @@ import asyncio
 from datetime import datetime, timezone
 
 # Color codes for terminal output
-GREEN = '\033[92m'
-RED = '\033[91m'
-YELLOW = '\033[93m'
-RESET = '\033[0m'
-BOLD = '\033[1m'
+GREEN = ''
+RED = ''
+YELLOW = ''
+RESET = ''
+BOLD = ''
 
 
 def print_section(title):
@@ -72,11 +72,11 @@ async def validate_all():
             'volatility_20' in ENSEMBLE_FEATURE_NAMES
         )
 
-        # Check feature count (contaminated volume features were removed; 20 is correct)
+        # Feature count grows as new features are added; require at least 10
         all_passed &= check(
-            f"Feature count reasonable ({len(ENSEMBLE_FEATURE_NAMES)} features, was 25+)",
-            10 <= len(ENSEMBLE_FEATURE_NAMES) <= 25,
-            f"Expected 10–25 features, got {len(ENSEMBLE_FEATURE_NAMES)}"
+            f"Feature count reasonable ({len(ENSEMBLE_FEATURE_NAMES)} features)",
+            len(ENSEMBLE_FEATURE_NAMES) >= 10,
+            f"Expected >=10 features, got {len(ENSEMBLE_FEATURE_NAMES)}"
         )
 
     except Exception as e:
@@ -94,19 +94,19 @@ async def validate_all():
         )
 
         all_passed &= check(
-            "MIN_VOLUME_TOTAL tightened (≥$10K)",
+            "MIN_VOLUME_TOTAL tightened (>=$10K)",
             MIN_VOLUME_TOTAL >= 10000,
             f"Current: ${MIN_VOLUME_TOTAL:,}"
         )
 
         all_passed &= check(
-            "MIN_VOLUME_24H tightened (≥$1K)",
+            "MIN_VOLUME_24H tightened (>=$1K)",
             MIN_VOLUME_24H >= 1000,
             f"Current: ${MIN_VOLUME_24H:,}"
         )
 
         all_passed &= check(
-            "MIN_LIQUIDITY tightened (≥$5K)",
+            "MIN_LIQUIDITY tightened (>=$5K)",
             MIN_LIQUIDITY >= 5000,
             f"Current: ${MIN_LIQUIDITY:,}"
         )
@@ -117,7 +117,7 @@ async def validate_all():
         # Test case: 4% edge should give ~1.5% Kelly
         kelly_4pct = compute_kelly('buy_yes', 0.54, 0.50, 0.01)
         all_passed &= check(
-            "Kelly formula scales with edge (4% edge → ~1.5%)",
+            "Kelly formula scales with edge (4% edge -> ~1.5%)",
             0.01 <= kelly_4pct <= 0.02,
             f"Got {kelly_4pct:.2%}"
         )
@@ -185,13 +185,13 @@ async def validate_all():
             snap_only_mode = bool(card.get("snapshot_coverage", {}).get("snapshot_only_mode", False))
             if not snap_only_mode:
                 all_passed &= check(
-                    "Brier score honest (≥0.055 after cleaning)",
+                    "Brier score honest (>=0.055 after cleaning)",
                     card['ensemble_brier'] >= 0.055,
                     f"Brier: {card['ensemble_brier']}"
                 )
             else:
                 all_passed &= check(
-                    "Brier score acceptable for snapshot-only (≤0.060)",
+                    "Brier score acceptable for snapshot-only (<=0.060)",
                     card['ensemble_brier'] <= 0.060,
                     f"Brier: {card['ensemble_brier']}"
                 )
@@ -204,7 +204,7 @@ async def validate_all():
                     top_feat[0] not in contaminated
                 )
 
-            # ── Snapshot coverage gate ──────────────────────────────────────
+            # ?? Snapshot coverage gate ??????????????????????????????????????
             # Momentum features activate when >= 10% of training markets have
             # real as_of snapshot prices (hard fail below 10%).
             # Note: coverage % shrinks as new NO-market data is added to denominator;
@@ -305,7 +305,21 @@ async def validate_all():
             market = result.scalar_one_or_none()
 
             if market:
-                pred = ensemble.predict_market(market)
+                # Eagerly capture float values before more session IO (avoids SQLAlchemy async expiry)
+                market_price_float = float(market.price_yes or 0.5)
+                market_id_val = market.id
+
+                from ml.features.training_features import load_serving_context
+                from sqlalchemy import inspect as sa_inspect
+                price_snaps, ob_snap = await load_serving_context(session, market_id_val)
+                # Refresh market to avoid SQLAlchemy async attribute expiry
+                await session.refresh(market)
+                pred = ensemble.predict_market(
+                    market,
+                    price_snapshots=price_snaps,
+                    orderbook_snapshot=ob_snap,
+                    price_yes_override=market_price_float,
+                )
 
                 all_passed &= check(
                     "Live prediction works",
@@ -322,13 +336,15 @@ async def validate_all():
                     pred['features_used'] == len(ensemble._active_features)
                 )
 
-                print(f"      Sample prediction: Market={market.price_yes:.1%}, "
+                print(f"      Sample prediction: Market={market_price_float:.1%}, "
                       f"Ensemble={pred['ensemble_probability']:.1%}, "
                       f"Delta={pred['delta']:+.1%}")
             else:
                 all_passed &= check("Live prediction test", False, "No active markets found")
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         all_passed &= check("Live prediction test", False, str(e))
 
     # ========================================================================
@@ -337,7 +353,7 @@ async def validate_all():
     print_section("FINAL SUMMARY")
 
     if all_passed:
-        print(f"{GREEN}{BOLD}✓ ALL CHECKS PASSED{RESET}")
+        print(f"{GREEN}{BOLD}[OK] ALL CHECKS PASSED{RESET}")
         print(f"\n{GREEN}System is ready for hackathon demo!{RESET}")
         print("\nNext steps:")
         print("  1. Start API: uvicorn api.main:app --reload")
@@ -345,7 +361,7 @@ async def validate_all():
         print("  3. Review: docs/PRODUCTION_READINESS.md")
         return 0
     else:
-        print(f"{RED}{BOLD}✗ SOME CHECKS FAILED{RESET}")
+        print(f"{RED}{BOLD}[FAIL] SOME CHECKS FAILED{RESET}")
         print(f"\n{RED}System needs fixes before deployment.{RESET}")
         print("Review failures above and fix issues.")
         return 1

@@ -6,7 +6,7 @@ from pathlib import Path
 import joblib
 from lightgbm import LGBMClassifier
 from sklearn.metrics import brier_score_loss
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import TimeSeriesSplit
 
 logger = logging.getLogger(__name__)
 MODEL_PATH = Path("ml/saved_models/lightgbm_ensemble.joblib")
@@ -48,8 +48,9 @@ class LightGBMModel:
 
         self.feature_names = feature_names or []
 
-        # Out-of-fold Brier score
-        n_splits = min(5, int(min(pos_count, neg_count)))
+        # Out-of-fold Brier score via temporal CV (expanding window).
+        # Data MUST be sorted by resolved_at before reaching here.
+        n_splits = min(5, len(y) // 20)
         if n_splits < 2:
             self.model.fit(X, y)
             self.brier_score = brier_score_loss(y, self.model.predict_proba(X)[:, 1])
@@ -57,19 +58,25 @@ class LightGBMModel:
             logger.info(f"LightGBM train Brier (no CV): {self.brier_score:.4f}")
             return
 
-        oof_preds = np.zeros(len(y))
-        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        oof_preds = np.full(len(y), np.nan)
+        tscv = TimeSeriesSplit(n_splits=n_splits)
 
-        for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y)):
+        for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X)):
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
 
+            if y_train.sum() == 0 or y_train.sum() == len(y_train):
+                continue
             fold_model = LGBMClassifier(**self.model.get_params())
             fold_model.fit(X_train, y_train)
             oof_preds[val_idx] = fold_model.predict_proba(X_val)[:, 1]
 
-        self.brier_score = brier_score_loss(y, oof_preds)
-        logger.info(f"LightGBM OOF Brier: {self.brier_score:.4f} ({n_splits}-fold)")
+        mask = ~np.isnan(oof_preds)
+        if mask.sum() > 0:
+            self.brier_score = brier_score_loss(y[mask], oof_preds[mask])
+        else:
+            self.brier_score = 1.0
+        logger.info(f"LightGBM OOF Brier (temporal): {self.brier_score:.4f} ({n_splits}-fold, n={mask.sum()})")
 
         # Final model on all data
         self.model.fit(X, y)

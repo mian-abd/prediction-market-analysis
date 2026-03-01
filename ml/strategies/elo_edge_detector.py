@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Market, EloEdgeSignal
 from ml.models.elo_sports import Glicko2Engine
-from ml.strategies.ensemble_edge_detector import compute_kelly, POLYMARKET_FEE_RATE
+from ml.strategies.ensemble_edge_detector import compute_kelly
 from data_pipeline.transformers.sports_matchup_parser import (
     parse_matchup,
     fuzzy_match_player,
@@ -122,16 +122,15 @@ async def scan_for_edges(
             elo_prob_yes = 1.0 - elo_prob_a
 
         # Calculate edge (fee-aware)
-        # Polymarket charges 2% on winnings only when you win
         raw_edge = abs(elo_prob_yes - market_price)
         direction = "buy_yes" if elo_prob_yes > market_price else "buy_no"
-        extra_fee = (market.taker_fee_bps or 0) / 10000.0
+        fee_rate = (market.taker_fee_bps or 0) / 10000.0
 
         if direction == "buy_yes":
-            fee_cost = elo_prob_yes * POLYMARKET_FEE_RATE * (1 - market_price) + SLIPPAGE_BUFFER + extra_fee * (1 - market_price)
+            fee_cost = elo_prob_yes * fee_rate * (1 - market_price) + SLIPPAGE_BUFFER
             net_edge = elo_prob_yes * (1 - market_price) - (1 - elo_prob_yes) * market_price - fee_cost
         else:
-            fee_cost = (1 - elo_prob_yes) * POLYMARKET_FEE_RATE * market_price + SLIPPAGE_BUFFER + extra_fee * market_price
+            fee_cost = (1 - elo_prob_yes) * fee_rate * market_price + SLIPPAGE_BUFFER
             net_edge = (1 - elo_prob_yes) * market_price - elo_prob_yes * (1 - market_price) - fee_cost
 
         if net_edge < min_net_edge:
@@ -250,6 +249,155 @@ async def get_active_edges(session: AsyncSession) -> list[dict]:
     ]
 
 
+async def scan_nba_edges(
+    session: AsyncSession,
+    engine: Glicko2Engine,
+    min_net_edge: float = MIN_NET_EDGE,
+    min_confidence: float = MIN_CONFIDENCE,
+) -> list[dict]:
+    """Scan active NBA markets for Elo-based edge signals.
+
+    NBA games have $3-7M per-game volume — the highest of any Polymarket sport.
+    Team matchups are identified via slug (nba-LAL-GSW-YYYY-MM-DD) or question text.
+    """
+    from data_pipeline.transformers.sports_matchup_parser import (
+        parse_nba_matchup,
+        detect_nba_market,
+    )
+
+    result = await session.execute(
+        select(Market).where(
+            Market.is_active == True,  # noqa: E711
+            Market.price_yes != None,  # noqa: E711
+        ).limit(1000)
+    )
+    markets = result.scalars().all()
+
+    if not markets:
+        return []
+
+    known_teams = list(engine.ratings.keys())
+    if not known_teams:
+        logger.warning("No NBA team ratings loaded. Run build_elo_ratings_nba.py first.")
+        return []
+
+    await _expire_old_signals(session)
+
+    edges_found = []
+
+    for market in markets:
+        slug = market.slug or ""
+        question = market.question or ""
+        category = market.normalized_category or market.category or ""
+
+        matchup = parse_nba_matchup(
+            question=question,
+            category=category,
+            market_id=market.id,
+            slug=slug,
+        )
+        if matchup is None:
+            continue
+
+        matched_a = fuzzy_match_player(matchup.player_a, known_teams, threshold=0.75)
+        matched_b = fuzzy_match_player(matchup.player_b, known_teams, threshold=0.75)
+
+        if not matched_a or not matched_b:
+            continue
+
+        rating_a = engine.ratings.get(matched_a, {}).get("court") or engine.ratings.get(matched_a, {}).get("overall")
+        rating_b = engine.ratings.get(matched_b, {}).get("court") or engine.ratings.get(matched_b, {}).get("overall")
+        if not rating_a or not rating_b:
+            continue
+
+        if rating_a.phi > MAX_RD_THRESHOLD or rating_b.phi > MAX_RD_THRESHOLD:
+            continue
+        if rating_a.match_count < 10 or rating_b.match_count < 10:
+            continue
+
+        elo_prob_a, confidence = engine.win_probability(matched_a, matched_b, "court")
+        if confidence < min_confidence:
+            continue
+
+        market_price = market.price_yes or 0.5
+
+        if matchup.yes_side_player == matchup.player_a:
+            elo_prob_yes = elo_prob_a
+        else:
+            elo_prob_yes = 1.0 - elo_prob_a
+
+        raw_edge = abs(elo_prob_yes - market_price)
+        direction = "buy_yes" if elo_prob_yes > market_price else "buy_no"
+        fee_rate = (market.taker_fee_bps or 0) / 10000.0
+
+        if direction == "buy_yes":
+            fee_cost = elo_prob_yes * fee_rate * (1 - market_price) + SLIPPAGE_BUFFER
+            net_edge = elo_prob_yes * (1 - market_price) - (1 - elo_prob_yes) * market_price - fee_cost
+        else:
+            fee_cost = (1 - elo_prob_yes) * fee_rate * market_price + SLIPPAGE_BUFFER
+            net_edge = (1 - elo_prob_yes) * market_price - elo_prob_yes * (1 - market_price) - fee_cost
+
+        if net_edge < min_net_edge:
+            continue
+
+        vol_total = float(market.volume_total or 0)
+        if vol_total < 50000:
+            continue
+
+        kelly = compute_kelly(direction, elo_prob_yes, market_price, fee_cost)
+
+        existing = await session.execute(
+            select(EloEdgeSignal).where(
+                EloEdgeSignal.market_id == market.id,
+                EloEdgeSignal.expired_at == None,  # noqa: E711
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue
+
+        signal = EloEdgeSignal(
+            market_id=market.id,
+            sport="nba",
+            detected_at=datetime.utcnow(),
+            player_a=matched_a,
+            player_b=matched_b,
+            surface="court",
+            elo_prob_a=elo_prob_a,
+            elo_confidence=confidence,
+            market_price_yes=market_price,
+            yes_side_player=matchup.yes_side_player,
+            raw_edge=raw_edge,
+            fee_cost=fee_cost,
+            net_edge=net_edge,
+            kelly_fraction=kelly,
+        )
+        session.add(signal)
+        edges_found.append({
+            "market_id": market.id,
+            "question": question,
+            "team_a": matched_a,
+            "team_b": matched_b,
+            "elo_prob_a": round(elo_prob_a, 4),
+            "confidence": round(confidence, 4),
+            "market_price": round(market_price, 4),
+            "net_edge": round(net_edge, 4),
+            "kelly_fraction": round(kelly, 4),
+            "direction": direction,
+            "volume": vol_total,
+        })
+
+        logger.info(
+            f"NBA Edge: {matched_a} vs {matched_b} | "
+            f"Elo: {elo_prob_a:.1%} | Market: {market_price:.1%} | "
+            f"Net edge: {net_edge:.1%} | Kelly: {kelly:.2%} | Vol: ${vol_total:,.0f}"
+        )
+
+    if edges_found:
+        await session.commit()
+    logger.info(f"NBA edge scan: {len(edges_found)} edges found from {len(markets)} active markets")
+    return edges_found
+
+
 async def scan_ufc_edges(
     session: AsyncSession,
     engine: Glicko2Engine,
@@ -315,13 +463,13 @@ async def scan_ufc_edges(
 
         raw_edge = abs(elo_prob_yes - market_price)
         direction = "buy_yes" if elo_prob_yes > market_price else "buy_no"
-        extra_fee = (market.taker_fee_bps or 0) / 10000.0
+        fee_rate = (market.taker_fee_bps or 0) / 10000.0
 
         if direction == "buy_yes":
-            fee_cost = elo_prob_yes * POLYMARKET_FEE_RATE * (1 - market_price) + SLIPPAGE_BUFFER + extra_fee * (1 - market_price)
+            fee_cost = elo_prob_yes * fee_rate * (1 - market_price) + SLIPPAGE_BUFFER
             net_edge = elo_prob_yes * (1 - market_price) - (1 - elo_prob_yes) * market_price - fee_cost
         else:
-            fee_cost = (1 - elo_prob_yes) * POLYMARKET_FEE_RATE * market_price + SLIPPAGE_BUFFER + extra_fee * market_price
+            fee_cost = (1 - elo_prob_yes) * fee_rate * market_price + SLIPPAGE_BUFFER
             net_edge = (1 - elo_prob_yes) * market_price - elo_prob_yes * (1 - market_price) - fee_cost
 
         if net_edge < min_net_edge:

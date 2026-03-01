@@ -42,10 +42,10 @@ def main():
     print(f"Avg Snapshots/Market (24h): {avg_snapshots:.0f}")
 
     if avg_snapshots >= 60:
-        print(f"✓ Momentum features ready (avg {avg_snapshots:.0f} >= 60 snapshots)")
+        print(f"[OK] Momentum features ready (avg {avg_snapshots:.0f} >= 60 snapshots)")
     else:
         time_needed_min = (60 - avg_snapshots) / 3  # 3 snapshots per minute (20s interval)
-        print(f"⏱ Need {60-avg_snapshots:.0f} more snapshots (~{time_needed_min:.0f} min for momentum features)")
+        print(f"[wait] Need {60-avg_snapshots:.0f} more snapshots (~{time_needed_min:.0f} min for momentum features)")
 
     conn.close()
 

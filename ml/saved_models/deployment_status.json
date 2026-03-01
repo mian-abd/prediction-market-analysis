@@ -1,0 +1,44 @@
+{
+  "approved": false,
+  "timestamp": "2026-03-01T02:29:06.793886+00:00",
+  "gates_passed": 0,
+  "gates_total": 5,
+  "gates": [
+    {
+      "name": "Brier vs Market Baseline",
+      "passed": false,
+      "value": 0.1427,
+      "threshold": 0.1312,
+      "detail": "Improvement: -8.8% (model=0.1427, market=0.1312)"
+    },
+    {
+      "name": "Calibration Quality",
+      "passed": false,
+      "value": 0.3452,
+      "threshold": 0.1,
+      "detail": "Worst bin: [0.6-0.7]: predicted=0.667, actual=0.321 (4 populated bins)"
+    },
+    {
+      "name": "EV Stability Across Sizing",
+      "passed": false,
+      "value": 0.0,
+      "threshold": 2.0,
+      "detail": "Profitable in: []. Total P&L: $-304.46"
+    },
+    {
+      "name": "Friction Stress Test (polymarket, +1.0%)",
+      "passed": false,
+      "value": -0.683,
+      "threshold": 0.0,
+      "detail": "128 trades, P&L/trade: $-0.0053"
+    },
+    {
+      "name": "Statistical Significance",
+      "passed": false,
+      "value": -8.7745,
+      "threshold": 2.0,
+      "detail": "n=132, improvement=-8.8%, p-value=0.0177"
+    }
+  ],
+  "action": "hold_current_model"
+}

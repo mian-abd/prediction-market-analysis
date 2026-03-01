@@ -269,6 +269,91 @@ def parse_ufc_matchup(
     )
 
 
+_NBA_INDICATORS = [
+    "nba", "basketball", "lakers", "celtics", "warriors", "bulls", "heat",
+    "nets", "bucks", "suns", "clippers", "nuggets", "knicks",
+    "76ers", "sixers", "cavaliers", "hawks", "hornets", "magic",
+    "pacers", "pistons", "raptors", "grizzlies", "pelicans", "thunder",
+    "trail blazers", "blazers", "spurs", "jazz", "rockets", "timberwolves",
+    "mavericks", "wizards",
+]
+
+# Slug pattern: nba-LAL-GSW-2026-02-28
+_NBA_SLUG_RE = re.compile(
+    r"nba-([A-Z]{2,3})-([A-Z]{2,3})-(\d{4}-\d{2}-\d{2})",
+    re.IGNORECASE,
+)
+
+
+def detect_nba_market(question: str, category: str = "", slug: str = "") -> bool:
+    """Check if a market is about an NBA game."""
+    combined = f"{question} {category} {slug}".lower()
+    if _NBA_SLUG_RE.search(slug):
+        return True
+    return any(indicator in combined for indicator in _NBA_INDICATORS)
+
+
+def parse_nba_matchup(
+    question: str,
+    category: str = "",
+    market_id: int | None = None,
+    slug: str = "",
+) -> Optional["ParsedMatchup"]:
+    """Parse an NBA market into a team matchup.
+
+    Preferred path: extract team codes from slug (nba-LAL-GSW-2026-02-28).
+    Fallback: extract "TeamA vs TeamB" from question text.
+
+    Returns ParsedMatchup with sport="nba", surface="court".
+    """
+    from data_pipeline.collectors.nba_results import abbr_to_team_name
+
+    if not detect_nba_market(question, category, slug):
+        return None
+    if _is_prop_bet(question):
+        return None
+
+    team_a = team_b = None
+
+    # Preferred: parse slug for exact team codes
+    slug_match = _NBA_SLUG_RE.search(slug)
+    if slug_match:
+        abbr_a = slug_match.group(1).upper()
+        abbr_b = slug_match.group(2).upper()
+        team_a = abbr_to_team_name(abbr_a) or abbr_a
+        team_b = abbr_to_team_name(abbr_b) or abbr_b
+
+    # Fallback: "A vs B" pattern in question
+    if not team_a or not team_b:
+        for pattern in _VS_PATTERNS:
+            m = pattern.search(question)
+            if m:
+                team_a = _clean_player_name(m.group(1))
+                team_b = _clean_player_name(m.group(2))
+                break
+
+    if not team_a or not team_b or len(team_a) < 3 or len(team_b) < 3:
+        return None
+
+    if _is_tournament_winner(question):
+        return None
+
+    yes_side, yes_confidence = _determine_yes_side(question, team_a, team_b)
+    if yes_confidence < 0.6:
+        return None
+
+    return ParsedMatchup(
+        player_a=team_a,
+        player_b=team_b,
+        sport="nba",
+        surface="court",
+        confidence=0.85 * yes_confidence,
+        yes_side_player=yes_side,
+        market_id=market_id,
+        raw_question=question,
+    )
+
+
 def fuzzy_match_player(
     parsed_name: str,
     known_players: list[str],

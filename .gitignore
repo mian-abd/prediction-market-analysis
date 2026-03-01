@@ -17,6 +17,9 @@ venv/
 .env
 .env.local
 
+# Logs
+train_log.txt
+
 # Database & local data (do not commit)
 *.db
 *.db-journal

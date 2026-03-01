@@ -40,6 +40,9 @@ python-Levenshtein>=0.25.0
 fastapi-cache2>=0.2.2
 redis[asyncio]>=5.0.0  # For real-time price cache and arbitrage detection
 
+# Cryptography (Kalshi API RSA signing)
+cryptography>=42.0.0
+
 # Utilities
 python-dateutil==2.9.0
 tenacity>=8.2.0  # Exponential backoff retries for external API calls

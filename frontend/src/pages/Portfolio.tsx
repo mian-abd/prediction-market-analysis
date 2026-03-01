@@ -10,10 +10,10 @@
  * - Auto-trading control panel (when Auto tab selected)
  */
 
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { Briefcase, AlertCircle, Bot, X, Plus, Loader2, UserX } from 'lucide-react'
+import { Briefcase, AlertCircle, Bot, X, Plus, Loader2, UserX, RotateCcw } from 'lucide-react'
 import apiClient from '../api/client'
 import ErrorState from '../components/ErrorState'
 import { TableSkeleton, Skeleton } from '../components/LoadingSkeleton'
@@ -71,6 +71,31 @@ interface FollowingTrader {
 
 type PortfolioType = 'all' | 'manual' | 'auto'
 
+const PNL_BASELINE_KEY = 'portfolio_pnl_baseline'
+
+type PnlBaseline = { total: number; realized: number; unrealized: number }
+
+function getStoredPnlBaseline(): Partial<Record<'all' | 'manual', PnlBaseline>> {
+  try {
+    const raw = localStorage.getItem(PNL_BASELINE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Partial<Record<'all' | 'manual', PnlBaseline>>
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function setStoredPnlBaseline(scope: 'all' | 'manual', value: PnlBaseline | null) {
+  const stored = getStoredPnlBaseline()
+  if (value == null) {
+    delete stored[scope]
+  } else {
+    stored[scope] = value
+  }
+  localStorage.setItem(PNL_BASELINE_KEY, JSON.stringify(stored))
+}
+
 export default function Portfolio() {
   const navigate = useNavigate()
   const [portfolioType, setPortfolioType] = useState<PortfolioType>('all')
@@ -79,6 +104,7 @@ export default function Portfolio() {
   const [pnlView, setPnlView] = useState<'total' | 'realized' | 'open'>('total')
   const [showOpenForm, setShowOpenForm] = useState(false)
   const [closingId, setClosingId] = useState<number | null>(null)
+  const [pnlBaselineVersion, setPnlBaselineVersion] = useState(0)
 
   // Open position form state
   const [formMarketId, setFormMarketId] = useState('')
@@ -96,6 +122,29 @@ export default function Portfolio() {
     queryClient.invalidateQueries({ queryKey: ['portfolio-summary'] })
     queryClient.invalidateQueries({ queryKey: ['portfolio-positions'] })
   }
+
+  const pnlBaseline: PnlBaseline | null =
+    portfolioType === 'auto'
+      ? null
+      : (getStoredPnlBaseline()[portfolioType === 'manual' ? 'manual' : 'all'] ?? null)
+
+  const setPnlToZero = useCallback(() => {
+    if (!summary) return
+    const baseline: PnlBaseline = {
+      total: summary.total_pnl ?? 0,
+      realized: summary.total_realized_pnl ?? 0,
+      unrealized: summary.total_unrealized_pnl ?? 0,
+    }
+    const scope = portfolioType === 'manual' ? 'manual' : 'all'
+    setStoredPnlBaseline(scope, baseline)
+    setPnlBaselineVersion((v) => v + 1)
+  }, [summary, portfolioType])
+
+  const clearPnlReset = useCallback(() => {
+    const scope = portfolioType === 'manual' ? 'manual' : 'all'
+    setStoredPnlBaseline(scope, null)
+    setPnlBaselineVersion((v) => v + 1)
+  }, [portfolioType])
 
   // Open position mutation
   const openMutation = useMutation({
@@ -442,11 +491,41 @@ export default function Portfolio() {
         </div>
       ) : summary ? (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          {/* P&L Card — Robinhood/Webull style: prominent number + Total / Realized / Open toggle */}
+          {/* P&L Card — Robinhood/Webull style: prominent number + Total / Realized / Open toggle + Reset to 0 */}
           <div className="card p-4">
-            <p className="text-[10px] uppercase mb-2" style={{ color: 'var(--text-3)' }}>
-              P&L
-            </p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] uppercase" style={{ color: 'var(--text-3)' }}>
+                P&L
+              </p>
+              {(portfolioType === 'all' || portfolioType === 'manual') && (
+                <div className="flex items-center gap-1">
+                  {pnlBaseline ? (
+                    <button
+                      type="button"
+                      onClick={clearPnlReset}
+                      className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors hover:bg-white/10"
+                      style={{ color: 'var(--text-3)' }}
+                      title="Show actual P&L again"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      Clear reset
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={setPnlToZero}
+                      disabled={!summary}
+                      className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors hover:bg-white/10 disabled:opacity-50"
+                      style={{ color: 'var(--text-3)' }}
+                      title="Reset P&L display to $0 (track from here)"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      Reset to $0
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
             <div className="flex gap-2 mb-2">
               {(['total', 'realized', 'open'] as const).map((mode) => (
                 <button
@@ -463,9 +542,12 @@ export default function Portfolio() {
               ))}
             </div>
             {(() => {
-              const total = summary.total_pnl ?? summary.total_realized_pnl ?? 0
-              const realized = summary.total_realized_pnl ?? 0
-              const open = summary.total_unrealized_pnl ?? 0
+              const totalRaw = summary.total_pnl ?? summary.total_realized_pnl ?? 0
+              const realizedRaw = summary.total_realized_pnl ?? 0
+              const openRaw = summary.total_unrealized_pnl ?? 0
+              const total = pnlBaseline ? totalRaw - pnlBaseline.total : totalRaw
+              const realized = pnlBaseline ? realizedRaw - pnlBaseline.realized : realizedRaw
+              const open = pnlBaseline ? openRaw - pnlBaseline.unrealized : openRaw
               const value = pnlView === 'total' ? total : pnlView === 'realized' ? realized : open
               const color = value >= 0 ? 'var(--green)' : 'var(--red)'
               return (
@@ -476,6 +558,11 @@ export default function Portfolio() {
                   {pnlView === 'total' && (
                     <p className="text-[11px] font-mono mt-1" style={{ color: 'var(--text-3)' }}>
                       Realized ${realized.toFixed(2)} · Open ${open.toFixed(2)}
+                    </p>
+                  )}
+                  {pnlBaseline && (
+                    <p className="text-[10px] mt-1" style={{ color: 'var(--text-3)', opacity: 0.8 }}>
+                      Display reset to $0
                     </p>
                   )}
                 </>
@@ -554,7 +641,13 @@ export default function Portfolio() {
             ))}
           </div>
         </div>
-        <EquityCurve timeRange={timeRange} showDrawdown={false} autoRefresh={true} portfolioType={portfolioType} />
+        <EquityCurve
+          timeRange={timeRange}
+          showDrawdown={false}
+          autoRefresh={true}
+          portfolioType={portfolioType}
+          pnlBaseline={pnlBaseline?.total ?? undefined}
+        />
       </div>
 
       {/* Drawdown Chart */}

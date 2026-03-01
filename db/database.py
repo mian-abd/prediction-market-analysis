@@ -25,8 +25,8 @@ _is_sqlite = _db_url.strip().startswith("sqlite")
 if _is_sqlite:
     _db_url = _resolve_sqlite_url(_db_url)
 
-# SQLite-specific connect_args
-_connect_args = {"check_same_thread": False} if _is_sqlite else {}
+# SQLite-specific connect_args — timeout lets aiosqlite wait up to 60s for locks
+_connect_args = {"check_same_thread": False, "timeout": 60} if _is_sqlite else {}
 
 engine = create_async_engine(
     _db_url,

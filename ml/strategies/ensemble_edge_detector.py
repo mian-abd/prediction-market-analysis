@@ -26,7 +26,7 @@ MAX_PRICE = 0.98            # Tradeable range upper bound
 # --- Edge Thresholds ---
 MIN_NET_EDGE = 0.03         # 3% minimum net edge after fees
 SLIPPAGE_BUFFER = 0.01      # 1% slippage estimate
-POLYMARKET_FEE_RATE = 0.02  # 2% on net winnings (only charged when winning)
+POLYMARKET_FEE_RATE = 0.0   # Default: most Polymarket markets are fee-free. Per-market fee from DB.
 MAX_KELLY = 0.04            # Maximum Kelly fraction (4%) - Phase 2.2: 1.0% effective position
 KELLY_FRACTION = 0.25       # Fractional Kelly multiplier (safety)
 MIN_CONFIDENCE = 0.5        # Minimum confidence score
@@ -103,24 +103,23 @@ def compute_directional_ev(
 ) -> tuple[str | None, float, float]:
     """Compute directional expected value for both sides.
 
-    Polymarket charges 2% on NET WINNINGS only when you win (0% if you lose).
+    Fee model: uses the per-market fee rate from the database (taker_fee_bps).
+    Most Polymarket markets are fee-free (taker_fee_bps=0).
+    Fee-enabled markets have a curve-based fee queried from the API.
     Expected fee = win_probability * fee_rate * winnings_per_share.
-
-    Direction selection is weighted by payoff asymmetry — we prefer directions
-    where risk:reward is favorable (e.g. buy_no on overpriced favorites).
 
     Returns (direction, net_ev, fee_cost) where fee_cost is for the chosen direction.
     """
     p = ensemble_prob    # true probability of YES
     q = market_price     # market YES price
-    extra_fee = (taker_fee_bps / 10000)  # additional platform fees (usually 0)
+    fee_rate = taker_fee_bps / 10000  # per-market fee rate (0 for fee-free)
 
     # Buy YES: pay q, receive 1 if YES. Winnings = (1-q). Fee only if win.
-    fee_yes = p * POLYMARKET_FEE_RATE * (1 - q) + SLIPPAGE_BUFFER + extra_fee * (1 - q)
+    fee_yes = p * fee_rate * (1 - q) + SLIPPAGE_BUFFER
     ev_yes = p * (1 - q) - (1 - p) * q - fee_yes
 
     # Buy NO: pay (1-q), receive 1 if NO. Winnings = q. Fee only if win.
-    fee_no = (1 - p) * POLYMARKET_FEE_RATE * q + SLIPPAGE_BUFFER + extra_fee * q
+    fee_no = (1 - p) * fee_rate * q + SLIPPAGE_BUFFER
     ev_no = (1 - p) * q - p * (1 - q) - fee_no
 
     # Weight EV by payoff ratio — prefer directions where one win covers multiple losses

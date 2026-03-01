@@ -69,6 +69,31 @@ def ufc_sport_config() -> "SportConfig":
     )
 
 
+def nba_sport_config() -> "SportConfig":
+    """NBA team Glicko-2 config.
+
+    Tuned for NBA team dynamics:
+    - Lower tau (0.4): NBA is more predictable than UFC, smaller rating jumps
+    - Lower RD inflation (0.3): teams play 82+ games/year so rarely inactive
+    - RD floor 25: NBA teams play constantly, high certainty over a season
+    - Single 'court' surface: no surface variation in basketball
+    - surface_blend 1.0 + min_surface_matches 5: use overall rating always
+    """
+    return SportConfig(
+        sport="nba",
+        tau=0.4,
+        rd_inflation_per_day=0.3,
+        rd_floor=25.0,
+        rd_ceiling=350.0,
+        default_mu=1500.0,
+        default_phi=350.0,
+        default_sigma=0.06,
+        surfaces=["court"],
+        surface_blend=1.0,
+        min_surface_matches=5,
+    )
+
+
 @dataclass
 class PlayerRating:
     """A player's Glicko-2 rating (stored in display scale)."""

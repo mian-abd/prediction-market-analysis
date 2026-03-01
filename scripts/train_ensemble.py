@@ -34,6 +34,7 @@ _ARCHIVE_DIR: Path | None = None
 _SNAPSHOT_ONLY: bool = False  # Set by --snapshot-only flag: train only on as_of snapshot markets
 _TRADEABLE_RANGE: tuple[float, float] | None = None  # Set by --tradeable-range: filter to uncertain markets
 _AS_OF_DAYS: int = 1  # Set by --as-of-days: how many days before resolution to use as reference
+_VARIABLE_AS_OF: bool = False  # Set by --variable-as-of: multi-horizon sampling
 
 import asyncio
 import logging
@@ -48,6 +49,7 @@ from sqlalchemy import select, func
 
 from ml.features.training_features import (
     build_training_matrix,
+    build_variable_as_of_matrix,
     prune_features,
     ENSEMBLE_FEATURE_NAMES,
     N_FEATURES,
@@ -425,60 +427,116 @@ async def load_resolved_markets() -> tuple[list[Market], dict[int, list[float]],
         return markets, price_snapshots_map, price_at_as_of_map, orderbook_snapshots_map
 
 
-def temporal_split(
-    markets: list, X: np.ndarray, y: np.ndarray, train_ratio: float = 0.8
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
-    """Split by resolved_at date, not random index.
+async def load_resolved_markets_raw() -> tuple[list, dict[int, list[tuple]], dict[int, list[tuple]], dict[int, list[dict]]]:
+    """Load resolved markets with ALL raw snapshots (unfiltered by as_of).
 
-    Returns (X_train, X_test, y_train, y_test, cutoff_date_str)
+    Used by --variable-as-of mode. Returns raw timestamp/price tuples so the
+    caller can filter per-horizon.
+
+    Returns:
+        (markets, raw_price_snapshots, raw_orderbook_snapshots, raw_trades) where:
+          raw_price_snapshots: {market_id: [(datetime, float), ...]}
+          raw_orderbook_snapshots: {market_id: [(datetime, OrderbookSnapshot), ...]}
+          raw_trades: {market_id: [{"timestamp": datetime, "side": str, "price": float, "size": float}, ...]}
     """
-    # Markets are already sorted by resolved_at from the query
-    dates = []
-    for m in markets:
-        if m.resolved_at:
-            dates.append(m.resolved_at)
-        elif m.end_date:
-            dates.append(m.end_date)
-        else:
-            dates.append(datetime(2020, 1, 1))  # Fallback for missing dates
+    async with async_session() as session:
+        result = await session.execute(
+            select(Market).where(
+                Market.is_resolved == True,
+                Market.resolution_value != None,
+            ).order_by(Market.resolved_at.asc())
+        )
+        markets = list(result.scalars().all())
+        market_ids = [m.id for m in markets]
+        session.expunge_all()
 
-    # We only have dates for markets that passed the build_training_matrix filter,
-    # but markets list may be longer. Use the actual array length.
-    n = len(y)
-    # The markets list is pre-sorted, but build_training_matrix may skip some.
-    # We need to track which markets made it into the matrix.
-    # Since we can't easily do that here, use position-based split (data is already
-    # temporally ordered because markets were loaded ORDER BY resolved_at ASC).
-    cutoff_idx = int(n * train_ratio)
+        raw_price_snapshots: dict[int, list[tuple]] = {}
+        if market_ids:
+            CHUNK = 900
+            all_rows = []
+            for i in range(0, len(market_ids), CHUNK):
+                chunk = market_ids[i:i + CHUNK]
+                chunk_result = await session.execute(
+                    select(PriceSnapshot.market_id, PriceSnapshot.timestamp, PriceSnapshot.price_yes)
+                    .where(PriceSnapshot.market_id.in_(chunk))
+                    .order_by(PriceSnapshot.market_id, PriceSnapshot.timestamp)
+                )
+                all_rows.extend(chunk_result.all())
 
-    # Ensure test set has at least 2 YES and 2 NO samples
-    # GUARD: lower bound prevents infinite loop when no class diversity exists
-    min_cutoff = max(20, int(n * 0.5))
-    while cutoff_idx > min_cutoff and cutoff_idx < n - 4:
-        test_y = y[cutoff_idx:]
-        if test_y.sum() >= 2 and (len(test_y) - test_y.sum()) >= 2:
-            break
-        cutoff_idx -= 1
+            for market_id, timestamp, price in all_rows:
+                if market_id not in raw_price_snapshots:
+                    raw_price_snapshots[market_id] = []
+                raw_price_snapshots[market_id].append((timestamp, price))
 
-    if cutoff_idx <= min_cutoff:
-        # Could not find a split with class diversity — fall back to default 80/20
-        cutoff_idx = int(n * train_ratio)
-        logger.warning(
-            f"Could not find split with class diversity in test set. "
-            f"Using default {train_ratio:.0%}/{1-train_ratio:.0%} split."
+        raw_orderbook_snapshots: dict[int, list[tuple]] = {}
+        if market_ids:
+            CHUNK = 900
+            all_obs = []
+            for i in range(0, len(market_ids), CHUNK):
+                chunk = market_ids[i:i + CHUNK]
+                chunk_result = await session.execute(
+                    select(OrderbookSnapshot)
+                    .where(OrderbookSnapshot.market_id.in_(chunk))
+                    .order_by(OrderbookSnapshot.market_id, OrderbookSnapshot.timestamp)
+                )
+                all_obs.extend(chunk_result.scalars().all())
+
+            for ob in all_obs:
+                if ob.market_id not in raw_orderbook_snapshots:
+                    raw_orderbook_snapshots[ob.market_id] = []
+                raw_orderbook_snapshots[ob.market_id].append((ob.timestamp, ob))
+
+        logger.info(
+            f"Raw snapshot data: {len(raw_price_snapshots)} markets with prices, "
+            f"{len(raw_orderbook_snapshots)} with orderbooks"
         )
 
-    X_train, X_test = X[:cutoff_idx], X[cutoff_idx:]
-    y_train, y_test = y[:cutoff_idx], y[cutoff_idx:]
+        # Load trades via synchronous sqlite3 for speed (11M+ rows, async ORM too slow)
+        import sqlite3 as _sqlite3
+        raw_trades: dict[int, list[dict]] = {}
+        db_path = project_root / "data" / "markets.db"
+        try:
+            conn = _sqlite3.connect(str(db_path))
+            conn.row_factory = _sqlite3.Row
+            market_id_set = set(market_ids)
+            logger.info("Loading trade history for resolved markets (this may take a moment)...")
 
-    # Determine approximate cutoff date
-    cutoff_date_str = "unknown"
-    if len(dates) >= n:
-        # Find the date at the cutoff position
-        # Since some markets are skipped, this is approximate
-        cutoff_date_str = str(dates[min(cutoff_idx, len(dates) - 1)])[:10]
+            # Use WHERE IN to avoid full table scan; batch if >999 IDs (SQLite limit)
+            batch_size = 900
+            id_list = list(market_id_set)
+            count = 0
+            for batch_start in range(0, len(id_list), batch_size):
+                batch_ids = id_list[batch_start:batch_start + batch_size]
+                placeholders = ",".join("?" * len(batch_ids))
+                cursor = conn.execute(
+                    f"SELECT market_id, timestamp, side, price, size "
+                    f"FROM trades WHERE market_id IN ({placeholders}) "
+                    f"ORDER BY market_id, timestamp",
+                    batch_ids,
+                )
+                for row in cursor:
+                    mid = row["market_id"]
+                    ts_raw = row["timestamp"]
+                    try:
+                        ts = datetime.fromisoformat(ts_raw) if isinstance(ts_raw, str) else ts_raw
+                    except (ValueError, TypeError):
+                        continue
+                    if mid not in raw_trades:
+                        raw_trades[mid] = []
+                    raw_trades[mid].append({
+                        "timestamp": ts,
+                        "side": row["side"] or "BUY",
+                        "price": float(row["price"]),
+                        "size": float(row["size"]),
+                    })
+                    count += 1
+            conn.close()
+            logger.info(f"Loaded {count:,} trades for {len(raw_trades)} markets")
+        except Exception as e:
+            logger.warning(f"Could not load trades (order flow features will be zeros): {e}")
 
-    return X_train, X_test, y_train, y_test, cutoff_date_str
+        return markets, raw_price_snapshots, raw_orderbook_snapshots, raw_trades
+
 
 
 def walk_forward_oof(
@@ -600,7 +658,7 @@ def significance_gate(
     model_sq_errors = (y[mask] - model_preds[mask]) ** 2
 
     try:
-        _, p_value = wilcoxon(cal_sq_errors, model_sq_errors)
+        _, p_value = wilcoxon(cal_sq_errors, model_sq_errors, alternative='greater')
         return p_value < alpha, float(p_value)
     except ValueError as e:
         logger.warning(f"  Wilcoxon test failed: {e}")
@@ -653,12 +711,13 @@ def profit_simulation(
 ) -> dict:
     """Walk through test set chronologically, simulate trading with realistic Polymarket fees.
 
-    Fee model: Polymarket charges 2% on NET WINNINGS only (0% on losses).
-    This is much more favorable than a flat fee model.
+    Fee model: Most Polymarket markets are fee-free (fee_rate=0).
+    Fee-enabled markets have a curve-based fee. For backtest simplicity,
+    we model the average case: 0% for most markets.
 
     Returns dict with gated vs ungated P&L at multiple thresholds.
     """
-    FEE_RATE = 0.02  # Polymarket: 2% on winnings only
+    FEE_RATE = 0.0  # Most Polymarket markets are fee-free
 
     def compute_trade_pnl(direction: str, actual: float, q: float) -> float:
         """Compute P&L for a single trade with realistic Polymarket fees."""
@@ -739,7 +798,7 @@ def profit_simulation(
         "gated_trades": gated_trades,
         "gated_win_rate": round(gated_wins / max(1, gated_trades), 3),
         "min_net_edge": min_net_edge,
-        "fee_model": "polymarket_2pct_on_winnings",
+        "fee_model": "polymarket_fee_free",
         "slippage": slippage,
         "threshold_sweep": {
             f"{t:.0%}": {
@@ -760,40 +819,69 @@ async def main():
     logger.info("=" * 60)
 
     # --- Load data ---
-    logger.info("\nLoading resolved markets (ordered by resolved_at)...")
-    markets, price_snapshots_map, price_at_as_of_map, orderbook_snapshots_map = await load_resolved_markets()
-    logger.info(f"Loaded {len(markets)} resolved markets")
+    market_indices = None  # set by variable_as_of mode for grouped split
 
-    # --- Build feature matrix (with as_of enforcement) ---
-    snapshot_only = _SNAPSHOT_ONLY
-    tradeable_range = _TRADEABLE_RANGE
+    if _VARIABLE_AS_OF:
+        logger.info("\nLoading resolved markets with RAW snapshots (variable as_of mode)...")
+        markets, raw_price_snaps, raw_ob_snaps, raw_trades = await load_resolved_markets_raw()
+        logger.info(f"Loaded {len(markets)} resolved markets")
 
-    mode_parts = []
-    if snapshot_only:
-        mode_parts.append("snapshot_only=True")
-    if tradeable_range is not None:
-        lo, hi = tradeable_range
-        mode_parts.append(f"tradeable_range=[{lo:.2f}, {hi:.2f}]")
-    as_of_label = f"as_of=resolved_at-{_AS_OF_DAYS}d"
-    mode_desc = ", ".join(mode_parts) if mode_parts else f"{as_of_label}, all prices"
-    if mode_parts:
-        mode_parts.insert(0, as_of_label)
-        mode_desc = ", ".join(mode_parts)
-    logger.info(f"\nExtracting features ({mode_desc})...")
-    if tradeable_range is not None:
-        logger.info(
-            f"  NOTE: Near-decided markets (price outside [{tradeable_range[0]:.0%}, "
-            f"{tradeable_range[1]:.0%}]) excluded — forces learning genuine uncertainty signal."
+        tradeable_range = _TRADEABLE_RANGE
+        logger.info(f"\nBuilding multi-horizon feature matrix (horizons: {[1,2,3,5,7,14,30]})...")
+        if tradeable_range is not None:
+            logger.info(
+                f"  NOTE: Near-decided markets (price outside [{tradeable_range[0]:.0%}, "
+                f"{tradeable_range[1]:.0%}]) excluded."
+            )
+        if raw_trades:
+            logger.info(f"  Order flow features: ENABLED ({len(raw_trades)} markets with trades)")
+        else:
+            logger.info("  Order flow features: DISABLED (no trade data)")
+
+        X, y, market_indices = build_variable_as_of_matrix(
+            markets,
+            raw_price_snapshots=raw_price_snaps,
+            raw_orderbook_snapshots=raw_ob_snaps,
+            raw_trades=raw_trades,
+            tradeable_range=tradeable_range,
+        )
+    else:
+        logger.info("\nLoading resolved markets (ordered by resolved_at)...")
+        markets, price_snapshots_map, price_at_as_of_map, orderbook_snapshots_map = await load_resolved_markets()
+        logger.info(f"Loaded {len(markets)} resolved markets")
+
+        # --- Build feature matrix (with as_of enforcement) ---
+        snapshot_only = _SNAPSHOT_ONLY
+        tradeable_range = _TRADEABLE_RANGE
+
+        mode_parts = []
+        if snapshot_only:
+            mode_parts.append("snapshot_only=True")
+        if tradeable_range is not None:
+            lo, hi = tradeable_range
+            mode_parts.append(f"tradeable_range=[{lo:.2f}, {hi:.2f}]")
+        as_of_label = f"as_of=resolved_at-{_AS_OF_DAYS}d"
+        mode_desc = ", ".join(mode_parts) if mode_parts else f"{as_of_label}, all prices"
+        if mode_parts:
+            mode_parts.insert(0, as_of_label)
+            mode_desc = ", ".join(mode_parts)
+        logger.info(f"\nExtracting features ({mode_desc})...")
+        if tradeable_range is not None:
+            logger.info(
+                f"  NOTE: Near-decided markets (price outside [{tradeable_range[0]:.0%}, "
+                f"{tradeable_range[1]:.0%}]) excluded — forces learning genuine uncertainty signal."
+            )
+
+        X, y = build_training_matrix(
+            markets,
+            price_snapshots_map=price_snapshots_map,
+            price_at_as_of_map=price_at_as_of_map,
+            orderbook_snapshots_map=orderbook_snapshots_map,
+            snapshot_only=snapshot_only,
+            tradeable_range=tradeable_range,
+            as_of_days=_AS_OF_DAYS,
         )
 
-    X, y = build_training_matrix(
-        markets,
-        price_snapshots_map=price_snapshots_map,
-        price_at_as_of_map=price_at_as_of_map,
-        orderbook_snapshots_map=orderbook_snapshots_map,
-        snapshot_only=snapshot_only,
-        tradeable_range=tradeable_range,
-    )
     logger.info(f"Feature matrix: {X.shape} ({N_FEATURES} features)")
     logger.info(f"Features: {ENSEMBLE_FEATURE_NAMES}")
 
@@ -851,21 +939,138 @@ async def main():
     naive_brier = class_prior * (1 - class_prior)
     logger.info(f"Naive baseline (predict {class_prior:.3f} everywhere): Brier = {naive_brier:.4f}")
 
-    # --- Temporal split (BEFORE pruning, so we keep all features for calibration) ---
-    logger.info("\n--- Temporal Train/Test Split ---")
-    X_train_full, X_test_full, y_train, y_test, cutoff_date = temporal_split(
-        markets, X, y, train_ratio=0.8
-    )
-    logger.info(f"Train: {len(y_train)} ({int(y_train.sum())} YES), "
-                f"Test: {len(y_test)} ({int(y_test.sum())} YES)")
-    logger.info(f"Temporal cutoff: ~{cutoff_date}")
+    # --- 3-Window Temporal Split ---
+    # Window A: Train models (60%)
+    # Window B: Calibrate (20%) - fit calibrator on model predictions for unseen data
+    # Window C: Test (20%) - final metrics, never seen by models or calibrator
+    logger.info("\n--- 3-Window Temporal Split (Train/Calibrate/Test) ---")
+    n = len(y)
+    min_minority_frac = 0.05
+    min_window_size = max(20, int(n * 0.05))
+
+    if market_indices is not None:
+        # Variable as_of mode: split by MARKET (not by sample) to prevent
+        # the same market from appearing in both train and test.
+        unique_market_idxs = sorted(set(market_indices))
+        n_markets = len(unique_market_idxs)
+        market_cut_a = int(n_markets * 0.60)
+        market_cut_b = int(n_markets * 0.80)
+
+        train_market_set = set(unique_market_idxs[:market_cut_a])
+        cal_market_set = set(unique_market_idxs[market_cut_a:market_cut_b])
+        test_market_set = set(unique_market_idxs[market_cut_b:])
+
+        train_mask = np.array([mi in train_market_set for mi in market_indices])
+        cal_mask = np.array([mi in cal_market_set for mi in market_indices])
+        test_mask = np.array([mi in test_market_set for mi in market_indices])
+
+        # Check test window diversity
+        test_y_check = y[test_mask]
+        if len(test_y_check) > 0:
+            test_minority = min(test_y_check.sum(), len(test_y_check) - test_y_check.sum())
+            if test_minority / len(test_y_check) < min_minority_frac:
+                logger.warning(
+                    f"Test window has low diversity ({int(test_y_check.sum())}/{len(test_y_check)} YES). "
+                    f"Expanding test market set..."
+                )
+                for mb in range(int(n_markets * 0.70), int(n_markets * 0.50), -1):
+                    cand_set = set(unique_market_idxs[mb:])
+                    cand_mask = np.array([mi in cand_set for mi in market_indices])
+                    cand_y = y[cand_mask]
+                    cand_min = min(cand_y.sum(), len(cand_y) - cand_y.sum())
+                    if len(cand_y) >= min_window_size and cand_min / len(cand_y) >= min_minority_frac:
+                        market_cut_b = mb
+                        market_cut_a = int(mb * 0.75)
+                        train_market_set = set(unique_market_idxs[:market_cut_a])
+                        cal_market_set = set(unique_market_idxs[market_cut_a:market_cut_b])
+                        test_market_set = set(unique_market_idxs[market_cut_b:])
+                        train_mask = np.array([mi in train_market_set for mi in market_indices])
+                        cal_mask = np.array([mi in cal_market_set for mi in market_indices])
+                        test_mask = np.array([mi in test_market_set for mi in market_indices])
+                        break
+
+        logger.info(
+            f"Market-grouped split: {len(train_market_set)} train / "
+            f"{len(cal_market_set)} cal / {len(test_market_set)} test markets "
+            f"→ {train_mask.sum()}/{cal_mask.sum()}/{test_mask.sum()} samples"
+        )
+
+        X_train_full = X[train_mask]
+        y_train = y[train_mask]
+        # Set cut_a/cut_b for downstream code that uses sliced indices
+        # These are used for X_cal, X_test below
+        cut_a = int(train_mask.sum())
+        cut_b = cut_a + int(cal_mask.sum())
+        # Rebuild X, y in split order (train, cal, test) so existing indexing works
+        X = np.vstack([X[train_mask], X[cal_mask], X[test_mask]])
+        y = np.concatenate([y[train_mask], y[cal_mask], y[test_mask]])
+    else:
+        # Standard mode: sequential split by sample index (original behavior)
+        cut_a = int(n * 0.60)
+        cut_b = int(n * 0.80)
+
+        test_y = y[cut_b:]
+        test_minority = min(test_y.sum(), len(test_y) - test_y.sum())
+        if len(test_y) > 0 and test_minority / len(test_y) < min_minority_frac:
+            logger.warning(
+                f"Window C [{cut_b}:{n}] has insufficient diversity "
+                f"({int(test_y.sum())}/{len(test_y)} YES). Expanding test window..."
+            )
+            for candidate_b in range(int(n * 0.70), int(n * 0.50), -1):
+                candidate_test_y = y[candidate_b:]
+                candidate_minority = min(candidate_test_y.sum(), len(candidate_test_y) - candidate_test_y.sum())
+                if len(candidate_test_y) >= min_window_size and candidate_minority / len(candidate_test_y) >= min_minority_frac:
+                    cut_b = candidate_b
+                    cut_a = int(cut_b * 0.75)
+                    logger.info(f"Adjusted split: A=[0:{cut_a}], B=[{cut_a}:{cut_b}], C=[{cut_b}:{n}]")
+                    break
+            else:
+                logger.error(
+                    "Cannot find a temporal split with class diversity in test window. "
+                    "Falling back to 2-window split (80/20 train/test, no separate calibration window)."
+                )
+                cut_a = int(n * 0.80)
+                cut_b = cut_a
+
+        X_train_full = X[:cut_a]
+        y_train = y[:cut_a]
+    X_cal_full = X[cut_a:cut_b] if cut_b > cut_a else np.empty((0, X.shape[1]))
+    y_cal = y[cut_a:cut_b] if cut_b > cut_a else np.array([])
+    X_test_full = X[cut_b:] if cut_b < n else X[cut_a:]
+    y_test = y[cut_b:] if cut_b < n else y[cut_a:]
+
+    for label, wy in [("A (train)", y_train), ("B (calibrate)", y_cal), ("C (test)", y_test)]:
+        n_yes = int(wy.sum()) if len(wy) > 0 else 0
+        minority = min(n_yes, len(wy) - n_yes) if len(wy) > 0 else 0
+        minority_pct = minority / len(wy) * 100 if len(wy) > 0 else 0
+        marker = " *** LOW DIVERSITY ***" if minority_pct < 5 and len(wy) > 0 else ""
+        logger.info(f"Window {label}: {len(wy)} ({n_yes} YES, {minority_pct:.1f}% minority){marker}")
+
+    # Approximate temporal cutoff dates.
+    # NOTE: markets may have been filtered by build_training_matrix, so indices
+    # into the original markets list don't align with matrix rows. We estimate
+    # cutoff dates by sampling markets proportionally through the sorted list.
+    cutoff_date = "unknown"
+    dated_markets = [(getattr(m, 'resolved_at', None) or getattr(m, 'end_date', None)) for m in markets]
+    dated_markets = [d for d in dated_markets if d]
+    if dated_markets:
+        frac_a = cut_a / n if n > 0 else 0.6
+        frac_b = cut_b / n if n > 0 else 0.8
+        idx_a = min(int(frac_a * len(dated_markets)), len(dated_markets) - 1)
+        idx_b = min(int(frac_b * len(dated_markets)), len(dated_markets) - 1)
+        cutoff_a = str(dated_markets[idx_a])[:10]
+        cutoff_b = str(dated_markets[idx_b])[:10]
+        logger.info(f"Temporal cutoffs: A/B ~{cutoff_a}, B/C ~{cutoff_b}")
+        cutoff_date = cutoff_b
 
     # --- Prune features (only for tree models, NOT for calibration) ---
     logger.info("\n--- Feature Pruning ---")
     X_train_pruned, active_features, dropped_features = prune_features(
         X_train_full, y_train, list(ENSEMBLE_FEATURE_NAMES)
     )
-    X_test_pruned = X_test_full[:, [ENSEMBLE_FEATURE_NAMES.index(f) for f in active_features]]
+    active_indices = [ENSEMBLE_FEATURE_NAMES.index(f) for f in active_features]
+    X_cal_pruned = X_cal_full[:, active_indices]
+    X_test_pruned = X_test_full[:, active_indices]
     logger.info(f"Active: {len(active_features)} features, Dropped: {len(dropped_features)}")
     if dropped_features:
         for d in dropped_features:
@@ -990,22 +1195,50 @@ async def main():
             brier_by_bucket[label] = {"n": n_bucket, "brier": None, "baseline": None, "improvement_pct": None}
             logger.info(f"  {label}: n={n_bucket} (too few for Brier)")
 
-    # --- Post-Ensemble Calibration ---
-    logger.info(f"\n--- Post-Ensemble Calibration ---")
-    post_calibrator = CalibrationModel()
+    # --- Post-Ensemble Calibration (3-Window: fit on Window B, eval on Window C) ---
+    logger.info(f"\n--- Post-Ensemble Calibration (Window B) ---")
 
-    # Compute ensemble predictions on training set
-    train_preds = {"calibration": cal_model.predict(X_train_full[:, price_col_full])}
+    # Compute ensemble predictions on Window B (calibration set)
+    cal_window_preds = {"calibration": cal_model.predict(X_cal_full[:, price_col_full])}
     if xgb_model:
-        train_preds["xgboost"] = xgb_model.predict_proba(X_train_pruned)
+        cal_window_preds["xgboost"] = xgb_model.predict_proba(X_cal_pruned)
     if lgb_model:
-        train_preds["lightgbm"] = lgb_model.predict_proba(X_train_pruned)
+        cal_window_preds["lightgbm"] = lgb_model.predict_proba(X_cal_pruned)
 
-    ensemble_train_preds = sum(
-        weights.get(name, 0) * p for name, p in train_preds.items()
+    ensemble_cal_preds = sum(
+        weights.get(name, 0) * p for name, p in cal_window_preds.items()
     )
-    post_calibrator.train(ensemble_train_preds, y_train)
 
+    # Choose calibration method based on sample size.
+    # Isotonic regression is non-parametric and overfits with <100 samples.
+    # Platt scaling (logistic, 2 params) is much more robust for small N.
+    if len(y_cal) < 100:
+        logger.info(f"  Window B has {len(y_cal)} samples — using Platt scaling (logistic) to avoid overfitting")
+        from sklearn.linear_model import LogisticRegression
+        platt_lr = LogisticRegression(C=1.0, solver='lbfgs', max_iter=1000)
+        platt_lr.fit(ensemble_cal_preds.reshape(-1, 1), y_cal)
+
+        class PlattCalibrator:
+            """Thin wrapper to mimic CalibrationModel interface."""
+            def __init__(self, lr):
+                self._lr = lr
+                self._is_trained = True
+            def predict(self, X):
+                return self._lr.predict_proba(np.asarray(X).reshape(-1, 1))[:, 1]
+            def predict_single(self, x):
+                return float(self._lr.predict_proba(np.array([[x]]))[:, 1][0])
+            def save(self, path):
+                import joblib
+                joblib.dump(self._lr, path)
+
+        post_calibrator = PlattCalibrator(platt_lr)
+    else:
+        post_calibrator = CalibrationModel()
+        post_calibrator.train(ensemble_cal_preds, y_cal)
+
+    logger.info(f"  Calibrator fit on {len(y_cal)} Window B samples")
+
+    # Evaluate on Window C (test set — neither models nor calibrator have seen this)
     post_cal_test_preds = post_calibrator.predict(ensemble_test_preds)
     post_cal_brier = brier_score_loss(y_test, post_cal_test_preds)
     post_cal_helps = post_cal_brier < ensemble_brier
@@ -1051,7 +1284,7 @@ async def main():
         best_threshold = 0.5
 
     # --- Profit Simulation (Polymarket-accurate fee model) ---
-    logger.info(f"\n--- Profit Simulation (2% on winnings only + 1.5% slippage) ---")
+    logger.info(f"\n--- Profit Simulation (fee-free + 1.5% slippage) ---")
     market_prices_test = X_test_full[:, price_col_full]
     profit_sim = profit_simulation(y_test, post_cal_test_preds, market_prices_test)
     logger.info(f"  Ungated: {profit_sim['ungated_trades']} trades, "
@@ -1100,6 +1333,77 @@ async def main():
             f"Model learned nothing useful."
         )
 
+    # --- Validation Gates (5 gates before live trading) ---
+    logger.info(f"\n--- Strategy Validation Gates ---")
+    try:
+        from ml.evaluation.validation_gates import validate_strategy
+        from ml.evaluation.tradability_backtest import run_backtest
+
+        # Build backtest signals from test set
+        market_prices_for_gates = X_test_full[:, price_col_full]
+        backtest_signals = []
+        for i in range(len(y_test)):
+            p = post_cal_test_preds[i] if post_cal_helps else ensemble_test_preds[i]
+            q = market_prices_for_gates[i]
+            ev_yes = p * (1 - q) - (1 - p) * q
+            ev_no = (1 - p) * q - p * (1 - q)
+            direction = "buy_yes" if ev_yes > ev_no else "buy_no"
+            backtest_signals.append({
+                "market_id": i,
+                "direction": direction,
+                "model_prob": float(p),
+                "market_price": float(q),
+                "resolution": float(y_test[i]),
+                "taker_fee_bps": 0,
+                "platform": "polymarket",
+            })
+
+        bt_results = run_backtest(backtest_signals, bankroll=1000.0, strategy_name="ensemble")
+
+        final_preds = post_cal_test_preds if post_cal_helps else ensemble_test_preds
+        validation = validate_strategy(
+            "ensemble",
+            y_test,
+            final_preds,
+            market_prices_for_gates,
+            backtest_results=bt_results,
+        )
+
+        deployment_approved = bool(validation.all_passed)
+        gate_details = [
+            {"name": g.gate_name, "passed": bool(g.passed),
+             "value": round(float(g.value), 4), "threshold": round(float(g.threshold), 4),
+             "detail": str(g.detail)}
+            for g in validation.gates
+        ]
+
+        if not deployment_approved:
+            logger.warning(
+                f"VALIDATION: {validation.n_passed}/5 gates passed. "
+                f"Strategy NOT approved for live trading."
+            )
+        else:
+            logger.info("VALIDATION: All 5 gates PASSED. Strategy approved for live trading.")
+    except Exception as e:
+        logger.error(f"Validation gates failed: {e}")
+        deployment_approved = False
+        gate_details = [{"name": "error", "passed": False, "detail": str(e)}]
+
+    # --- Write deployment status (hard gate) ---
+    deployment_status = {
+        "approved": deployment_approved,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "gates_passed": sum(1 for g in gate_details if g.get("passed")),
+        "gates_total": len(gate_details),
+        "gates": gate_details,
+        "action": "deploy" if deployment_approved else "hold_current_model",
+    }
+    deployment_path = project_root / "ml" / "saved_models" / "deployment_status.json"
+    deployment_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(deployment_path, "w") as f:
+        json.dump(deployment_status, f, indent=2)
+    logger.info(f"  Deployment status: {'APPROVED' if deployment_approved else 'BLOCKED'} → {deployment_path.name}")
+
     # --- Save ---
     logger.info("\nSaving models...")
     cal_model.save()
@@ -1125,7 +1429,10 @@ async def main():
             logger.info("  Skipped post_calibrator (raw ensemble is better)")
 
     # --- Metrics + Model Card ---
-    n_with_snapshots = len(price_at_as_of_map)
+    try:
+        n_with_snapshots = len(y) if _VARIABLE_AS_OF else len(price_at_as_of_map)
+    except NameError:
+        n_with_snapshots = 0
     n_total_usable = len(y)
     coverage_pct = round(n_with_snapshots / n_total_usable * 100, 1) if n_total_usable else 0.0
     logger.info(
@@ -1143,9 +1450,10 @@ async def main():
             "n_with_snapshots": n_with_snapshots,
             "n_total": n_total_usable,
             "coverage_pct": coverage_pct,
-            "snapshot_only_mode": snapshot_only,
-            "tradeable_range": list(tradeable_range) if tradeable_range else None,
-            "as_of_days": _AS_OF_DAYS,
+            "snapshot_only_mode": _SNAPSHOT_ONLY,
+            "tradeable_range": list(_TRADEABLE_RANGE) if _TRADEABLE_RANGE else None,
+            "as_of_days": "variable [1,2,3,5,7,14,30]" if _VARIABLE_AS_OF else _AS_OF_DAYS,
+            "variable_as_of": _VARIABLE_AS_OF,
         },
         "class_balance_yes_pct": round(float(y.mean()) * 100, 1),
         "temporal_split_date": cutoff_date,
@@ -1186,11 +1494,20 @@ async def main():
     ensemble = EnsembleModel()
     ensemble.save_weights(weights, metrics)
 
-    # Save model card as JSON
     model_card_path = save_dir / "model_card.json"
     with open(model_card_path, "w") as f:
         json.dump(metrics, f, indent=2, default=str)
     logger.info(f"  Saved: model_card.json")
+
+    # Initialize model monitor with training baseline for drift detection
+    try:
+        from ml.evaluation.model_monitor import ModelMonitor
+        monitor = ModelMonitor()
+        monitor.set_training_baseline(X_train_pruned, active_features)
+        monitor.save_state()
+        logger.info("  Saved: monitor_state.json (training baseline for drift detection)")
+    except Exception as e:
+        logger.warning(f"  Monitor baseline save failed: {e}")
 
     logger.info("\nAll models saved to ml/saved_models/")
     logger.info("Ensemble ready for API serving.")
@@ -1258,6 +1575,19 @@ def _parse_args() -> argparse.Namespace:
             "reflect conditions you will face on live uncertain markets."
         ),
     )
+    parser.add_argument(
+        "--variable-as-of",
+        action="store_true",
+        default=False,
+        dest="variable_as_of",
+        help=(
+            "Enable multi-horizon as_of sampling. For each market with price snapshots, "
+            "create training samples at 1, 2, 3, 5, 7, 14, and 30 days before resolution. "
+            "This produces natural variance in time_to_resolution_hrs (previously pruned as "
+            "near-constant) and trains the model across multiple prediction horizons. "
+            "Requires price snapshot coverage. Overrides --as-of-days and --snapshot-only."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1282,7 +1612,13 @@ if __name__ == "__main__":
             )
             sys.exit(1)
 
-    if args.as_of_days != 1:
+    if args.variable_as_of:
+        _VARIABLE_AS_OF = True
+        logger.info(
+            "Variable as_of mode: multi-horizon sampling at [1, 2, 3, 5, 7, 14, 30] days. "
+            "Overrides --as-of-days and --snapshot-only."
+        )
+    elif args.as_of_days != 1:
         _AS_OF_DAYS = args.as_of_days
         logger.info(
             f"as-of-days={_AS_OF_DAYS}: using prices from {_AS_OF_DAYS} days before resolution."

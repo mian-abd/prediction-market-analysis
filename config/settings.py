@@ -26,6 +26,8 @@ class Settings(BaseSettings):
 
     # Kalshi
     kalshi_api_url: str = "https://api.elections.kalshi.com/trade-api/v2"
+    kalshi_access_key_id: str = ""
+    kalshi_private_key: str = ""
 
     # GDELT
     gdelt_api_url: str = "https://api.gdeltproject.org/api/v2/doc/doc"
@@ -58,9 +60,9 @@ class Settings(BaseSettings):
     news_catalyst_enabled: bool = True
     news_catalyst_interval_sec: int = 900  # Every 15 min
     resolution_convergence_enabled: bool = True
-    orderflow_enabled: bool = True
+    orderflow_enabled: bool = False
     smart_money_enabled: bool = True
-    market_clustering_enabled: bool = True
+    market_clustering_enabled: bool = False
     market_clustering_interval_sec: int = 3600  # Every hour
 
     # Data retention (hot/cold split)

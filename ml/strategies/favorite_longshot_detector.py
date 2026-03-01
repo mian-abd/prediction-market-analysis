@@ -19,8 +19,7 @@ from ml.features.calibration_features import get_calibration_estimate as _get_ca
 
 logger = logging.getLogger(__name__)
 
-# Fee/slippage (same as ensemble)
-POLYMARKET_FEE_RATE = 0.02
+# Fee/slippage: per-market fee from DB. Most markets are fee-free.
 SLIPPAGE_BUFFER = 0.01
 
 # Category efficiency gaps (Jonathan Becker: maker-taker gap in pp)
@@ -68,14 +67,16 @@ def _get_category_gap(category: str) -> float:
     return CATEGORY_EFFICIENCY_GAP.get(c, 1.5)
 
 
-def _compute_fee_cost(direction: str, market_price: float) -> float:
-    """Expected fee + slippage for the trade."""
+def _compute_fee_cost(direction: str, market_price: float, calibrated_prob: float = 0.5, taker_fee_bps: int = 0) -> float:
+    """Expected fee + slippage for the trade, probability-weighted.
+
+    Fee is only charged on winnings, so expected fee = P(win) * fee_rate * winnings.
+    """
+    fee_rate = taker_fee_bps / 10000
     if direction == "buy_yes":
-        # Fee on winnings (1 - market_price) when we win
-        fee = POLYMARKET_FEE_RATE * (1 - market_price)
+        fee = calibrated_prob * fee_rate * (1 - market_price)
     else:
-        # buy_no: winnings = market_price
-        fee = POLYMARKET_FEE_RATE * market_price
+        fee = (1 - calibrated_prob) * fee_rate * market_price
     return fee + SLIPPAGE_BUFFER
 
 
@@ -167,7 +168,8 @@ def detect_favorite_longshot_edge(market) -> FavoriteLongshotSignal | None:
             direction = "buy_yes"
             signal_type = "underpriced_favorite"
 
-    fee_cost = _compute_fee_cost(direction, price)
+    taker_fee_bps = getattr(market, 'taker_fee_bps', 0) or 0
+    fee_cost = _compute_fee_cost(direction, price, calibrated_prob=calibrated, taker_fee_bps=taker_fee_bps)
     if direction == "buy_yes":
         net_ev = calibrated * (1 - price) - (1 - calibrated) * price - fee_cost
     else:

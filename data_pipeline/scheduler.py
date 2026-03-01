@@ -504,7 +504,13 @@ async def scan_ensemble_edges():
                         continue
                     n_quality_gate += 1
 
-                    result = ensemble.predict_market(market)
+                    from ml.features.training_features import load_serving_context
+                    price_snaps, ob_snap = await load_serving_context(session, market.id)
+                    result = ensemble.predict_market(
+                        market,
+                        price_snapshots=price_snaps,
+                        orderbook_snapshot=ob_snap,
+                    )
                     edge = detect_edge(market, result)
 
                     if edge.direction and edge.net_ev >= 0.04 and edge.confidence >= 0.50:
@@ -877,16 +883,17 @@ async def scan_new_strategies():
         except Exception as e:
             logger.error(f"Smart money scan failed: {e}")
 
-    # Run consensus scan after all individual strategies
-    try:
-        from ml.strategies.signal_consensus import compute_signal_consensus, persist_consensus_signals
-        async with async_session() as cons_session:
-            consensus = await compute_signal_consensus(cons_session)
-            if consensus:
-                await persist_consensus_signals(cons_session, consensus)
-                total_signals += len(consensus)
-    except Exception as e:
-        logger.error(f"Consensus scan failed: {e}")
+    # Consensus strategy disabled: it amplifies bad signals from noise strategies
+    # with a 1.5x Kelly multiplier. Re-enable only after upstream strategies are validated.
+    # try:
+    #     from ml.strategies.signal_consensus import compute_signal_consensus, persist_consensus_signals
+    #     async with async_session() as cons_session:
+    #         consensus = await compute_signal_consensus(cons_session)
+    #         if consensus:
+    #             await persist_consensus_signals(cons_session, consensus)
+    #             total_signals += len(consensus)
+    # except Exception as e:
+    #     logger.error(f"Consensus scan failed: {e}")
 
     logger.info(f"New strategy scans complete: {total_signals} total signals")
     return total_signals
@@ -1117,6 +1124,16 @@ async def run_pipeline_loop():
     await collect_markets()
     await collect_prices()
 
+    # ── Fee rate collection (Polymarket) ──
+    try:
+        from data_pipeline.collectors.fee_rates import update_polymarket_fee_rates
+        async with async_session() as fee_session:
+            updated = await update_polymarket_fee_rates(fee_session, batch_size=100)
+            if updated:
+                logger.info(f"Initial fee rate update: {updated} markets")
+    except Exception as e:
+        logger.error(f"Fee rate collection failed: {e}")
+
     # Initial matching + arb scan after data is loaded
     try:
         await run_market_matching()
@@ -1226,6 +1243,17 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Elo edge scan error: {e}")
 
+        # ── Intra-market arbitrage scan every ~2 min ──
+        if cycle % cycles_per_arb_scan == 0:
+            try:
+                from ml.strategies.intra_market_arbitrage import scan_binary_arbitrage
+                async with async_session() as arb_session:
+                    opportunities = await scan_binary_arbitrage(arb_session)
+                    if opportunities:
+                        logger.info(f"Intra-market arb: {len(opportunities)} opportunities")
+            except Exception as e:
+                logger.error(f"Intra-market arb scan error: {e}")
+
         # ── Ensemble edge scan every ~2 min ──
         if cycle % cycles_per_ensemble_scan == 0:
             try:
@@ -1240,14 +1268,19 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Favorite-longshot edge scan error: {e}")
 
-        # ── Auto-trade every ~2 min (same cadence as ensemble scan) ──
+        # ── Auto-trade every ~2 min (gated by deployment approval) ──
         if cycle % cycles_per_auto_trade == 0:
             try:
-                from execution.paper_executor import execute_paper_trades
-                async with async_session() as exec_session:
-                    created = await execute_paper_trades(exec_session)
-                    if created:
-                        logger.info(f"Auto paper trades: {len(created)} positions opened")
+                from ml.evaluation.deployment_gate import is_model_approved
+                if not is_model_approved(allow_stale=True):
+                    if cycle % (cycles_per_auto_trade * 10) == 0:
+                        logger.warning("Auto-trading BLOCKED: model not approved by validation gates")
+                else:
+                    from execution.paper_executor import execute_paper_trades
+                    async with async_session() as exec_session:
+                        created = await execute_paper_trades(exec_session)
+                        if created:
+                            logger.info(f"Auto paper trades: {len(created)} positions opened")
             except Exception as e:
                 logger.error(f"Paper executor error: {e}")
 
@@ -1341,6 +1374,22 @@ async def run_pipeline_loop():
             except Exception as e:
                 logger.error(f"Forward performance log failed: {e}")
 
+            # Model health monitoring (drift detection, degradation alerts)
+            try:
+                from ml.evaluation.model_monitor import ModelMonitor
+                monitor = ModelMonitor()
+                monitor.load_state()
+                alerts = monitor.check_health()
+                critical = [a for a in alerts if a.severity == "critical"]
+                if critical:
+                    for a in critical:
+                        logger.warning(f"MODEL MONITOR CRITICAL: {a.message}")
+                    if monitor.should_retrain():
+                        logger.warning("MODEL MONITOR: Retrain signal emitted")
+                monitor.save_state()
+            except Exception as e:
+                logger.debug(f"Model monitor check failed: {e}")
+
             # Log P&L breakdown by price zone and direction
             try:
                 from sqlalchemy import func as sql_func
@@ -1388,6 +1437,15 @@ async def run_pipeline_loop():
                         )
             except Exception as e:
                 logger.error(f"P&L zone tracking failed: {e}")
+
+        # ── Fee rate refresh every ~1 hr (alongside market refresh) ──
+        if cycle % cycles_per_market_refresh == 0:
+            try:
+                from data_pipeline.collectors.fee_rates import update_polymarket_fee_rates
+                async with async_session() as fee_session:
+                    await update_polymarket_fee_rates(fee_session, batch_size=100)
+            except Exception as e:
+                logger.error(f"Fee rate refresh error: {e}")
 
         # ── Full market refresh + deactivate expired + re-match + cleanup every ~1 hr ──
         if cycle % cycles_per_market_refresh == 0:

@@ -23,7 +23,7 @@ sys.path.insert(0, str(project_root))
 
 import asyncio
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 
 from ml.models.elo_sports import Glicko2Engine, SportConfig, MatchResult
 from data_pipeline.collectors.sports_results import fetch_all_tennis_matches

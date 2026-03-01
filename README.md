@@ -270,6 +270,9 @@ prediction-market-analysis/
 
 | Document | Description |
 |----------|-------------|
+| **[Documentation Index](docs/DOCUMENTATION_INDEX.md)** | **Master index** — business vs technical docs, update workflow |
+| [Business Documentation](docs/BUSINESS_DOCUMENTATION.md) | Product view: goals, metrics, roadmap, when we're done |
+| [Technical Documentation](docs/TECHNICAL_DOCUMENTATION.md) | Architecture, APIs, pipeline, ML, execution |
 | [Architecture](docs/ARCHITECTURE.md) | System design, data flow, design decisions |
 | [API Reference](docs/API.md) | Full endpoint documentation with examples |
 | [Strategies](docs/STRATEGIES.md) | Deep-dive on all 5 trading strategies |
